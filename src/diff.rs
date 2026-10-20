@@ -368,9 +368,10 @@ fn resolution(thread: &Thread) -> Event {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::forge::{comment, octocat, poll};
-    use serde_json::json;
 
     const THREAD: &str = "PRRT_1";
     const THREAD_URL: &str = "https://github.com/o/r/pull/1#discussion_r10";
@@ -840,6 +841,39 @@ mod tests {
                 "warnings": [{ "name": "coverage", "conclusion": "failed", "url": null }],
             }),
         );
+    }
+
+    #[test]
+    fn checks_that_do_not_decide_never_colour_and_warn_only_on_failure() {
+        let next = on(
+            A,
+            vec![
+                check("test", true, Assessment::Failed),
+                check("bench", false, Assessment::Pending),
+                check("preview", false, Assessment::Waiting),
+            ],
+        );
+
+        let (events, _) = diff(&on(A, Vec::new()).into(), next);
+
+        let [
+            Event {
+                detail:
+                    Detail::CiSettled {
+                        colour,
+                        checks,
+                        warnings,
+                        ..
+                    },
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("{events:?}");
+        };
+        assert_eq!(*colour, Colour::Red);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(warnings, &[]);
     }
 
     #[test]

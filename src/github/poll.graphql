@@ -30,9 +30,13 @@ query (
                   __typename
                   ... on CheckRun {
                     checkSuite {
-                      databaseId
-                      workflowRun {
+                      app {
                         databaseId
+                      }
+                      workflowRun {
+                        workflow {
+                          databaseId
+                        }
                       }
                     }
                     conclusion

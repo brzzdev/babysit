@@ -131,17 +131,14 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             variables.extend(threads.variable());
             let page: PullRequestPage =
                 self.query(target, POLL_QUERY, &variables, "pull request", deadline)?;
-            let commit = page.commits.nodes.into_iter().next().ok_or_else(|| {
-                fatal(ErrorKind::PollFailed, "the pull request has no head commit")
-            })?;
-            if commit.commit.oid != page.head_ref_oid {
-                let message = format!(
-                    "the head is {} but its latest commit is {}",
-                    page.head_ref_oid, commit.commit.oid,
-                );
-                return Err(fatal(ErrorKind::PollFailed, &message));
-            }
-            let rollup = commit.commit.status_check_rollup;
+            // CI is judged on the head only, so a latest listed commit that isn't it has none.
+            let rollup = page
+                .commits
+                .nodes
+                .into_iter()
+                .map(|node| node.commit)
+                .find(|commit| commit.oid == page.head_ref_oid)
+                .and_then(|commit| commit.status_check_rollup);
             match &first {
                 None => {
                     // A head with no CI has no rollup, so there are no checks to page.
@@ -444,9 +441,20 @@ struct CheckRunNode {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckSuite {
-    database_id: u64,
+    app: Option<DatabaseId>,
     /// Present only for GitHub Actions, whose check run ids are job ids.
-    workflow_run: Option<serde::de::IgnoredAny>,
+    workflow_run: Option<WorkflowRun>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRun {
+    workflow: DatabaseId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DatabaseId {
+    database_id: u64,
 }
 
 #[derive(Deserialize)]
@@ -656,12 +664,21 @@ impl ContextNode {
 /// The head's checks at their latest attempts, deciding on the required ones when any exist.
 fn ci(rollup_state: &str, contexts: &[ContextNode]) -> Ci {
     let any_required = contexts.iter().any(ContextNode::is_required);
-    let suite = |run: &CheckRunNode| run.check_suite.as_ref().map(|suite| suite.database_id);
+    // Attempts of one check share its name and workflow, or its app outside Actions.
+    let source = |run: &CheckRunNode| {
+        let suite = run.check_suite.as_ref()?;
+        let source = suite
+            .workflow_run
+            .as_ref()
+            .map(|run| &run.workflow)
+            .or(suite.app.as_ref());
+        source.map(|source| source.database_id)
+    };
     let superseded = |run: &CheckRunNode| {
         contexts.iter().any(|other| match other {
             ContextNode::CheckRun(other) => {
                 other.name == run.name
-                    && suite(other) == suite(run)
+                    && source(other) == source(run)
                     && other.database_id > run.database_id
             }
             ContextNode::StatusContext(_) => false,
@@ -706,7 +723,7 @@ fn ci(rollup_state: &str, contexts: &[ContextNode]) -> Ci {
         .collect();
     Ci {
         checks,
-        // The rollup expects a check that no context names.
+        // An expecting rollup with no expected context awaits a check it doesn't name.
         required_known: expected_seen || rollup_state != EXPECTED,
     }
 }
@@ -1145,7 +1162,10 @@ mod tests {
 
     #[test]
     fn judges_each_check_on_its_latest_attempt_and_decides_on_the_required_ones() {
-        let actions = json!({ "databaseId": 1, "workflowRun": { "databaseId": 10 } });
+        let actions = json!({
+            "app": { "databaseId": 15_368 },
+            "workflowRun": { "workflow": { "databaseId": 390_459_010 } },
+        });
         let run = |id: u64, conclusion: Option<&str>, status: &str| {
             json!({
                 "__typename": "CheckRun", "checkSuite": actions, "conclusion": conclusion,
@@ -1158,7 +1178,7 @@ mod tests {
             run(101, None, "IN_PROGRESS"),
             {
                 "__typename": "CheckRun",
-                "checkSuite": { "databaseId": 2, "workflowRun": null },
+                "checkSuite": { "app": { "databaseId": 254 }, "workflowRun": null },
                 "conclusion": "FAILURE", "databaseId": 200,
                 "detailsUrl": "https://codecov.io/1", "isRequired": false, "name": "codecov",
                 "status": "COMPLETED",
@@ -1208,6 +1228,14 @@ mod tests {
     #[test]
     fn a_head_without_a_rollup_has_no_ci() {
         assert_eq!(ci_of(&with_rollup(Value::Null)), None);
+    }
+
+    #[test]
+    fn a_latest_commit_other_than_the_head_has_no_ci() {
+        let behind = include_str!("github/fixtures/poll.http")
+            .replace(&format!(r#""oid":"{HEAD}""#), r#""oid":"f00d""#);
+
+        assert_eq!(ci_of(&behind), None);
     }
 
     #[test]
