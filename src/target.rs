@@ -251,14 +251,20 @@ impl<'a, E: Exec> Locator<'a, E> {
 }
 
 /// The baseline `file` holds for `target`. An entry under its URL for another forge id is a reused
-/// path, so `None` for a fresh baseline; an entry elsewhere with its forge id is a rename, re-keyed
-/// under its URL.
+/// path, so `None` for a fresh baseline; an entry elsewhere on its host with its forge id is a
+/// rename, re-keyed under its URL. Forge ids are unique only within one host.
 pub fn baseline(file: &mut SnapshotFile, target: &Target) -> Option<Snapshot> {
     if let Some(entry) = file.entry(&target.url) {
         return (entry.forge_id == target.forge_id).then(|| entry.snapshot.clone());
     }
-    file.rename(&target.forge_id, &target.url)
-        .map(|entry| entry.snapshot.clone())
+    let host = url_host(&target.url);
+    file.rename(&target.url, |entry| {
+        entry.forge_id == target.forge_id
+            && url_host(&entry.url)
+                .zip(host)
+                .is_some_and(|(entry, target)| entry.eq_ignore_ascii_case(target))
+    })
+    .map(|entry| entry.snapshot.clone())
 }
 
 impl From<Failure> for Error {

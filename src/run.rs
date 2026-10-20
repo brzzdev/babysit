@@ -74,7 +74,7 @@ pub fn run(
             Ok(None) => {}
             Err(error) => {
                 let message = format!("{snapshot_path}: {error}");
-                return Ok(fail_locally(stdout, ErrorKind::SnapshotIo, message));
+                break local_failure(ErrorKind::SnapshotIo, message);
             }
         }
         if !wait(clock, started + args.interval, deadline) {
@@ -90,6 +90,14 @@ pub fn run(
         .collect();
     if envelope.write(stdout).is_err() {
         return Ok(EXIT_ERROR);
+    }
+    // The envelope has already reported the write that failed.
+    if envelope
+        .error
+        .as_ref()
+        .is_some_and(|error| error.kind == ErrorKind::SnapshotIo)
+    {
+        return Ok(envelope.exit_code());
     }
     let woke = envelope.outcome == Outcome::Woke;
     let entries: Vec<_> = tracked
@@ -183,13 +191,16 @@ fn entry(target: &Target, snapshot: Snapshot) -> Entry {
 }
 
 fn fail_locally(stdout: &mut impl Write, kind: ErrorKind, message: String) -> u8 {
-    let error = envelope::Error {
+    report(stdout, &local_failure(kind, message))
+}
+
+fn local_failure(kind: ErrorKind, message: String) -> Envelope {
+    Envelope::failed(envelope::Error {
         kind,
         forge: None,
         target: None,
         message,
-    };
-    report(stdout, &Envelope::failed(error))
+    })
 }
 
 fn report_unresolved(
@@ -845,6 +856,41 @@ mod tests {
         assert_eq!(saved["targets"].as_object().unwrap().len(), 1);
         assert_eq!(saved["targets"][URL]["url"], URL);
         assert_eq!(saved["targets"][URL]["snapshot"], json!(poll(&["1", "2"])));
+    }
+
+    #[test]
+    fn the_same_forge_id_on_another_host_is_no_rename() {
+        let sandbox = Sandbox::new("other-host");
+        let enterprise = "https://ghe.example.com/o/r/pull/1";
+        seed(&sandbox.snapshot(), enterprise, NODE_ID, &["1"]);
+        let before = saved(&sandbox.snapshot());
+
+        let (code, envelope) = watch(
+            &args(&[URL], &sandbox.snapshot(), Some(0)),
+            vec![returns(URL, poll(&["1", "2"]))],
+        );
+
+        assert_eq!(code, 3);
+        assert_eq!(envelope, timed_out(&[summary(URL)]));
+        let saved = saved(&sandbox.snapshot());
+        assert_eq!(saved["targets"][enterprise], before["targets"][enterprise]);
+        assert_eq!(saved["targets"][URL]["snapshot"], json!(poll(&["1", "2"])));
+    }
+
+    #[test]
+    fn a_failed_baseline_save_still_summarises_the_evaluated_targets() {
+        let sandbox = Sandbox::new("baseline-save");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        fs::set_permissions(&sandbox.dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let (code, envelope) = watch(
+            &args(&[URL, OTHER], &sandbox.snapshot(), None),
+            vec![returns(URL, poll(&["1"])), returns(OTHER, poll(&["5"]))],
+        );
+
+        assert_eq!(code, 1);
+        assert_eq!(envelope["error"]["kind"], "snapshot_io");
+        assert_eq!(envelope["targets"], json!([summary(URL)]));
     }
 
     #[test]
