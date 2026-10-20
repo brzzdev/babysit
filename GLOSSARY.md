@@ -51,6 +51,10 @@ The forge account an event happened to, when that isn't the actor, such as the r
 was withdrawn.
 _Avoid_: Recipient
 
+**Wake**:
+A run ending because at least one event matched its rules.
+_Avoid_: Trigger, fire, alert
+
 ### Conversation
 
 **Comment**:
