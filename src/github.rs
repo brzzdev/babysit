@@ -780,6 +780,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::exec::{Output, Script};
+    use crate::forge::Colour;
     use crate::reference;
 
     const NODE_ID: &str = "PR_kwDOVQ0d8c8AAAABJm7W-Q";
@@ -1249,6 +1250,36 @@ mod tests {
 
         assert!(!ci.required_known);
         assert!(ci.checks[0].deciding);
+    }
+
+    /// Recorded while `gate` awaited approval: `after` (`needs: gate`) is absent from the rollup.
+    #[test]
+    fn a_job_held_behind_an_approval_is_not_listed_so_amber_settles() {
+        let job = |id: u64, name: &str, status: &str, conclusion: Option<&str>| {
+            json!({
+                "__typename": "CheckRun",
+                "checkSuite": {
+                    "app": { "databaseId": 15_368 },
+                    "workflowRun": {
+                        "databaseId": 39_494_970_229_u64,
+                        "workflow": { "databaseId": 391_007_203 },
+                    },
+                },
+                "conclusion": conclusion, "databaseId": id,
+                "detailsUrl": format!(
+                    "https://github.com/brzzdev/babysit/actions/runs/39494970229/job/{id}"
+                ),
+                "isRequired": false, "name": name, "status": status,
+            })
+        };
+        let contexts = json!([
+            job(118_877_549_516, "gate", "WAITING", None),
+            job(118_877_548_782, "independent", "COMPLETED", Some("SUCCESS")),
+        ]);
+
+        let ci = ci_of(&with_rollup(rollup("PENDING", &contexts))).unwrap();
+
+        assert_eq!(ci.colour(), Some(Colour::Amber));
     }
 
     #[test]
