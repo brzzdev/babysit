@@ -21,7 +21,7 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     let [host, owner, repo, "pull", number] = rest.split('/').collect::<Vec<_>>()[..] else {
         return Err(invalid());
     };
-    if !is_authority(host) || owner.is_empty() || repo.is_empty() {
+    if !is_authority(host) || !is_name(owner) || !is_name(repo) {
         return Err(invalid());
     }
     if number.starts_with('0') || !number.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -60,6 +60,17 @@ fn is_authority(authority: &str) -> bool {
     host.split('.').all(label_is_valid) && port.is_none_or(port_is_valid)
 }
 
+/// An owner or repository name: letters, digits, `-`, `_` and `.`, but never `.` or `..`, which
+/// would rewrite the API path.
+fn is_name(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +87,11 @@ mod tests {
                 repo: "r".to_owned(),
             }),
         );
+    }
+
+    #[test]
+    fn accepts_names_with_hyphens_underscores_and_dots() {
+        assert!(parse("https://github.com/my-org/my_repo.rs/pull/1").is_ok());
     }
 
     #[test]
@@ -103,6 +119,11 @@ mod tests {
             "https://./o/r/pull/12",
             "https://-/o/r/pull/12",
             "https://a..b/o/r/pull/12",
+            "https://github.com/o /r/pull/12",
+            "https://github.com/o/r\t/pull/12",
+            "https://github.com/../r/pull/12",
+            "https://github.com/o/../pull/12",
+            "https://github.com/o/r%20x/pull/12",
         ] {
             assert!(parse(given).is_err(), "{given}");
         }
