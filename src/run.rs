@@ -67,12 +67,14 @@ pub fn run(
             target,
         })
         .collect();
+    let mut write_failed = false;
     let mut envelope = loop {
         let started = clock.now();
         match poll_round(&mut tracked, backend, clock, &mut file, call_deadline) {
             Ok(Some(ended)) => break ended,
             Ok(None) => {}
             Err(error) => {
+                write_failed = true;
                 let message = format!("{snapshot_path}: {error}");
                 break local_failure(ErrorKind::SnapshotIo, message);
             }
@@ -92,11 +94,7 @@ pub fn run(
         return Ok(EXIT_ERROR);
     }
     // The envelope has already reported the write that failed.
-    if envelope
-        .error
-        .as_ref()
-        .is_some_and(|error| error.kind == ErrorKind::SnapshotIo)
-    {
+    if write_failed {
         return Ok(envelope.exit_code());
     }
     let woke = envelope.outcome == Outcome::Woke;
@@ -151,8 +149,9 @@ fn poll_round(
         };
         tracked.evaluated = true;
         let Some(baseline) = tracked.polled.as_ref().or(tracked.stored.as_ref()) else {
-            file.save([entry(&tracked.target, poll.clone())])?;
+            let first = entry(&tracked.target, poll.clone());
             tracked.polled = Some(poll);
+            file.save([first])?;
             continue;
         };
         let (seen, next) = diff(baseline, poll);
@@ -890,7 +889,7 @@ mod tests {
 
         assert_eq!(code, 1);
         assert_eq!(envelope["error"]["kind"], "snapshot_io");
-        assert_eq!(envelope["targets"], json!([summary(URL)]));
+        assert_eq!(envelope["targets"], json!([summary(URL), summary(OTHER)]));
     }
 
     #[test]

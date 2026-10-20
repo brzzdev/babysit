@@ -79,8 +79,7 @@ impl<'a, E: Exec> Locator<'a, E> {
             let target = backend
                 .resolve(reference, self.deadline)
                 .map_err(|failure| (given, failure.into()))?;
-            if !url_host(&target.url).is_some_and(|host| host.eq_ignore_ascii_case(&reference.host))
-            {
+            if !on_host(&target.url, &reference.host) {
                 let message = format!(
                     "`{given}` resolves to {}, on another host, and babysit never takes a \
                      redirect across hosts; pass that URL instead",
@@ -250,19 +249,15 @@ impl<'a, E: Exec> Locator<'a, E> {
     }
 }
 
-/// The baseline `file` holds for `target`. An entry under its URL for another forge id is a reused
-/// path, so `None` for a fresh baseline; an entry elsewhere on its host with its forge id is a
-/// rename, re-keyed under its URL. Forge ids are unique only within one host.
+/// The baseline `file` holds for `target`, guarding a reused path and re-keying a rename. Forge ids
+/// are unique only within one host.
 pub fn baseline(file: &mut SnapshotFile, target: &Target) -> Option<Snapshot> {
     if let Some(entry) = file.entry(&target.url) {
         return (entry.forge_id == target.forge_id).then(|| entry.snapshot.clone());
     }
-    let host = url_host(&target.url);
+    let host = url_host(&target.url)?;
     file.rename(&target.url, |entry| {
-        entry.forge_id == target.forge_id
-            && url_host(&entry.url)
-                .zip(host)
-                .is_some_and(|(entry, target)| entry.eq_ignore_ascii_case(target))
+        entry.forge_id == target.forge_id && on_host(&entry.url, host)
     })
     .map(|entry| entry.snapshot.clone())
 }
@@ -287,6 +282,10 @@ impl From<Failure> for Error {
 /// The host of a web URL such as `https://github.com/o/r/pull/1`.
 fn url_host(url: &str) -> Option<&str> {
     url.split_once("://")?.1.split('/').next()
+}
+
+fn on_host(url: &str, host: &str) -> bool {
+    url_host(url).is_some_and(|url_host| url_host.eq_ignore_ascii_case(host))
 }
 
 /// The remote name and `gh-resolved` value `gh repo set-default` last recorded.
