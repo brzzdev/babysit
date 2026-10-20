@@ -79,13 +79,13 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         .map(|comment| (None, comment))
         .chain(threaded)
     {
-        // Top-level and thread comment ids are separate namespaces, so each is looked up in its own.
+        // Top-level and thread comment ids are separate namespaces.
         let seen = match thread {
             None => baseline.comments.iter().find(|seen| seen.id == comment.id),
             Some(_) => baseline
                 .threads
                 .iter()
-                .flat_map(|thread| &thread.comments)
+                .flat_map(|seen_thread| &seen_thread.comments)
                 .find(|seen| seen.id == comment.id),
         };
         match (seen, thread) {
@@ -387,7 +387,13 @@ mod tests {
     fn a_thread_comment_sharing_a_top_level_comments_id_is_its_own_comment() {
         let baseline = poll(&["10"]);
         let next = Poll {
-            threads: vec![thread(vec![reviewed("10", "500")], false)],
+            threads: vec![thread(
+                vec![Comment {
+                    body: "an inline comment".to_owned(),
+                    ..reviewed("10", "500")
+                }],
+                false,
+            )],
             ..poll(&["10"])
         };
 
