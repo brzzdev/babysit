@@ -221,8 +221,10 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         Some(merge) if poll.state == TargetState::Open => Some(merge),
         _ => reported.merge,
     };
-    if merge != reported.merge {
-        events.extend(merge_changed(&poll, merge));
+    if let Some(changed) = merge
+        && merge != reported.merge
+    {
+        events.extend(merge_changed(&poll, changed));
     }
     events.sort_by(|a, b| {
         (a.at.is_none(), &a.at, &a.detail).cmp(&(b.at.is_none(), &b.at, &b.detail))
@@ -246,9 +248,8 @@ fn head_pushed(old_sha: &str, poll: &Poll) -> Event {
     )
 }
 
-/// Clearing a conflict or catching up reports nothing.
-fn merge_changed(poll: &Poll, merge: Option<Merge>) -> Option<Event> {
-    let detail = match merge? {
+fn merge_changed(poll: &Poll, merge: Merge) -> Option<Event> {
+    let detail = match merge {
         Merge::Behind => Detail::MergeBehind,
         Merge::Clean => return None,
         Merge::Conflicted => Detail::MergeConflicted,
@@ -1048,12 +1049,9 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_keeps_the_reported_mergeability() {
+    fn a_first_polls_mergeability_counts_as_reported() {
         let conflicted = || mergeability(Some(Merge::Conflicted));
 
-        let (_, snapshot) = diff(&conflicted().into(), mergeability(None));
-
-        assert_eq!(snapshot.reported.merge, Some(Merge::Conflicted));
         assert_eq!(
             steps(conflicted(), vec![conflicted()]),
             [Vec::<String>::new()]

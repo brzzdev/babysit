@@ -922,7 +922,6 @@ impl Standing {
     }
 }
 
-/// `None` while GitHub is still computing; `BEHIND` is GitHub requiring the head be updated.
 fn merge(mergeable: &str, merge_state_status: &str) -> Option<Merge> {
     match (mergeable, merge_state_status) {
         ("UNKNOWN", _) | (_, "UNKNOWN") => None,
