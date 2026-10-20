@@ -13,6 +13,9 @@ use crate::graphql::{Connection, Paged, same_head};
 use crate::reference::Reference;
 use crate::response::{self, Response};
 
+const CI_CREATED: &str = "CREATED";
+const CI_MANUAL: &str = "MANUAL";
+const CI_SKIPPED: &str = "SKIPPED";
 const CLI: &str = "glab";
 const HEADER_RATE_LIMIT_NAME: &str = "ratelimit-name";
 const HEADER_REMAINING: &str = "ratelimit-remaining";
@@ -28,9 +31,6 @@ const REVIEW_STATE_REVIEWED: &str = "REVIEWED";
 const STATUS_FORBIDDEN: u16 = 403;
 const STATUS_NOT_FOUND: u16 = 404;
 const STATUS_TOO_MANY_REQUESTS: u16 = 429;
-const STATUS_CREATED: &str = "CREATED";
-const STATUS_MANUAL: &str = "MANUAL";
-const STATUS_SKIPPED: &str = "SKIPPED";
 const STATUS_UNAUTHORIZED: u16 = 401;
 /// The rate limit GitLab applies to a request it took as anonymous.
 const UNAUTHENTICATED: &str = "throttle_unauthenticated_api";
@@ -176,7 +176,7 @@ impl<E: Exec> GitLab<'_, E> {
         let mut jobs = Paged::new(Forge::GitLab, "jobs");
         let mut notes = Paged::new(Forge::GitLab, "notes");
         let mut reviewers = Paged::new(Forge::GitLab, "reviewers");
-        let mut first: Option<FirstPage> = None;
+        let mut first: Option<(String, MergeRequestPage)> = None;
         while !(approvers.done() && jobs.done() && notes.done() && reviewers.done()) {
             let mut variables = vec![("-f", format!("id={}", target.forge_id))];
             variables.extend(approvers.variable());
@@ -184,55 +184,53 @@ impl<E: Exec> GitLab<'_, E> {
             variables.extend(notes.variable());
             variables.extend(reviewers.variable());
             let data: Data = self.graphql(&target.host, POLL_QUERY, &variables, deadline, hints)?;
-            let Some(page) = data.merge_request else {
+            let Some(mut page) = data.merge_request else {
                 return Err(gone(target));
             };
-            let Some(head) = page.diff_head_sha else {
+            let Some(head) = page.diff_head_sha.take() else {
                 return Err(transient(&format!("{} has no head commit yet", target.url)));
             };
-            let mut pipeline = page.head_pipeline;
-            let page_jobs = pipeline.as_mut().and_then(|pipeline| pipeline.jobs.take());
             match &first {
                 None => {
-                    if pipeline.is_none() {
+                    let pipeline = page.head_pipeline.as_ref();
+                    if !pipeline.is_some_and(|pipeline| pipeline.may_build(&head)) {
                         jobs.finish();
                     }
-                    first = Some(FirstPage {
-                        head,
-                        pipeline,
-                        project_id: page.project_id,
-                        skipped_accepted: page
-                            .project
-                            .and_then(|project| project.allow_merge_on_skipped_pipeline)
-                            .unwrap_or(false),
-                        state: page.state,
-                    });
                 }
-                Some(first) => {
-                    same_head(Forge::GitLab, &first.head, &head)?;
-                    let id = |pipeline: &Option<HeadPipeline>| {
-                        pipeline.as_ref().map(|pipeline| pipeline.id.clone())
-                    };
-                    if id(&first.pipeline) != id(&pipeline) {
+                Some((first_head, first_page)) => {
+                    same_head(Forge::GitLab, first_head, &head)?;
+                    if first_page.pipeline_id() != page.pipeline_id() {
                         return Err(transient("the head pipeline changed between pages"));
                     }
                 }
             }
-            approvers.take(page.approved_by)?;
-            jobs.take(page_jobs)?;
-            notes.take(page.notes)?;
-            reviewers.take(page.reviewers)?;
+            approvers.take(page.approved_by.take())?;
+            jobs.take(
+                page.head_pipeline
+                    .as_mut()
+                    .and_then(|pipeline| pipeline.jobs.take()),
+            )?;
+            notes.take(page.notes.take())?;
+            reviewers.take(page.reviewers.take())?;
+            if first.is_none() {
+                first = Some((head, page));
+            }
         }
-        let FirstPage {
-            head,
-            pipeline,
-            project_id,
-            skipped_accepted,
-            state,
-        } = first.expect("every poll fetches a first page");
-        let ci = match pipeline {
+        let (head, page) = first.expect("every poll fetches a first page");
+        let skipped_accepted = page
+            .project
+            .and_then(|project| project.allow_merge_on_skipped_pipeline)
+            .unwrap_or(false);
+        let ci = match page.head_pipeline {
             Some(pipeline)
-                if self.built_on(&head, &pipeline, project_id, target, deadline, hints)? =>
+                if self.built_on(
+                    &head,
+                    &pipeline,
+                    page.project_id,
+                    &target.host,
+                    deadline,
+                    hints,
+                )? =>
             {
                 Some(ci(&pipeline, jobs.nodes, &target.url, skipped_accepted))
             }
@@ -258,16 +256,14 @@ impl<E: Exec> GitLab<'_, E> {
             head: Some(head),
             merge: None,
             reviews,
-            state: state.into(),
+            state: page.state.into(),
             state_changed_at: None,
             state_changed_by: None,
             threads,
             url: target.url.clone(),
         })
     }
-}
 
-impl<E: Exec> GitLab<'_, E> {
     /// Whether `pipeline` ran `head`: on it, or on a merge commit whose second parent it is,
     /// which only REST lists.
     fn built_on(
@@ -275,23 +271,21 @@ impl<E: Exec> GitLab<'_, E> {
         head: &str,
         pipeline: &HeadPipeline,
         project_id: u64,
-        target: &Target,
+        host: &str,
         deadline: Option<SystemTime>,
         hints: &mut Hints,
     ) -> Result<bool, Failure> {
         if pipeline.sha == head {
             return Ok(true);
         }
-        let merged = matches!(
-            pipeline.merge_request_event_type.as_deref(),
-            Some(MERGED_RESULT | MERGE_TRAIN)
-        );
-        if !merged {
+        if !pipeline.may_build(head) {
             return Ok(false);
         }
-        let path = format!("projects/{project_id}/repository/commits/{}", pipeline.sha);
-        let (response, pacing) =
-            self.call(&["api", "-i", "--hostname", &target.host, &path], deadline)?;
+        let path = format!(
+            "projects/{project_id}/repository/commits/{}?stats=false",
+            pipeline.sha,
+        );
+        let (response, pacing) = self.call(&["api", "-i", "--hostname", host, &path], deadline)?;
         *hints = hints.merge(pacing);
         let commit: Commit = decode(&response.body)?;
         Ok(commit
@@ -306,11 +300,10 @@ impl<E: Exec> GitLab<'_, E> {
 fn ci(pipeline: &HeadPipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: bool) -> Ci {
     let origin = web_origin(target_url);
     // Jobs held behind a blocking manual job stay created while the pipeline waits on it.
-    let blocked = pipeline.status == STATUS_MANUAL;
+    let blocked = pipeline.status == CI_MANUAL;
     let mut checks: Vec<_> = jobs
         .into_iter()
-        .filter(|job| !(job.status == STATUS_MANUAL && job.allow_failure))
-        .filter(|job| !(blocked && job.status == STATUS_CREATED))
+        .filter(|job| !(blocked && job.status == CI_CREATED))
         .map(|job| Check {
             assessment: job_assessment(&job.status),
             conclusion: job.status.to_ascii_lowercase(),
@@ -320,7 +313,7 @@ fn ci(pipeline: &HeadPipeline, jobs: Vec<Job>, target_url: &str, skipped_accepte
             url: job.web_path.map(|path| format!("{origin}{path}")),
         })
         .collect();
-    if pipeline.status == STATUS_SKIPPED {
+    if pipeline.status == CI_SKIPPED {
         checks.push(Check {
             assessment: if skipped_accepted {
                 Assessment::Passed
@@ -343,9 +336,9 @@ fn ci(pipeline: &HeadPipeline, jobs: Vec<Job>, target_url: &str, skipped_accepte
 /// A status this mapping doesn't know is unsettled.
 fn job_assessment(status: &str) -> Assessment {
     match status {
-        "SKIPPED" | "SUCCESS" => Assessment::Passed,
+        CI_SKIPPED | "SUCCESS" => Assessment::Passed,
         "CANCELED" | "FAILED" => Assessment::Failed,
-        STATUS_MANUAL => Assessment::Waiting,
+        CI_MANUAL => Assessment::Waiting,
         _ => Assessment::Pending,
     }
 }
@@ -463,14 +456,6 @@ fn fatal(kind: ErrorKind, message: &str) -> Failure {
     Failure::fatal(Forge::GitLab, kind, message)
 }
 
-struct FirstPage {
-    head: String,
-    pipeline: Option<HeadPipeline>,
-    project_id: u64,
-    skipped_accepted: bool,
-    state: State,
-}
-
 #[derive(Deserialize)]
 struct Commit {
     parent_ids: Vec<String>,
@@ -535,6 +520,25 @@ struct HeadPipeline {
     path: String,
     sha: String,
     status: String,
+}
+
+impl MergeRequestPage {
+    fn pipeline_id(&self) -> Option<&str> {
+        self.head_pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.id.as_str())
+    }
+}
+
+impl HeadPipeline {
+    /// Whether the pipeline ran `head`, or may have through a merge commit only REST can show.
+    fn may_build(&self, head: &str) -> bool {
+        self.sha == head
+            || matches!(
+                self.merge_request_event_type.as_deref(),
+                Some(MERGED_RESULT | MERGE_TRAIN)
+            )
+    }
 }
 
 #[derive(Deserialize)]
@@ -690,11 +694,11 @@ mod tests {
             .map(|(poll, _)| poll)
     }
 
-    /// The recorded poll, its merged-results pipeline sending it on to the merge commit.
-    fn recorded() -> [(String, Result<Output, exec::Error>); 2] {
+    /// The recorded poll, its merged-results pipeline sending it on to `commit`.
+    fn recorded(commit: &str) -> [(String, Result<Output, exec::Error>); 2] {
         [
             graphql("", include_str!("gitlab/fixtures/poll.http")),
-            commit_lookup(include_str!("gitlab/fixtures/commit.http")),
+            commit_lookup(commit),
         ]
     }
 
@@ -791,7 +795,7 @@ mod tests {
 
     #[test]
     fn maps_resolvable_threads_and_replyable_comments() {
-        let poll = poll_with(recorded()).unwrap();
+        let poll = poll_with(recorded(include_str!("gitlab/fixtures/commit.http"))).unwrap();
 
         assert_eq!(poll.head.as_deref(), Some(HEAD));
         assert_eq!(poll.state, TargetState::Open);
@@ -868,7 +872,7 @@ mod tests {
     }
     #[test]
     fn maps_approvals_and_reviewer_states_to_reviews() {
-        let poll = poll_with(recorded()).unwrap();
+        let poll = poll_with(recorded(include_str!("gitlab/fixtures/commit.http"))).unwrap();
 
         let reviews: Vec<_> = poll
             .reviews
@@ -894,7 +898,7 @@ mod tests {
 
     #[test]
     fn stitches_pages_into_the_poll_one_page_would_give() {
-        let one_page = poll_with(recorded());
+        let one_page = poll_with(recorded(include_str!("gitlab/fixtures/commit.http")));
 
         let stitched = poll_with(
             paged(include_str!("gitlab/fixtures/poll_page_2.http"))
@@ -928,9 +932,7 @@ mod tests {
     fn judges_a_merged_results_pipeline_whose_merge_commit_has_the_head_as_second_parent() {
         let ci = recorded_ci(include_str!("gitlab/fixtures/commit.http")).unwrap();
 
-        let names: Vec<_> = ci.checks.iter().map(|check| check.name.as_str()).collect();
-        assert!(!names.contains(&"govulncheck"), "{names:?}");
-        assert_eq!(names.len(), 15);
+        assert_eq!(ci.checks.len(), 18);
         let unit = ci.checks.iter().find(|check| check.name == "tests:unit");
         assert_eq!(
             unit,
@@ -984,6 +986,7 @@ mod tests {
                 ("test", true, Assessment::Passed),
                 ("lint", false, Assessment::Failed),
                 ("deploy", true, Assessment::Waiting),
+                ("review-app", false, Assessment::Waiting),
             ],
         );
         assert_eq!(ci.colour(), Some(Colour::Amber));
@@ -1028,17 +1031,13 @@ mod tests {
 
     fn commit_lookup(stdout: &str) -> (String, Result<Output, exec::Error>) {
         let call = format!(
-            "glab api -i --hostname gitlab.com projects/34675721/repository/commits/{MERGE_SHA}"
+            "glab api -i --hostname gitlab.com projects/34675721/repository/commits/{MERGE_SHA}?stats=false"
         );
         (call, Ok(Output::exited(0, stdout)))
     }
 
     fn recorded_ci(commit: &str) -> Option<Ci> {
-        let poll = poll_with([
-            graphql("", include_str!("gitlab/fixtures/poll.http")),
-            commit_lookup(commit),
-        ]);
-        poll.unwrap().ci
+        poll_with(recorded(commit)).unwrap().ci
     }
 
     /// The recorded poll with its head pipeline, built on the head, replaced by `pipeline`.
