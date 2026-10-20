@@ -63,8 +63,11 @@ pub fn parse_name(given: &str) -> Result<Name, String> {
 }
 
 pub fn parse(given: &str) -> Result<Reference, String> {
-    let invalid =
-        || format!("`{given}` is not a GitHub pull request or issue, or GitLab merge request, URL");
+    let invalid = || {
+        format!(
+            "`{given}` is not a GitHub pull request or issue, or GitLab merge request or issue, URL"
+        )
+    };
     let rest = given
         .strip_prefix("https://")
         .or_else(|| given.strip_prefix("http://"))
@@ -74,6 +77,9 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     }
     let segments: Vec<_> = rest.split('/').collect();
     let (forge, kind, host, project, number) = match &segments[..] {
+        [host, project @ .., "-", "issues", number] if project.len() >= 2 => {
+            (Forge::GitLab, TargetKind::Issue, *host, project, *number)
+        }
         [host, project @ .., "-", "merge_requests", number] if project.len() >= 2 => (
             Forge::GitLab,
             TargetKind::ChangeRequest,
@@ -215,6 +221,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_a_gitlab_issue_url() {
+        assert_eq!(
+            parse_name("https://gitlab.com/g/sub/p/-/issues/12"),
+            Ok(Name::Url(Reference {
+                forge: Forge::GitLab,
+                given: "https://gitlab.com/g/sub/p/-/issues/12".to_owned(),
+                host: "gitlab.com".to_owned(),
+                kind: TargetKind::Issue,
+                number: 12,
+                project: "g/sub/p".to_owned(),
+            })),
+        );
+    }
+
+    #[test]
     fn rejects_a_port_on_a_github_url() {
         let error = parse_name("https://ghe.example.com:8443/o/r/pull/12").unwrap_err();
 
@@ -294,6 +315,9 @@ mod tests {
             "https://gitlab.com/g/p/-/merge_requests/012",
             "https://gitlab.com/g//p/-/merge_requests/12",
             "https://gitlab.com/g/p/-/merge_requests/12#note_1",
+            "https://gitlab.com/g/p/-/issues/12/",
+            "https://gitlab.com/g/p/-/issues/012",
+            "https://gitlab.com/g/p/-/issues/12#note_1",
         ] {
             assert!(parse_name(given).is_err(), "{given}");
         }

@@ -10,6 +10,9 @@ query (
   $reviewersAfter: String
 ) {
   mergeRequest(id: $id) {
+    closedAt
+    conflicts
+    detailedMergeStatus
     diffHeadSha
     headPipeline {
       id
@@ -31,10 +34,15 @@ query (
       sha
       status
     }
+    mergeUser {
+      ...user
+    }
+    mergedAt
     project {
       allowMergeOnSkippedPipeline
     }
     projectId
+    shouldBeRebased
     state
     approvedBy(first: 100, after: $approversAfter) @include(if: $approvers) {
       pageInfo {

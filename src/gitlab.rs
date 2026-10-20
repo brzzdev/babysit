@@ -6,8 +6,8 @@ use serde::de::DeserializeOwned;
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::Exec;
 use crate::forge::{
-    Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Poll, Position, Review,
-    ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
+    Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Merge, Poll, Position,
+    Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
 use crate::graphql::{Connection, Paged, same_head};
 use crate::reference::Reference;
@@ -21,6 +21,8 @@ const HEADER_RATE_LIMIT_NAME: &str = "ratelimit-name";
 const HEADER_REMAINING: &str = "ratelimit-remaining";
 const HEADER_RESET: &str = "ratelimit-reset";
 const HEADER_RETRY_AFTER: &str = "retry-after";
+const ISSUE_GID: &str = "gid://gitlab/Issue/";
+const ISSUE_POLL_QUERY: &str = include_str!("gitlab/issue_poll.graphql");
 const MERGED_RESULT: &str = "MERGED_RESULT";
 const MERGE_REQUEST_GID: &str = "gid://gitlab/MergeRequest/";
 const MERGE_TRAIN: &str = "MERGE_TRAIN";
@@ -118,8 +120,12 @@ impl<E: Exec> Backend for GitLab<'_, E> {
         reference: &Reference,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
+        let (resource, global_id) = match reference.kind {
+            TargetKind::ChangeRequest => ("merge_requests", MERGE_REQUEST_GID),
+            TargetKind::Issue => ("issues", ISSUE_GID),
+        };
         let path = format!(
-            "projects/{}/merge_requests/{}",
+            "projects/{}/{resource}/{}",
             reference.project.replace('/', "%2F"),
             reference.number,
         );
@@ -127,14 +133,13 @@ impl<E: Exec> Backend for GitLab<'_, E> {
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
         )?;
-        let merge_request: MergeRequest =
-            decode(&response.body).map_err(|failure| failure.paced(hints))?;
+        let found: RestTarget = decode(&response.body).map_err(|failure| failure.paced(hints))?;
         let target = Target {
             forge: Forge::GitLab,
-            forge_id: format!("{MERGE_REQUEST_GID}{}", merge_request.id),
+            forge_id: format!("{global_id}{}", found.id),
             host: reference.host.clone(),
-            kind: TargetKind::ChangeRequest,
-            url: merge_request.web_url,
+            kind: reference.kind,
+            url: found.web_url,
         };
         Ok((target, hints))
     }
@@ -145,7 +150,11 @@ impl<E: Exec> Backend for GitLab<'_, E> {
         deadline: Option<SystemTime>,
     ) -> Result<(Poll, Hints), Failure> {
         let mut hints = Hints::default();
-        match self.poll_pages(target, deadline, &mut hints) {
+        let polled = match target.kind {
+            TargetKind::ChangeRequest => self.poll_pages(target, deadline, &mut hints),
+            TargetKind::Issue => self.poll_issue(target, deadline, &mut hints),
+        };
+        match polled {
             Ok(poll) => Ok((poll, hints)),
             Err(failure) => Err(failure.paced(hints)),
         }
@@ -240,7 +249,7 @@ impl<E: Exec> GitLab<'_, E> {
         let mut reviews: Vec<_> = approvers
             .nodes
             .into_iter()
-            .map(|user| standing(target, user, ReviewState::Approved))
+            .map(|user| reviewer_standing(target, user, ReviewState::Approved))
             .collect();
         reviews.extend(reviewers.nodes.into_iter().filter_map(|reviewer| {
             let state = match reviewer.merge_request_interaction?.review_state.as_str() {
@@ -248,18 +257,57 @@ impl<E: Exec> GitLab<'_, E> {
                 REVIEW_STATE_REVIEWED => ReviewState::Commented,
                 _ => return None,
             };
-            Some(standing(target, reviewer.user, state))
+            Some(reviewer_standing(target, reviewer.user, state))
         }));
+        let merge = page.standing.merge();
+        let state = page.standing.lifecycle.state.into();
+        let (state_changed_at, state_changed_by) = page.standing.change();
         Ok(Poll {
             ci,
             comments,
             head: Some(head),
-            merge: None,
+            merge,
             reviews,
-            state: page.state.into(),
-            state_changed_at: None,
-            state_changed_by: None,
+            state,
+            state_changed_at,
+            state_changed_by,
             threads,
+            url: target.url.clone(),
+        })
+    }
+
+    /// Pages the issue's notes to their end.
+    fn poll_issue(
+        &self,
+        target: &Target,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Poll, Failure> {
+        let mut notes = Paged::new(Forge::GitLab, "notes");
+        let lifecycle = loop {
+            let mut variables = vec![("-f", format!("id={}", target.forge_id))];
+            variables.extend(notes.variable());
+            let data: IssueData =
+                self.graphql(&target.host, ISSUE_POLL_QUERY, &variables, deadline, hints)?;
+            let page = data.issue.ok_or_else(|| gone(target))?;
+            notes.take(Some(page.notes))?;
+            if notes.done() {
+                break page.lifecycle;
+            }
+        };
+        let state = lifecycle.state.into();
+        let (state_changed_at, state_changed_by) = lifecycle.change();
+        Ok(Poll {
+            ci: None,
+            // An issue's resolvable discussions never become threads.
+            comments: notes.nodes.into_iter().map(reply).collect(),
+            head: None,
+            merge: None,
+            reviews: Vec::new(),
+            state,
+            state_changed_at,
+            state_changed_by,
+            threads: Vec::new(),
             url: target.url.clone(),
         })
     }
@@ -367,40 +415,32 @@ fn web_origin(url: &str) -> &str {
 fn conversation(notes: Vec<Note>) -> (Vec<Comment>, Vec<Thread>) {
     let mut comments = Vec::new();
     let mut threads: Vec<Thread> = Vec::new();
-    for note in notes {
-        let discussion = note.discussion;
-        let discussion_id = rest_id(&discussion.id).to_owned();
-        let comment = Comment {
-            actor: note.author.map(Account::from),
-            at: note.created_at,
-            body: note.body,
-            edited_at: note.last_edited_at,
-            editor: note.last_edited_by.map(Account::from),
-            id: rest_id(&note.id).to_owned(),
-            reply_to: None,
-            review_id: None,
-            url: note.url,
-        };
-        if !discussion.resolvable {
-            comments.push(Comment {
-                reply_to: Some(discussion_id),
-                ..comment
-            });
+    for mut note in notes {
+        if !note.discussion.resolvable {
+            comments.push(reply(note));
             continue;
         }
+        let discussion_id = rest_id(&note.discussion.id).to_owned();
+        let resolved = note.discussion.resolved;
+        let resolved_by = note.discussion.resolved_by.take();
+        let position = note.position.take();
+        let comment = Comment {
+            reply_to: None,
+            ..reply(note)
+        };
         if let Some(thread) = threads.iter_mut().find(|thread| thread.id == discussion_id) {
             thread.comments.push(comment);
             continue;
         }
         threads.push(Thread {
             id: discussion_id.clone(),
-            position: note.position.map(|position| Position {
+            position: position.map(|position| Position {
                 line: position.new_line.or(position.old_line),
                 path: position.file_path,
             }),
             reply_to: discussion_id,
-            resolved: discussion.resolved,
-            resolved_by: discussion.resolved_by.map(Account::from),
+            resolved,
+            resolved_by: resolved_by.map(Account::from),
             url: comment.url.clone(),
             comments: vec![comment],
         });
@@ -408,9 +448,24 @@ fn conversation(notes: Vec<Note>) -> (Vec<Comment>, Vec<Thread>) {
     (comments, threads)
 }
 
+/// The note as a comment replying to its discussion.
+fn reply(note: Note) -> Comment {
+    Comment {
+        actor: note.author.map(Account::from),
+        at: note.created_at,
+        body: note.body,
+        edited_at: note.last_edited_at,
+        editor: note.last_edited_by.map(Account::from),
+        id: rest_id(&note.id).to_owned(),
+        reply_to: Some(rest_id(&note.discussion.id).to_owned()),
+        review_id: None,
+        url: note.url,
+    }
+}
+
 /// A reviewer's standing as a review: GitLab neither times it nor gives it an id, and an approval
 /// lapses when it leaves the approver list.
-fn standing(target: &Target, user: User, state: ReviewState) -> Review {
+fn reviewer_standing(target: &Target, user: User, state: ReviewState) -> Review {
     let id = format!("{state:?}:{}", user.id);
     Review {
         actor: Some(user.into()),
@@ -472,8 +527,9 @@ struct Commit {
     parent_ids: Vec<String>,
 }
 
+/// A merge request or issue as REST reports it.
 #[derive(Deserialize)]
-struct MergeRequest {
+struct RestTarget {
     id: u64,
     web_url: String,
 }
@@ -498,6 +554,11 @@ struct Data {
 }
 
 #[derive(Deserialize)]
+struct IssueData {
+    issue: Option<IssuePage>,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ViewerData {
     current_user: Option<Viewer>,
@@ -519,6 +580,28 @@ struct MergeRequestPage {
     project: Option<Project>,
     project_id: u64,
     reviewers: Option<Connection<Reviewer>>,
+    #[serde(flatten)]
+    standing: Standing,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Standing {
+    conflicts: bool,
+    /// `None` on an instance too old to report it.
+    detailed_merge_status: Option<String>,
+    #[serde(flatten)]
+    lifecycle: Lifecycle,
+    merge_user: Option<User>,
+    merged_at: Option<String>,
+    should_be_rebased: bool,
+}
+
+/// GitLab records when a target closed, but not who closed it or when it reopened.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Lifecycle {
+    closed_at: Option<String>,
     state: State,
 }
 
@@ -565,6 +648,13 @@ struct Job {
 #[serde(rename_all = "camelCase")]
 struct Project {
     allow_merge_on_skipped_pipeline: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct IssuePage {
+    #[serde(flatten)]
+    lifecycle: Lifecycle,
+    notes: Connection<Note>,
 }
 
 #[derive(Deserialize)]
@@ -619,8 +709,8 @@ struct User {
     username: String,
 }
 
-/// `locked` is a merge in progress, so the merge request is still open.
-#[derive(Deserialize)]
+/// `locked` is a merge in progress or an issue locked to comments, so the target is still open.
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum State {
     Closed,
@@ -635,6 +725,36 @@ impl From<User> for Account {
             bot: Some(user.bot),
             id: Some(user.id),
             login: user.username,
+        }
+    }
+}
+
+impl Standing {
+    /// `None` while GitLab is still computing it. The detailed status names only the first
+    /// failing check, so a conflict or required rebase behind a draft or a missing approval is
+    /// read from its own field.
+    fn merge(&self) -> Option<Merge> {
+        match self.detailed_merge_status.as_deref()? {
+            "CHECKING" | "PREPARING" | "UNCHECKED" => None,
+            _ if self.conflicts => Some(Merge::Conflicted),
+            _ if self.should_be_rebased => Some(Merge::Behind),
+            _ => Some(Merge::Clean),
+        }
+    }
+
+    fn change(self) -> (Option<String>, Option<Account>) {
+        if matches!(self.lifecycle.state, State::Merged) {
+            return (self.merged_at, self.merge_user.map(Account::from));
+        }
+        self.lifecycle.change()
+    }
+}
+
+impl Lifecycle {
+    fn change(self) -> (Option<String>, Option<Account>) {
+        match self.state {
+            State::Closed => (self.closed_at, None),
+            State::Locked | State::Merged | State::Opened => (None, None),
         }
     }
 }
@@ -681,16 +801,28 @@ mod tests {
     }
 
     fn resolve_with(stdout: &str, code: i32) -> Result<Target, Failure> {
-        let exec = Script::new([(RESOLVE.to_owned(), Ok(Output::exited(code, stdout)))]);
+        resolve_url(URL, RESOLVE, stdout, code)
+    }
+
+    fn resolve_url(url: &str, call: &str, stdout: &str, code: i32) -> Result<Target, Failure> {
+        let exec = Script::new([(call.to_owned(), Ok(Output::exited(code, stdout)))]);
         GitLab::new(&exec)
-            .resolve(&reference::parse(URL).unwrap(), None)
+            .resolve(&reference::parse(url).unwrap(), None)
             .map(|(target, _)| target)
     }
 
     fn graphql(variables: &str, stdout: &str) -> (String, Result<Output, exec::Error>) {
+        query_call(POLL_QUERY, FORGE_ID, variables, stdout)
+    }
+
+    fn query_call(
+        query: &str,
+        id: &str,
+        variables: &str,
+        stdout: &str,
+    ) -> (String, Result<Output, exec::Error>) {
         let call = format!(
-            "glab api -i --hostname gitlab.com graphql -f query={POLL_QUERY} -f id={FORGE_ID}\
-             {variables}"
+            "glab api -i --hostname gitlab.com graphql -f query={query} -f id={id}{variables}"
         );
         (call, Ok(Output::exited(0, stdout)))
     }
@@ -698,10 +830,15 @@ mod tests {
     fn poll_with(
         calls: impl IntoIterator<Item = (String, Result<Output, exec::Error>)>,
     ) -> Result<Poll, Failure> {
+        poll_target(&target(), calls)
+    }
+
+    fn poll_target(
+        target: &Target,
+        calls: impl IntoIterator<Item = (String, Result<Output, exec::Error>)>,
+    ) -> Result<Poll, Failure> {
         let exec = Script::new(calls);
-        GitLab::new(&exec)
-            .poll(&target(), None)
-            .map(|(poll, _)| poll)
+        GitLab::new(&exec).poll(target, None).map(|(poll, _)| poll)
     }
 
     /// The recorded poll, its merged-results pipeline sending it on to `commit`.
@@ -720,6 +857,27 @@ mod tests {
                 second,
             ),
         ]
+    }
+
+    fn issue() -> Target {
+        Target {
+            forge_id: format!("{ISSUE_GID}198218557"),
+            kind: TargetKind::Issue,
+            url: "https://gitlab.com/gitlab-org/cli/-/work_items/8510".to_owned(),
+            ..target()
+        }
+    }
+
+    /// Polls `target` with one reply to `query`.
+    fn poll_one(target: &Target, query: &str, stdout: &str) -> Poll {
+        poll_target(target, [query_call(query, &target.forge_id, "", stdout)]).unwrap()
+    }
+
+    fn merge_request(id: &str) -> Target {
+        Target {
+            forge_id: format!("{MERGE_REQUEST_GID}{id}"),
+            ..target()
+        }
     }
 
     fn kind(failure: &Failure) -> ErrorKind {
@@ -1109,5 +1267,140 @@ mod tests {
             "status": status,
             "webPath": format!("/gitlab-org/cli/-/jobs/{id}"),
         })
+    }
+
+    #[test]
+    fn resolves_an_issue_to_its_web_url_and_global_id() {
+        let resolved = resolve_url(
+            "https://gitlab.com/gitlab-org/cli/-/issues/8510",
+            "glab api -i --hostname gitlab.com projects/gitlab-org%2Fcli/issues/8510",
+            include_str!("gitlab/fixtures/resolve_issue.http"),
+            0,
+        );
+
+        assert_eq!(resolved.unwrap(), issue());
+    }
+
+    #[test]
+    fn a_moved_issue_polls_as_closed_with_even_resolvable_notes_as_comments() {
+        let resolvable = include_str!("gitlab/fixtures/issue_poll.http")
+            .replace(r#""resolvable":false"#, r#""resolvable":true"#);
+
+        let poll = poll_one(&issue(), ISSUE_POLL_QUERY, &resolvable);
+
+        assert_eq!(
+            (
+                poll.head,
+                poll.state,
+                poll.state_changed_at,
+                poll.state_changed_by
+            ),
+            (
+                None,
+                TargetState::Closed,
+                Some("2026-08-26T18:26:37Z".to_owned()),
+                None
+            ),
+        );
+        assert_eq!(poll.threads, []);
+        let comments: Vec<_> = poll
+            .comments
+            .iter()
+            .map(|comment| (comment.id.as_str(), comment.reply_to.as_deref()))
+            .collect();
+        assert_eq!(
+            comments,
+            [
+                (
+                    "3718419876",
+                    Some("316c04ca905dd31c1301cd74435c0b0cb6574693")
+                ),
+                (
+                    "3718420850",
+                    Some("18602a6353ea3e1bfa51e9875d95f9f390a1fa84")
+                ),
+                (
+                    "3740922557",
+                    Some("47f61eae8ef5b4973e8caadccfb2ea3320a26133")
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_merged_merge_request_records_who_merged_it_and_when() {
+        let target = merge_request("551223307");
+        let commit = (
+            "glab api -i --hostname gitlab.com projects/34675721/repository/commits/\
+             ec1adbb9c1edbf4afe2d3ef394ac1b5855a3d0fa?stats=false"
+                .to_owned(),
+            Ok(Output::exited(
+                0,
+                include_str!("gitlab/fixtures/commit_merged.http"),
+            )),
+        );
+        let stdout = include_str!("gitlab/fixtures/poll_merged.http");
+
+        let poll = poll_target(
+            &target,
+            [query_call(POLL_QUERY, &target.forge_id, "", stdout), commit],
+        )
+        .unwrap();
+
+        assert_eq!(poll.state, TargetState::Merged);
+        assert_eq!(
+            poll.state_changed_at.as_deref(),
+            Some("2026-10-19T23:03:24Z")
+        );
+        assert_eq!(
+            poll.state_changed_by.map(|account| account.login),
+            Some("phikai".to_owned()),
+        );
+    }
+
+    #[test]
+    fn reads_a_conflict_or_rebase_behind_another_blocker_and_holds_while_computing() {
+        let stdout = include_str!("gitlab/fixtures/poll_conflict.http");
+        let target = merge_request("546745527");
+
+        let merges: Vec<_> = [
+            ("CONFLICT", true, false),
+            ("DRAFT_STATUS", true, false),
+            ("NEED_REBASE", false, true),
+            ("NOT_APPROVED", false, true),
+            ("CHECKING", true, false),
+            ("UNCHECKED", true, false),
+            ("PREPARING", true, false),
+            ("MERGEABLE", false, false),
+        ]
+        .into_iter()
+        .map(|(status, conflicts, rebase)| {
+            let stdout = stdout
+                .replace(r#""CONFLICT""#, &format!(r#""{status}""#))
+                .replace(
+                    r#""conflicts":true"#,
+                    &format!(r#""conflicts":{conflicts}"#),
+                )
+                .replace(
+                    r#""shouldBeRebased":false"#,
+                    &format!(r#""shouldBeRebased":{rebase}"#),
+                );
+            poll_one(&target, POLL_QUERY, &stdout).merge
+        })
+        .collect();
+
+        assert_eq!(
+            merges,
+            [
+                Some(Merge::Conflicted),
+                Some(Merge::Conflicted),
+                Some(Merge::Behind),
+                Some(Merge::Behind),
+                None,
+                None,
+                None,
+                Some(Merge::Clean),
+            ],
+        );
     }
 }
