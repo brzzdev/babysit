@@ -60,8 +60,7 @@ fn is_authority(authority: &str) -> bool {
     host.split('.').all(label_is_valid) && port.is_none_or(port_is_valid)
 }
 
-/// An owner or repository name: letters, digits, `-`, `_` and `.`, but never `.` or `..`, which
-/// would rewrite the API path.
+/// An owner or repository name, never `.` or `..`.
 fn is_name(segment: &str) -> bool {
     !segment.is_empty()
         && segment != "."
