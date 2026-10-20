@@ -122,6 +122,17 @@ impl Script {
 }
 
 #[cfg(test)]
+impl Output {
+    pub fn exited(code: i32, stdout: &str) -> Self {
+        Self {
+            code: Some(code),
+            stderr: String::new(),
+            stdout: stdout.to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
 impl Exec for Script {
     fn run(
         &self,

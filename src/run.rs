@@ -182,7 +182,7 @@ mod tests {
 
     use super::*;
     use crate::envelope::Forge;
-    use crate::exec::{self, Output, Script};
+    use crate::exec::{Output, Script};
     use crate::forge::{Failure, Poll, poll};
     use crate::reference::{self, Reference};
 
@@ -501,21 +501,14 @@ mod tests {
             target: reference::parse_name(given).unwrap(),
             ..args(&sandbox.snapshot(), None)
         };
-        let no_token = || -> Result<Output, exec::Error> {
-            Ok(Output {
-                code: Some(1),
-                stderr: String::new(),
-                stdout: String::new(),
-            })
-        };
         let exec = Script::new([
             (
                 "gh auth token --hostname forge.example.com".to_owned(),
-                no_token(),
+                Ok(Output::exited(1, "")),
             ),
             (
                 "glab config get token --host forge.example.com".to_owned(),
-                no_token(),
+                Ok(Output::exited(1, "")),
             ),
         ]);
         let clock = FakeClock(Cell::new(UNIX_EPOCH + Duration::from_secs(STARTED)));

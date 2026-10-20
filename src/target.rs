@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::time::SystemTime;
@@ -26,7 +25,7 @@ pub enum Error {
 /// Works out which project a name means and which forge its host belongs to, asking each host's
 /// CLIs at most once per run.
 pub struct Locator<'a, E> {
-    claims: RefCell<HashMap<String, Claim>>,
+    claims: HashMap<String, Claim>,
     deadline: Option<SystemTime>,
     exec: &'a E,
 }
@@ -49,13 +48,13 @@ struct Remote {
 impl<'a, E: Exec> Locator<'a, E> {
     pub fn new(exec: &'a E, deadline: Option<SystemTime>) -> Self {
         Self {
-            claims: RefCell::default(),
+            claims: HashMap::new(),
             deadline,
             exec,
         }
     }
 
-    pub fn locate(&self, name: &Name) -> Result<Reference, Error> {
+    pub fn locate(&mut self, name: &Name) -> Result<Reference, Error> {
         match name {
             Name::Checkout { given, number } => self.locate_in_checkout(given, *number),
             Name::Url(reference) => match self.claim(&reference.host)? {
@@ -73,13 +72,13 @@ impl<'a, E: Exec> Locator<'a, E> {
         }
     }
 
-    fn claim(&self, host: &str) -> Result<Claim, Error> {
+    fn claim(&mut self, host: &str) -> Result<Claim, Error> {
         match host {
             GITHUB_HOST => return Ok(Claim::GitHub),
             GITLAB_HOST => return Ok(Claim::GitLab),
             _ => {}
         }
-        if let Some(claim) = self.claims.borrow().get(host) {
+        if let Some(claim) = self.claims.get(host) {
             return Ok(*claim);
         }
         let github = self
@@ -94,13 +93,13 @@ impl<'a, E: Exec> Locator<'a, E> {
             (false, true) => Claim::GitLab,
             (false, false) => Claim::Neither,
         };
-        self.claims.borrow_mut().insert(host.to_owned(), claim);
+        self.claims.insert(host.to_owned(), claim);
         Ok(claim)
     }
 
     /// The project `gh pr view` would use: the default `gh repo set-default` chose, else the only
     /// GitHub remote.
-    fn locate_in_checkout(&self, given: &str, number: u64) -> Result<Reference, Error> {
+    fn locate_in_checkout(&mut self, given: &str, number: u64) -> Result<Reference, Error> {
         let usage = |reason: &str| {
             Error::Usage(format!("`{given}` {reason}; pass the target's URL instead"))
         };
@@ -123,13 +122,12 @@ impl<'a, E: Exec> Locator<'a, E> {
                 Claim::Neither => {}
             }
         }
-        if gitlab && !github.is_empty() {
-            return Err(usage(
-                "is ambiguous in a checkout with GitHub and GitLab remotes",
-            ));
-        }
         if gitlab {
-            return Err(usage("names a GitLab issue, which babysit can't watch yet"));
+            return Err(usage(if github.is_empty() {
+                "names a GitLab issue, which babysit can't watch yet"
+            } else {
+                "is ambiguous in a checkout with GitHub and GitLab remotes"
+            }));
         }
         let resolved = self
             .call(
@@ -142,7 +140,7 @@ impl<'a, E: Exec> Locator<'a, E> {
             Some(default) => default,
             None => match &github[..] {
                 [] => return Err(usage("needs a checkout with a GitHub remote")),
-                [only] => (&only.host, only.path.as_str()),
+                [only] => (only.host.as_str(), only.path.as_str()),
                 _ => {
                     return Err(usage(
                         "is ambiguous with several GitHub remotes and no `gh repo set-default`",
@@ -158,7 +156,7 @@ impl<'a, E: Exec> Locator<'a, E> {
         };
         Ok(Reference {
             given: given.to_owned(),
-            host: host.clone(),
+            host: host.to_owned(),
             number,
             owner: owner.to_owned(),
             repo: repo.to_owned(),
@@ -191,15 +189,17 @@ fn claimed_by_both(host: &str) -> Error {
 }
 
 /// The host and project path of the remote `gh repo set-default` chose, among `github`.
-fn default_remote<'r>(resolved: &'r str, github: &'r [Remote]) -> Option<(&'r String, &'r str)> {
+fn default_remote<'r>(resolved: &'r str, github: &'r [Remote]) -> Option<(&'r str, &'r str)> {
     resolved.lines().find_map(|line| {
         let (key, value) = line.split_once(' ')?;
         let name = key.strip_prefix("remote.")?.strip_suffix(".gh-resolved")?;
         let remote = github.iter().find(|remote| remote.name == name)?;
-        match value {
-            RESOLVED_BASE => Some((&remote.host, remote.path.as_str())),
-            project => Some((&remote.host, project)),
-        }
+        let path = if value == RESOLVED_BASE {
+            &remote.path
+        } else {
+            value
+        };
+        Some((remote.host.as_str(), path))
     })
 }
 
@@ -252,14 +252,6 @@ mod tests {
 
     const GH_RESOLVED: &str = r"git config --get-regexp ^remote\..*\.gh-resolved$";
 
-    fn exited(code: i32, stdout: &str) -> Output {
-        Output {
-            code: Some(code),
-            stderr: String::new(),
-            stdout: stdout.to_owned(),
-        }
-    }
-
     fn missing() -> Result<Output, exec::Error> {
         Err(exec::Error::Io(io::ErrorKind::NotFound.into()))
     }
@@ -270,7 +262,7 @@ mod tests {
             .map(|(name, url)| format!("{name}\t{url} (fetch)\n{name}\t{url} (push)\n"));
         (
             "git remote -v".to_owned(),
-            Ok(exited(0, &lines.collect::<String>())),
+            Ok(Output::exited(0, &lines.collect::<String>())),
         )
     }
 
@@ -278,11 +270,14 @@ mod tests {
         [
             (
                 format!("gh auth token --hostname {host}"),
-                Ok(exited(i32::from(!gh), if gh { "gho_x\n" } else { "" })),
+                Ok(Output::exited(
+                    i32::from(!gh),
+                    if gh { "gho_x\n" } else { "" },
+                )),
             ),
             (
                 format!("glab config get token --host {host}"),
-                Ok(exited(0, if glab { "glpat-x\n" } else { "" })),
+                Ok(Output::exited(0, if glab { "glpat-x\n" } else { "" })),
             ),
         ]
     }
@@ -307,11 +302,10 @@ mod tests {
 
     #[test]
     fn locates_the_only_github_remote() {
-        let script = Script::new(
-            [remotes(&[("origin", "git@github.com:o/r.git")])]
-                .into_iter()
-                .chain([(GH_RESOLVED.to_owned(), Ok(exited(1, "")))]),
-        );
+        let script = Script::new([
+            remotes(&[("origin", "git@github.com:o/r.git")]),
+            (GH_RESOLVED.to_owned(), Ok(Output::exited(1, ""))),
+        ]);
 
         assert_eq!(
             locate(&script, &checkout()),
@@ -328,7 +322,7 @@ mod tests {
             ]),
             (
                 GH_RESOLVED.to_owned(),
-                Ok(exited(0, "remote.upstream.gh-resolved base\n")),
+                Ok(Output::exited(0, "remote.upstream.gh-resolved base\n")),
             ),
         ]);
 
@@ -344,7 +338,7 @@ mod tests {
             remotes(&[("origin", "https://github.com/me/r")]),
             (
                 GH_RESOLVED.to_owned(),
-                Ok(exited(0, "remote.origin.gh-resolved o/parent\n")),
+                Ok(Output::exited(0, "remote.origin.gh-resolved o/parent\n")),
             ),
         ]);
 
@@ -364,7 +358,7 @@ mod tests {
             .into_iter()
             .chain(tokens("git.example.org", false, false))
             .chain(tokens("ghe.example.com:8443", true, false))
-            .chain([(GH_RESOLVED.to_owned(), Ok(exited(1, "")))]),
+            .chain([(GH_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
         );
 
         assert_eq!(
@@ -380,10 +374,10 @@ mod tests {
                 ("origin", "git@github.com:me/r.git"),
                 ("upstream", "git@github.com:o/r.git"),
             ]),
-            (GH_RESOLVED.to_owned(), Ok(exited(1, ""))),
+            (GH_RESOLVED.to_owned(), Ok(Output::exited(1, ""))),
         ]);
 
-        assert!(matches!(locate(&script, &checkout()), Err(Error::Usage(_)),));
+        assert!(matches!(locate(&script, &checkout()), Err(Error::Usage(_))));
     }
 
     #[test]
@@ -393,14 +387,14 @@ mod tests {
             ("gitlab", "git@gitlab.com:g/r.git"),
         ])]);
 
-        assert!(matches!(locate(&script, &checkout()), Err(Error::Usage(_)),));
+        assert!(matches!(locate(&script, &checkout()), Err(Error::Usage(_))));
     }
 
     #[test]
     fn rejects_a_reference_outside_a_checkout() {
-        let script = Script::new([("git remote -v".to_owned(), Ok(exited(128, "")))]);
+        let script = Script::new([("git remote -v".to_owned(), Ok(Output::exited(128, "")))]);
 
-        assert!(matches!(locate(&script, &checkout()), Err(Error::Usage(_)),));
+        assert!(matches!(locate(&script, &checkout()), Err(Error::Usage(_))));
     }
 
     #[test]
@@ -425,7 +419,7 @@ mod tests {
         let script = Script::new([
             (
                 "gh auth token --hostname ghe.example.com".to_owned(),
-                Ok(exited(0, "gho_x\n")),
+                Ok(Output::exited(0, "gho_x\n")),
             ),
             (
                 "glab config get token --host ghe.example.com".to_owned(),
@@ -469,7 +463,7 @@ mod tests {
             .chain(tokens("ghe.example.com", true, false))
             .chain([(
                 GH_RESOLVED.to_owned(),
-                Ok(exited(0, "remote.upstream.gh-resolved base\n")),
+                Ok(Output::exited(0, "remote.upstream.gh-resolved base\n")),
             )]),
         );
 
