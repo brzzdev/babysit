@@ -7,8 +7,8 @@ use serde::de::DeserializeOwned;
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::{self, CALL_LIMIT, Exec, Limit};
 use crate::forge::{
-    Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Poll, Review, ReviewState,
-    Target, TargetState, Thread,
+    Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Merge, Poll, Review,
+    ReviewState, Target, TargetState, Thread,
 };
 use crate::reference::Reference;
 use crate::response::{self, Response};
@@ -167,7 +167,7 @@ impl<E: Exec> GitHub<'_, E> {
         let mut dismissals = Paged::new("dismissals");
         let mut reviews = Paged::new("reviews");
         let mut threads = Paged::new("threads");
-        let mut first: Option<(String, State)> = None;
+        let mut first: Option<(String, Standing)> = None;
         let mut rollup_state = None;
         while !(checks.done()
             && comments.done()
@@ -199,7 +199,7 @@ impl<E: Exec> GitHub<'_, E> {
                         checks.page = Page::Done;
                     }
                     rollup_state = rollup.as_ref().map(|rollup| rollup.state.clone());
-                    first = Some((page.head_ref_oid, page.state));
+                    first = Some((page.head_ref_oid, page.standing));
                 }
                 Some((head, _)) => same_head(head, &page.head_ref_oid)?,
             }
@@ -209,7 +209,7 @@ impl<E: Exec> GitHub<'_, E> {
             reviews.take(page.reviews)?;
             threads.take(page.review_threads)?;
         }
-        let (head, state) = first.expect("every poll fetches a first page");
+        let (head, standing) = first.expect("every poll fetches a first page");
         let mut polled_threads = Vec::new();
         for node in threads.nodes {
             let comments = self.thread_comments(
@@ -222,16 +222,22 @@ impl<E: Exec> GitHub<'_, E> {
             )?;
             polled_threads.extend(thread(node.thread, comments));
         }
+        let merge = merge(&standing.mergeable, &standing.merge_state_status);
+        let state = standing.state.into();
+        let (state_changed_at, state_changed_by) = standing.change();
         Ok(Poll {
             ci: rollup_state.map(|state| ci(&state, &checks.nodes)),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
             head,
+            merge,
             reviews: reviews
                 .nodes
                 .into_iter()
                 .filter_map(|node| review(node, &dismissals.nodes))
                 .collect(),
-            state: state.into(),
+            state,
+            state_changed_at,
+            state_changed_by,
             threads: polled_threads,
             url: target.url.clone(),
         })
@@ -491,7 +497,34 @@ struct PullRequestPage {
     head_ref_oid: String,
     review_threads: Option<Connection<ThreadNode>>,
     reviews: Option<Connection<ReviewNode>>,
+    #[serde(flatten)]
+    standing: Standing,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Standing {
+    merge_state_status: String,
+    mergeable: String,
+    merged_at: Option<String>,
+    merged_by: Option<Author>,
     state: State,
+    /// The latest close or reopen, which is a merged pull request's close too.
+    state_changes: Nodes<StateChangeNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "__typename")]
+enum StateChangeNode {
+    ClosedEvent(StateChange),
+    ReopenedEvent(StateChange),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StateChange {
+    actor: Option<Author>,
+    created_at: String,
 }
 
 #[derive(Deserialize)]
@@ -674,7 +707,7 @@ enum Typename {
     Other,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum State {
     Closed,
@@ -869,6 +902,33 @@ fn status_assessment(state: &str) -> Assessment {
         "ERROR" | "FAILURE" => Assessment::Failed,
         EXPECTED => Assessment::Waiting,
         _ => Assessment::Pending,
+    }
+}
+
+impl Standing {
+    /// When and by whom the pull request entered its state; a latest event that doesn't match the
+    /// state names no one.
+    fn change(self) -> (Option<String>, Option<Account>) {
+        let latest = self.state_changes.nodes.into_iter().last();
+        let (at, by) = match (self.state, latest) {
+            (State::Merged, _) => (self.merged_at, self.merged_by),
+            (State::Closed, Some(StateChangeNode::ClosedEvent(change)))
+            | (State::Open, Some(StateChangeNode::ReopenedEvent(change))) => {
+                (Some(change.created_at), change.actor)
+            }
+            _ => (None, None),
+        };
+        (at, by.map(Account::from))
+    }
+}
+
+/// `None` while GitHub is still computing; `BEHIND` is GitHub requiring the head be updated.
+fn merge(mergeable: &str, merge_state_status: &str) -> Option<Merge> {
+    match (mergeable, merge_state_status) {
+        ("UNKNOWN", _) | (_, "UNKNOWN") => None,
+        ("CONFLICTING", _) => Some(Merge::Conflicted),
+        (_, "BEHIND") => Some(Merge::Behind),
+        _ => Some(Merge::Clean),
     }
 }
 
@@ -1171,11 +1231,14 @@ mod tests {
                     .to_owned(),
             }],
             head: HEAD.to_owned(),
+            merge: None,
             reviews: vec![
                 review("5590010588", "2026-10-20T18:52:30Z", Some(brzzdev())),
                 review("5590011214", "2026-10-20T18:52:33Z", Some(gitar())),
             ],
             state: TargetState::Merged,
+            state_changed_at: Some("2026-10-20T19:08:24Z".to_owned()),
+            state_changed_by: Some(brzzdev()),
             threads: vec![Thread {
                 comments: vec![
                     thread_comment(
@@ -1466,6 +1529,61 @@ mod tests {
         withdrawn.reviews[1].withdrawn_at = Some("2026-10-20T19:30:00Z".to_owned());
         withdrawn.reviews[1].withdrawn_by = Some(brzzdev());
         assert_eq!(poll, withdrawn);
+    }
+
+    #[test]
+    fn a_conflict_beats_being_behind_and_unknown_is_still_computing() {
+        let read = |mergeable: &str, status: &str| {
+            let fixture = include_str!("github/fixtures/poll.http").replace(
+                r#""mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN""#,
+                &format!(r#""mergeable":"{mergeable}","mergeStateStatus":"{status}""#),
+            );
+            poll_with([first_page(&fixture)]).unwrap().merge
+        };
+
+        assert_eq!(
+            [
+                read("MERGEABLE", "CLEAN"),
+                read("MERGEABLE", "BLOCKED"),
+                read("MERGEABLE", "BEHIND"),
+                read("CONFLICTING", "BEHIND"),
+                read("CONFLICTING", "DIRTY"),
+                read("MERGEABLE", "UNKNOWN"),
+            ],
+            [
+                Some(Merge::Clean),
+                Some(Merge::Clean),
+                Some(Merge::Behind),
+                Some(Merge::Conflicted),
+                Some(Merge::Conflicted),
+                None,
+            ],
+        );
+    }
+
+    #[test]
+    fn closing_and_reopening_are_attributed_to_their_timeline_events() {
+        let read = |state: &str, event: &str| {
+            let fixture = include_str!("github/fixtures/poll.http")
+                .replace(r#""state":"MERGED""#, &format!(r#""state":"{state}""#))
+                .replace(r#""ClosedEvent""#, &format!(r#""{event}""#));
+            let poll = poll_with([first_page(&fixture)]).unwrap();
+            (poll.state, poll.state_changed_at, poll.state_changed_by)
+        };
+        let changed = |state| {
+            (
+                state,
+                Some("2026-10-20T19:08:24Z".to_owned()),
+                Some(brzzdev()),
+            )
+        };
+
+        assert_eq!(read("CLOSED", "ClosedEvent"), changed(TargetState::Closed));
+        assert_eq!(read("OPEN", "ReopenedEvent"), changed(TargetState::Open));
+        assert_eq!(
+            read("CLOSED", "ReopenedEvent"),
+            (TargetState::Closed, None, None)
+        );
     }
 
     #[test]

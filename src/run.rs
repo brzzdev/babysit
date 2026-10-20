@@ -705,7 +705,7 @@ mod tests {
     use super::*;
     use crate::envelope::Forge;
     use crate::exec::{Output, Script};
-    use crate::forge::{Account, Poll, octocat, poll};
+    use crate::forge::{Account, Merge, Poll, Thread, octocat, poll};
     use crate::reference::{self, Reference};
 
     const ENTERPRISE: &str = "https://ghe.example.com/o/r/pull/3";
@@ -1117,6 +1117,42 @@ mod tests {
             saved(&sandbox.snapshot())["targets"][URL]["snapshot"],
             json!(poll(&["1", "2"]))
         );
+    }
+
+    #[test]
+    fn the_summary_carries_the_reported_mergeability_and_open_threads() {
+        let sandbox = Sandbox::new("merge-summary");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let thread = |id: &str, resolved| Thread {
+            comments: Vec::new(),
+            id: id.to_owned(),
+            line: None,
+            path: "src/run.rs".to_owned(),
+            reply_to: id.to_owned(),
+            resolved,
+            resolved_by: None,
+            url: URL.to_owned(),
+        };
+        let conflicted = Poll {
+            merge: Some(Merge::Conflicted),
+            threads: vec![
+                thread("PRRT_1", false),
+                thread("PRRT_2", true),
+                thread("PRRT_3", false),
+            ],
+            ..poll(&["1"])
+        };
+
+        let (code, envelope) = watch(
+            &args(&[URL], &sandbox.snapshot(), Some(0)),
+            vec![returns(URL, conflicted)],
+        );
+
+        let mut expected = summary(URL);
+        expected["merge"] = json!("conflicted");
+        expected["unresolved_threads"] = json!(2);
+        assert_eq!(code, 0);
+        assert_eq!(envelope["targets"], json!([expected]));
     }
 
     #[test]
