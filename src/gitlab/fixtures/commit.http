@@ -1,0 +1,27 @@
+HTTP/2.0 200 OK
+Cache-Control: max-age=0, private, must-revalidate
+Cf-Cache-Status: BYPASS
+Cf-Ray: a4db90c0bf451e29-MAN
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json
+Date: Tue, 20 Oct 2026 22:47:38 GMT
+Etag: W/"29c064703f2c2fbbf22d4f06f443b2b2"
+Gitlab-Lb: haproxy-main-16-lb-gprd
+Gitlab-Sv: api-gke-us-east1-b
+Nel: {"max_age": 0}
+Ratelimit-Limit: 2000
+Ratelimit-Name: throttle_authenticated_api
+Ratelimit-Observed: 13
+Ratelimit-Remaining: 1987
+Ratelimit-Reset: 1792536480
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a4db90c0bf451e29-MAN","version":"1"}
+X-Request-Id: a4db90c0bf451e29-MAN
+X-Runtime: 0.113624
+
+{"id":"d29dd22357102fba3709a18e01c6a96e025174a3","short_id":"d29dd223","created_at":"2026-10-20T12:38:26.000+00:00","parent_ids":["d43ccacecb043b0c060dd13224cf993140db6c2b","25892092f1db0711fcea689c27db39f6d928d2eb"],"title":"Merge branch 'ar-1083-sbt-both-global-bases' into 'main'","message":"Merge branch 'ar-1083-sbt-both-global-bases' into 'main'\n\nfix(artifact-registry): write sbt credentials for both sbt 1.x and 2.x\n\nSee merge request https://gitlab.com/gitlab-org/cli/-/merge_requests/4157\n\nMerged-by: Sylvia Shen \u003csshen@gitlab.com\u003e\nReviewed-by: GitLab Duo \u003cgitlab-duo@gitlab.com\u003e\n","author_name":"Sylvia Shen","author_email":"sshen@gitlab.com","authored_date":"2026-10-20T12:38:26.000+00:00","committer_name":"GitLab","committer_email":"noreply@gitlab.com","committed_date":"2026-10-20T12:38:26.000+00:00","trailers":{},"extended_trailers":{},"web_url":"https://gitlab.com/gitlab-org/cli/-/commit/d29dd22357102fba3709a18e01c6a96e025174a3","stats":{"additions":335,"deletions":48,"total":383},"status":"success","project_id":34675721,"last_pipeline":{"id":2967491026,"iid":15621,"project_id":34675721,"sha":"d29dd22357102fba3709a18e01c6a96e025174a3","ref":"refs/merge-requests/4157/merge","status":"success","source":"merge_request_event","created_at":"2026-10-20T12:38:28.488Z","updated_at":"2026-10-20T12:48:18.814Z","web_url":"https://gitlab.com/gitlab-org/cli/-/pipelines/2967491026"}}

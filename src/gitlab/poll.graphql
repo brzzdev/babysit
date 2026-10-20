@@ -2,6 +2,8 @@ query (
   $id: MergeRequestID!
   $approvers: Boolean = true
   $approversAfter: String
+  $jobs: Boolean = true
+  $jobsAfter: String
   $notes: Boolean = true
   $notesAfter: String
   $reviewers: Boolean = true
@@ -9,6 +11,30 @@ query (
 ) {
   mergeRequest(id: $id) {
     diffHeadSha
+    headPipeline {
+      id
+      jobs(first: 100, after: $jobsAfter, retried: false) @include(if: $jobs) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          allowFailure
+          id
+          name
+          status
+          webPath
+        }
+      }
+      mergeRequestEventType
+      path
+      sha
+      status
+    }
+    project {
+      allowMergeOnSkippedPipeline
+    }
+    projectId
     state
     approvedBy(first: 100, after: $approversAfter) @include(if: $approvers) {
       pageInfo {
