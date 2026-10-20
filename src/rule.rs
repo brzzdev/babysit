@@ -307,10 +307,15 @@ mod tests {
                 old_sha: "a".to_owned(),
                 new_sha: "b".to_owned(),
             },
+            Detail::MergeBehind,
+            Detail::MergeConflicted,
             submitted(ReviewState::Approved).detail,
             Detail::ReviewWithdrawn {
                 review_id: "500".to_owned(),
             },
+            Detail::StateClosed,
+            Detail::StateMerged,
+            Detail::StateReopened,
             Detail::ThreadOpened {
                 thread_id: thread_id(),
                 comment_id: "10".to_owned(),

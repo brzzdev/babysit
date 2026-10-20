@@ -1135,7 +1135,7 @@ mod tests {
 
         let mut expected = summary(URL);
         expected["merge"] = json!("conflicted");
-        assert_eq!(code, 0);
+        assert_eq!(code, 3);
         assert_eq!(envelope["targets"], json!([expected]));
     }
 

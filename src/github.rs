@@ -222,7 +222,7 @@ impl<E: Exec> GitHub<'_, E> {
             )?;
             polled_threads.extend(thread(node.thread, comments));
         }
-        let merge = merge(&standing.mergeable, &standing.merge_state_status);
+        let merge = standing.merge();
         let state = standing.state.into();
         let (state_changed_at, state_changed_by) = standing.change();
         Ok(Poll {
@@ -906,8 +906,16 @@ fn status_assessment(state: &str) -> Assessment {
 }
 
 impl Standing {
-    /// When and by whom the pull request entered its state; a latest event that doesn't match the
-    /// state names no one.
+    fn merge(&self) -> Option<Merge> {
+        match (self.mergeable.as_str(), self.merge_state_status.as_str()) {
+            ("CONFLICTING", _) => Some(Merge::Conflicted),
+            ("UNKNOWN", _) | (_, "UNKNOWN") => None,
+            (_, "BEHIND") => Some(Merge::Behind),
+            _ => Some(Merge::Clean),
+        }
+    }
+
+    /// When and by whom; a latest event that doesn't match the state names no one.
     fn change(self) -> (Option<String>, Option<Account>) {
         let latest = self.state_changes.nodes.into_iter().last();
         let (at, by) = match (self.state, latest) {
@@ -919,15 +927,6 @@ impl Standing {
             _ => (None, None),
         };
         (at, by.map(Account::from))
-    }
-}
-
-fn merge(mergeable: &str, merge_state_status: &str) -> Option<Merge> {
-    match (mergeable, merge_state_status) {
-        ("UNKNOWN", _) | (_, "UNKNOWN") => None,
-        ("CONFLICTING", _) => Some(Merge::Conflicted),
-        (_, "BEHIND") => Some(Merge::Behind),
-        _ => Some(Merge::Clean),
     }
 }
 
@@ -1064,6 +1063,8 @@ mod tests {
 
     const HEAD: &str = "dfd1945e66eb0008cad921a1230fd2c533598845";
     const JOB_ID: &str = "118827308709";
+    /// When #30 merged, which its close event shares.
+    const MERGED_AT: &str = "2026-10-20T19:08:24Z";
     const POLLED_ID: &str = "PR_kwDOVQ0d8c8AAAABJn0ayQ";
     const THREAD_ID: &str = "PRRT_kwDOVQ0d8c6ueY8r";
 
@@ -1236,7 +1237,7 @@ mod tests {
                 review("5590011214", "2026-10-20T18:52:33Z", Some(gitar())),
             ],
             state: TargetState::Merged,
-            state_changed_at: Some("2026-10-20T19:08:24Z".to_owned()),
+            state_changed_at: Some(MERGED_AT.to_owned()),
             state_changed_by: Some(brzzdev()),
             threads: vec![Thread {
                 comments: vec![
@@ -1547,12 +1548,14 @@ mod tests {
                 read("MERGEABLE", "BEHIND"),
                 read("CONFLICTING", "BEHIND"),
                 read("CONFLICTING", "DIRTY"),
+                read("CONFLICTING", "UNKNOWN"),
                 read("MERGEABLE", "UNKNOWN"),
             ],
             [
                 Some(Merge::Clean),
                 Some(Merge::Clean),
                 Some(Merge::Behind),
+                Some(Merge::Conflicted),
                 Some(Merge::Conflicted),
                 Some(Merge::Conflicted),
                 None,
@@ -1569,13 +1572,7 @@ mod tests {
             let poll = poll_with([first_page(&fixture)]).unwrap();
             (poll.state, poll.state_changed_at, poll.state_changed_by)
         };
-        let changed = |state| {
-            (
-                state,
-                Some("2026-10-20T19:08:24Z".to_owned()),
-                Some(brzzdev()),
-            )
-        };
+        let changed = |state| (state, Some(MERGED_AT.to_owned()), Some(brzzdev()));
 
         assert_eq!(read("CLOSED", "ClosedEvent"), changed(TargetState::Closed));
         assert_eq!(read("OPEN", "ReopenedEvent"), changed(TargetState::Open));

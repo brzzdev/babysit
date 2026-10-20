@@ -221,7 +221,9 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         Some(merge) if poll.state == TargetState::Open => Some(merge),
         _ => reported.merge,
     };
+    // Mergeability first known after computing is already on the target, so it reports nothing.
     if let Some(changed) = merge
+        && reported.merge.is_some()
         && merge != reported.merge
     {
         events.extend(merge_changed(&poll, changed));
@@ -429,7 +431,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::forge::{Merge, TargetState, comment, octocat, poll};
+    use crate::forge::{comment, octocat, poll};
 
     const THREAD: &str = "PRRT_1";
     const THREAD_URL: &str = "https://github.com/o/r/pull/1#discussion_r10";
@@ -1010,10 +1012,12 @@ mod tests {
         Poll { merge, ..poll(&[]) }
     }
 
+    const STATE_CHANGED_AT: &str = "2026-10-20T19:50:00Z";
+
     fn standing(state: TargetState, merge: Option<Merge>) -> Poll {
         Poll {
             state,
-            state_changed_at: Some("2026-10-20T19:50:00Z".to_owned()),
+            state_changed_at: Some(STATE_CHANGED_AT.to_owned()),
             state_changed_by: Some(octocat()),
             ..mergeability(merge)
         }
@@ -1049,13 +1053,17 @@ mod tests {
     }
 
     #[test]
-    fn a_first_polls_mergeability_counts_as_reported() {
+    fn the_first_known_mergeability_counts_as_reported() {
         let conflicted = || mergeability(Some(Merge::Conflicted));
 
-        assert_eq!(
-            steps(conflicted(), vec![conflicted()]),
-            [Vec::<String>::new()]
+        let from_known = steps(conflicted(), vec![conflicted()]);
+        let from_computing = steps(
+            mergeability(None),
+            vec![conflicted(), mergeability(Some(Merge::Behind))],
         );
+
+        assert_eq!(from_known, [Vec::<String>::new()]);
+        assert_eq!(from_computing, [vec![], vec!["merge.behind"]]);
     }
 
     #[test]
@@ -1070,7 +1078,7 @@ mod tests {
             [Event {
                 detail: Detail::StateMerged,
                 url: poll(&[]).url,
-                at: Some("2026-10-20T19:50:00Z".to_owned()),
+                at: Some(STATE_CHANGED_AT.to_owned()),
                 actor: Some(octocat()),
                 subject: None,
             }],
