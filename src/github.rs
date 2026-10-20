@@ -200,9 +200,7 @@ impl<E: Exec> GitHub<'_, E> {
             )
         })
     }
-}
 
-impl<E: Exec> GitHub<'_, E> {
     /// The reply's `data`, failing the call on any GraphQL `errors` entry.
     fn graphql<T: DeserializeOwned>(
         &self,
@@ -701,6 +699,7 @@ mod tests {
     }
 
     const BRZZDEV_ID: &str = "MDQ6VXNlcjE1Njg3NDUw";
+    const GITAR_ID: &str = "BOT_kgDOgitar";
 
     fn account(login: &str, bot: bool, id: &str) -> Account {
         Account {
@@ -715,7 +714,7 @@ mod tests {
     }
 
     fn gitar() -> Account {
-        account("gitar-bot[bot]", true, "BOT_kgDOgitar")
+        account("gitar-bot[bot]", true, GITAR_ID)
     }
 
     fn expected() -> Poll {
@@ -842,8 +841,8 @@ mod tests {
     fn a_dismissed_review_carries_its_dismisser_and_time() {
         let dismissed = include_str!("github/fixtures/poll.http")
             .replace(
-                r#""id":"BOT_kgDOgitar"},"state":"COMMENTED""#,
-                r#""id":"BOT_kgDOgitar"},"state":"DISMISSED""#,
+                &format!(r#""id":"{GITAR_ID}"}},"state":"COMMENTED""#),
+                &format!(r#""id":"{GITAR_ID}"}},"state":"DISMISSED""#),
             )
             .replace(
                 r#""nodes":[]},"reviews""#,
@@ -881,8 +880,8 @@ mod tests {
     fn a_pending_review_and_its_draft_comments_are_left_out() {
         let drafted = include_str!("github/fixtures/poll.http")
             .replace(
-                r#""id":"BOT_kgDOgitar"},"state":"COMMENTED""#,
-                r#""id":"BOT_kgDOgitar"},"state":"PENDING""#,
+                &format!(r#""id":"{GITAR_ID}"}},"state":"COMMENTED""#),
+                &format!(r#""id":"{GITAR_ID}"}},"state":"PENDING""#),
             )
             .replace(
                 r#""databaseId":5590011214,"state":"COMMENTED""#,

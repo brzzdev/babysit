@@ -205,12 +205,13 @@ mod tests {
     use super::*;
     use crate::envelope::Forge;
     use crate::exec::{Output, Script};
-    use crate::forge::{Failure, Poll, poll};
+    use crate::forge::{Account, Failure, Poll, octocat, poll};
     use crate::reference::{self, Reference};
 
     const NODE_ID: &str = "PR_1";
     const STARTED: u64 = 1_792_523_957;
     const URL: &str = "https://github.com/o/r/pull/1";
+    const VIEWER_ID: &str = "U_1";
 
     struct FakeClock(Cell<SystemTime>);
 
@@ -245,7 +246,7 @@ mod tests {
         }
 
         fn viewer(&self, _: &str, _: Option<SystemTime>) -> Result<String, Failure> {
-            Ok("U_1".to_owned())
+            Ok(VIEWER_ID.to_owned())
         }
     }
 
@@ -478,6 +479,27 @@ mod tests {
         assert_eq!(ignored, 3);
         assert_eq!(envelope, timed_out(&[summary()]));
         assert_eq!(later, 3);
+    }
+
+    #[test]
+    fn me_wakes_on_the_viewers_account_alone_whatever_its_login() {
+        let sandbox = Sandbox::new("me");
+        seed(&sandbox.snapshot(), &["1"]);
+        let mut next = poll(&["1", "2", "3"]);
+        next.comments[1].actor = Some(Account {
+            id: Some(VIEWER_ID.to_owned()),
+            ..octocat()
+        });
+        let mine = Args {
+            on: vec![rule::parse("actor=@me").unwrap()],
+            ..args(&sandbox.snapshot(), Some(0))
+        };
+
+        let (code, envelope) = watch(&mine, vec![returns(next)]);
+
+        assert_eq!(code, 0);
+        assert_eq!(envelope["events"].as_array().unwrap().len(), 1);
+        assert_eq!(envelope["events"][0]["comment_id"], "2");
     }
 
     #[test]

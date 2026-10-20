@@ -132,8 +132,9 @@ fn selector(value: &str) -> Result<Selector, String> {
         "@human" => Ok(Selector::Human),
         "@me" => Ok(Selector::Me),
         _ if value.starts_with('@') => Err(format!(
-            "`{value}` is not a selector: use @me, @bot or @human"
+            "`{value}` is not a selector: use @bot, @human or @me"
         )),
+        _ if value.contains('=') => Err(format!("`{value}` is not a login")),
         _ => Ok(Selector::Login(value.to_owned())),
     }
 }
@@ -167,7 +168,7 @@ pub fn wakes(on: &[Rule], ignore: &[Rule], event: &Event, me: Option<&str>) -> b
     (on.is_empty() || on.iter().any(matches)) && !ignore.iter().any(matches)
 }
 
-/// Whether any of `rules` matches `@me`, and so needs the viewer's account id.
+/// Whether any of `rules` names `@me`.
 pub fn names_me<'a>(rules: impl IntoIterator<Item = &'a Rule>) -> bool {
     rules.into_iter().flat_map(|rule| &rule.terms).any(
         |term| matches!(term, Term::Accounts(_, selectors) if selectors.contains(&Selector::Me)),
@@ -483,6 +484,7 @@ mod tests {
             ("actor=", "empty"),
             ("actor=octocat,", "empty"),
             ("actor=@admin", "`@admin`"),
+            ("actor=a=b", "`a=b`"),
             ("actor=@bot actor=@human", "`actor` appears twice"),
             ("thread.opened colour=red", "`thread.opened`"),
             ("thread.* state=approved", "`thread.*`"),
