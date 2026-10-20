@@ -23,4 +23,4 @@ X-Ratelimit-Resource: graphql
 X-Ratelimit-Used: 53
 X-Xss-Protection: 0
 
-{"data":{"node":{"state":"MERGED","headRefOid":"dfd1945e66eb0008cad921a1230fd2c533598845","reviews":null}},"errors":[{"type":"INVALID_CURSOR_ARGUMENTS","path":["node","reviews","pageInfo"],"locations":[{"line":24,"column":9}],"message":"`Y3Vyc29yOnYyOpO0MjAyNi0xMC0yMFQxOTowNTozNlo=` does not appear to be a valid cursor."}]}
+{"data":{"node":{"state":"MERGED","headRefOid":"dfd1945e66eb0008cad921a1230fd2c533598845","commits":{"nodes":[{"commit":{"oid":"dfd1945e66eb0008cad921a1230fd2c533598845","statusCheckRollup":{"state":"SUCCESS"}}}]},"reviews":null}},"errors":[{"type":"INVALID_CURSOR_ARGUMENTS","path":["node","reviews","pageInfo"],"locations":[{"line":24,"column":9}],"message":"`Y3Vyc29yOnYyOpO0MjAyNi0xMC0yMFQxOTowNTozNlo=` does not appear to be a valid cursor."}]}

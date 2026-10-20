@@ -237,6 +237,7 @@ fn account(event: &Event, field: Field) -> Option<&Account> {
 /// The field's value in its printed form.
 fn word(detail: &Detail, field: Field) -> Option<String> {
     let value = match (field, detail) {
+        (Field::Colour, Detail::CiSettled { colour, .. }) => serde_json::to_value(colour),
         (Field::State, Detail::ReviewSubmitted { state, .. }) => serde_json::to_value(state),
         _ => return None,
     };
@@ -246,7 +247,7 @@ fn word(detail: &Detail, field: Field) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::ReviewState;
+    use crate::forge::{Colour, ReviewState};
 
     fn event(detail: Detail) -> Event {
         Event {
@@ -272,6 +273,15 @@ mod tests {
         })
     }
 
+    fn settled(colour: Colour) -> Event {
+        event(Detail::CiSettled {
+            colour,
+            head_sha: "abc123".to_owned(),
+            checks: Vec::new(),
+            warnings: Vec::new(),
+        })
+    }
+
     fn rules(given: &[&str]) -> Vec<Rule> {
         given.iter().map(|rule| parse(rule).unwrap()).collect()
     }
@@ -285,12 +295,17 @@ mod tests {
         let thread_id = || "PRRT_1".to_owned();
         let reply_to = || "10".to_owned();
         for detail in [
+            settled(Colour::Red).detail,
             created().detail,
             Detail::CommentEdited {
                 comment_id: "1".to_owned(),
                 body: String::new(),
                 thread_id: None,
                 reply_to: None,
+            },
+            Detail::HeadPushed {
+                old_sha: "a".to_owned(),
+                new_sha: "b".to_owned(),
             },
             submitted(ReviewState::Approved).detail,
             Detail::ReviewWithdrawn {
@@ -408,6 +423,16 @@ mod tests {
         assert!(!woken(&["actor=@human"], &[], &resolved()));
         assert!(!woken(&["subject=@human"], &[], &approved));
         assert!(!woken(&["colour=red"], &[], &approved));
+    }
+
+    #[test]
+    fn colour_matches_the_settled_colour() {
+        assert!(woken(
+            &["ci.settled colour=red,amber"],
+            &[],
+            &settled(Colour::Amber)
+        ));
+        assert!(!woken(&["colour=red"], &[], &settled(Colour::Green)));
     }
 
     #[test]

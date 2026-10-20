@@ -1,5 +1,7 @@
 query (
   $id: ID!
+  $checks: Boolean = true
+  $checksAfter: String
   $comments: Boolean = true
   $commentsAfter: String
   $dismissals: Boolean = true
@@ -13,6 +15,49 @@ query (
     ... on PullRequest {
       state
       headRefOid
+      commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              state
+              contexts(first: 100, after: $checksAfter) @include(if: $checks) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    checkSuite {
+                      app {
+                        databaseId
+                      }
+                      workflowRun {
+                        workflow {
+                          databaseId
+                        }
+                      }
+                    }
+                    conclusion
+                    databaseId
+                    detailsUrl
+                    isRequired(pullRequestId: $id)
+                    name
+                    status
+                  }
+                  ... on StatusContext {
+                    context
+                    isRequired(pullRequestId: $id)
+                    state
+                    targetUrl
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
       comments(first: 100, after: $commentsAfter) @include(if: $comments) {
         pageInfo {
           hasNextPage

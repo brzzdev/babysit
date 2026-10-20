@@ -182,6 +182,7 @@ fn poll_round(
         };
         tracked.evaluated = true;
         let Some(baseline) = tracked.polled.as_ref().or(tracked.stored.as_ref()) else {
+            let poll = Snapshot::from(poll);
             let first = entry(&tracked.target, poll.clone());
             tracked.polled = Some(poll);
             file.save([first])?;
@@ -420,7 +421,7 @@ mod tests {
         file.save([Entry {
             forge_id: forge_id.to_owned(),
             url: url.to_owned(),
-            snapshot: poll(ids),
+            snapshot: poll(ids).into(),
         }])
         .unwrap();
     }

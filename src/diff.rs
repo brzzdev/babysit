@@ -1,6 +1,9 @@
 use serde::Serialize;
 
-use crate::forge::{Account, Comment, Poll, Review, ReviewState, Snapshot, Thread};
+use crate::forge::{
+    Account, Assessment, Check, Ci, Colour, Comment, Poll, Reported, Review, ReviewState, Snapshot,
+    Thread,
+};
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct Event {
@@ -19,6 +22,13 @@ pub struct Event {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(tag = "kind")]
 pub enum Detail {
+    #[serde(rename = "ci.settled")]
+    CiSettled {
+        colour: Colour,
+        head_sha: String,
+        checks: Vec<CheckReport>,
+        warnings: Vec<CheckReport>,
+    },
     #[serde(rename = "comment.created")]
     CommentCreated { comment_id: String, body: String },
     #[serde(rename = "comment.edited")]
@@ -30,6 +40,8 @@ pub enum Detail {
         #[serde(skip_serializing_if = "Option::is_none")]
         reply_to: Option<String>,
     },
+    #[serde(rename = "head.pushed")]
+    HeadPushed { old_sha: String, new_sha: String },
     #[serde(rename = "review.submitted")]
     ReviewSubmitted {
         review_id: String,
@@ -64,12 +76,23 @@ pub enum Detail {
     ThreadUnresolved { thread_id: String, reply_to: String },
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct CheckReport {
+    pub name: String,
+    pub conclusion: String,
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+}
+
 impl Detail {
     /// The kind as printed, matching the `serde` renames above.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::CiSettled { .. } => "ci.settled",
             Self::CommentCreated { .. } => "comment.created",
             Self::CommentEdited { .. } => "comment.edited",
+            Self::HeadPushed { .. } => "head.pushed",
             Self::ReviewSubmitted { .. } => "review.submitted",
             Self::ReviewWithdrawn { .. } => "review.withdrawn",
             Self::ThreadOpened { .. } => "thread.opened",
@@ -80,8 +103,40 @@ impl Detail {
     }
 }
 
+impl Ci {
+    /// Red on the first deciding failure; green or amber only once every deciding check settles.
+    pub fn colour(&self) -> Option<Colour> {
+        let deciding: Vec<_> = self.checks.iter().filter(|check| check.deciding).collect();
+        let any = |assessment| deciding.iter().any(|check| check.assessment == assessment);
+        if any(Assessment::Failed) {
+            return Some(Colour::Red);
+        }
+        if deciding.is_empty() || any(Assessment::Pending) {
+            return None;
+        }
+        if any(Assessment::Waiting) {
+            return Some(Colour::Amber);
+        }
+        self.required_known.then_some(Colour::Green)
+    }
+}
+
+/// A first poll as baseline: whatever colour its head already shows counts as reported.
+impl From<Poll> for Snapshot {
+    fn from(poll: Poll) -> Self {
+        Self {
+            reported: Reported {
+                colour: poll.ci.as_ref().and_then(Ci::colour),
+            },
+            poll,
+        }
+    }
+}
+
 /// The events between `baseline` and `poll`, in report order, and the snapshot that follows.
 pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
+    let reported = &baseline.reported;
+    let baseline = &baseline.poll;
     let mut events = Vec::new();
     let threaded = poll.threads.iter().flat_map(|thread| {
         thread
@@ -127,10 +182,80 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
             events.push(resolution(thread));
         }
     }
+    // A new head starts uncoloured, so returning to an earlier one settles it again.
+    let previous = if poll.head == baseline.head {
+        reported.colour
+    } else {
+        events.push(head_pushed(&baseline.head, &poll));
+        None
+    };
+    // Unsettled CI keeps no colour, so settling again after a re-run is reported again.
+    let colour = poll.ci.as_ref().and_then(Ci::colour);
+    if let Some(ci) = &poll.ci
+        && let Some(colour) = colour
+        && previous != Some(colour)
+    {
+        events.push(ci_settled(&poll, ci, colour));
+    }
     events.sort_by(|a, b| {
         (a.at.is_none(), &a.at, &a.detail).cmp(&(b.at.is_none(), &b.at, &b.detail))
     });
-    (events, poll)
+    (
+        events,
+        Snapshot {
+            poll,
+            reported: Reported { colour },
+        },
+    )
+}
+
+fn head_pushed(old_sha: &str, poll: &Poll) -> Event {
+    on_target(
+        poll,
+        Detail::HeadPushed {
+            old_sha: old_sha.to_owned(),
+            new_sha: poll.head.clone(),
+        },
+    )
+}
+
+/// An event about the target as a whole, which the forge neither times nor attributes.
+fn on_target(poll: &Poll, detail: Detail) -> Event {
+    Event {
+        detail,
+        url: poll.url.clone(),
+        at: None,
+        actor: None,
+        subject: None,
+    }
+}
+
+/// Lists the deciding checks that failed or block, and as warnings the other checks that failed.
+fn ci_settled(poll: &Poll, ci: &Ci, colour: Colour) -> Event {
+    let reports = |keep: fn(&Check) -> bool| {
+        ci.checks
+            .iter()
+            .filter(|check| keep(check))
+            .map(|check| CheckReport {
+                name: check.name.clone(),
+                conclusion: check.conclusion.clone(),
+                url: check.url.clone(),
+                job_id: check.job_id.clone(),
+            })
+            .collect()
+    };
+    on_target(
+        poll,
+        Detail::CiSettled {
+            colour,
+            head_sha: poll.head.clone(),
+            checks: reports(|check| {
+                check.deciding
+                    && matches!(check.assessment, Assessment::Failed | Assessment::Waiting)
+            }),
+            warnings: reports(|check| !check.deciding && check.assessment == Assessment::Failed),
+        },
+    )
 }
 
 fn comment_created(comment: &Comment) -> Event {
@@ -250,6 +375,8 @@ fn resolution(thread: &Thread) -> Event {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::forge::{comment, octocat, poll};
 
@@ -305,8 +432,8 @@ mod tests {
         }
     }
 
-    fn details(baseline: &Snapshot, next: Poll) -> Vec<Detail> {
-        diff(baseline, next)
+    fn details(baseline: &Poll, next: Poll) -> Vec<Detail> {
+        diff(&baseline.clone().into(), next)
             .0
             .into_iter()
             .map(|event| event.detail)
@@ -317,7 +444,7 @@ mod tests {
     fn a_new_comment_is_created() {
         let next = poll(&["1", "2"]);
 
-        let (events, snapshot) = diff(&poll(&["1"]), next.clone());
+        let (events, snapshot) = diff(&poll(&["1"]).into(), next.clone());
 
         assert_eq!(
             events,
@@ -332,12 +459,12 @@ mod tests {
                 subject: None,
             }],
         );
-        assert_eq!(snapshot, next);
+        assert_eq!(snapshot.poll, next);
     }
 
     #[test]
     fn seen_and_vanished_comments_are_quiet() {
-        let (events, _) = diff(&poll(&["1", "2"]), poll(&["2"]));
+        let (events, _) = diff(&poll(&["1", "2"]).into(), poll(&["2"]));
 
         assert_eq!(events, []);
     }
@@ -354,7 +481,7 @@ mod tests {
         next.comments[0].edited_at = Some("2026-10-20T19:30:00Z".to_owned());
         next.comments[0].editor = Some(hubot.clone());
 
-        let (events, _) = diff(&poll(&["1"]), next);
+        let (events, _) = diff(&poll(&["1"]).into(), next);
 
         assert_eq!(
             events,
@@ -439,7 +566,7 @@ mod tests {
         ]);
         next.reviews = vec![review(ReviewState::ChangesRequested)];
 
-        let (events, _) = diff(&baseline, next);
+        let (events, _) = diff(&baseline.into(), next);
 
         assert_eq!(
             events,
@@ -502,7 +629,7 @@ mod tests {
             ..review(ReviewState::Approved)
         };
 
-        let (events, _) = diff(&baseline, with_reviews(vec![dismissed]));
+        let (events, _) = diff(&baseline.into(), with_reviews(vec![dismissed]));
 
         assert_eq!(
             events,
@@ -532,7 +659,7 @@ mod tests {
         let mut resolved = with_threads(vec![thread(vec![comment("10")], true)]);
         resolved.comments = vec![comment("1")];
 
-        let (events, _) = diff(&open, resolved.clone());
+        let (events, _) = diff(&open.clone().into(), resolved.clone());
         let unresolved = details(&resolved, open);
 
         assert_eq!(
@@ -559,5 +686,272 @@ mod tests {
                 reply_to: "10".to_owned(),
             }],
         );
+    }
+
+    const A: &str = "aaa111";
+    const B: &str = "bbb222";
+
+    fn check(name: &str, deciding: bool, assessment: Assessment) -> Check {
+        Check {
+            assessment,
+            conclusion: format!("{assessment:?}").to_lowercase(),
+            deciding,
+            job_id: Some(format!("{name}-job")),
+            name: name.to_owned(),
+            url: Some(format!("https://github.com/o/r/actions/runs/1/job/{name}")),
+        }
+    }
+
+    fn on(head: &str, checks: Vec<Check>) -> Poll {
+        Poll {
+            ci: Some(Ci {
+                checks,
+                required_known: true,
+            }),
+            head: head.to_owned(),
+            ..poll(&[])
+        }
+    }
+
+    fn label(event: &Event) -> String {
+        match &event.detail {
+            Detail::CiSettled { colour, .. } => format!("ci.settled {colour:?}"),
+            detail => detail.kind().to_owned(),
+        }
+    }
+
+    /// The events of each poll after `first`, reloading each snapshot as a restart would.
+    fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
+        let reload = |snapshot: &Snapshot| {
+            serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap()
+        };
+        let mut snapshot = reload(&Snapshot::from(first));
+        rest.into_iter()
+            .map(|next| {
+                let (events, next) = diff(&snapshot, next);
+                snapshot = reload(&next);
+                events.iter().map(label).collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn red_fires_on_the_first_deciding_failure_while_others_run() {
+        let running = || check("lint", true, Assessment::Pending);
+        let baseline = on(A, vec![check("test", true, Assessment::Pending), running()]);
+        let failed = on(A, vec![check("test", true, Assessment::Failed), running()]);
+
+        let (events, snapshot) = diff(&baseline.into(), failed);
+
+        assert_eq!(
+            events,
+            [Event {
+                detail: Detail::CiSettled {
+                    colour: Colour::Red,
+                    head_sha: A.to_owned(),
+                    checks: vec![CheckReport {
+                        name: "test".to_owned(),
+                        conclusion: "failed".to_owned(),
+                        url: Some("https://github.com/o/r/actions/runs/1/job/test".to_owned()),
+                        job_id: Some("test-job".to_owned()),
+                    }],
+                    warnings: Vec::new(),
+                },
+                url: poll(&[]).url,
+                at: None,
+                actor: None,
+                subject: None,
+            }],
+        );
+        assert_eq!(snapshot.reported.colour, Some(Colour::Red));
+    }
+
+    #[test]
+    fn green_waits_for_every_deciding_check_and_fires_once() {
+        let passed = || check("test", true, Assessment::Passed);
+        let pending = on(A, vec![passed(), check("lint", true, Assessment::Pending)]);
+        let green = || on(A, vec![passed(), check("lint", true, Assessment::Passed)]);
+
+        let steps = steps(on(A, Vec::new()), vec![pending, green(), green()]);
+
+        assert_eq!(steps, [vec![], vec!["ci.settled Green"], vec![]]);
+    }
+
+    #[test]
+    fn amber_waits_until_nothing_else_is_unsettled() {
+        let waiting = || check("deploy", true, Assessment::Waiting);
+        let running = on(A, vec![waiting(), check("test", true, Assessment::Pending)]);
+        let blocked = on(A, vec![waiting(), check("test", true, Assessment::Passed)]);
+
+        assert_eq!(
+            steps(on(A, Vec::new()), vec![running, blocked]),
+            [vec![], vec!["ci.settled Amber"]],
+        );
+    }
+
+    #[test]
+    fn a_repeated_colour_fires_only_after_ci_went_unsettled() {
+        let test = |assessment| check("test", true, assessment);
+        let failing = || on(A, vec![test(Assessment::Failed)]);
+        let rerun = || on(A, vec![test(Assessment::Pending)]);
+        let failing_while_another_runs = on(
+            A,
+            vec![
+                test(Assessment::Failed),
+                check("lint", true, Assessment::Pending),
+            ],
+        );
+
+        let steps = steps(
+            failing(),
+            vec![
+                failing_while_another_runs,
+                failing(),
+                rerun(),
+                failing(),
+                rerun(),
+                on(A, vec![test(Assessment::Passed)]),
+            ],
+        );
+
+        assert_eq!(
+            steps,
+            [
+                vec![],
+                vec![],
+                vec![],
+                vec!["ci.settled Red"],
+                vec![],
+                vec!["ci.settled Green"],
+            ],
+        );
+    }
+
+    #[test]
+    fn an_unknown_required_set_clears_green_so_it_settles_again() {
+        let green = || on(A, vec![check("test", true, Assessment::Passed)]);
+        let unknown = Poll {
+            ci: Some(Ci {
+                checks: vec![check("test", true, Assessment::Passed)],
+                required_known: false,
+            }),
+            ..green()
+        };
+
+        let (_, cleared) = diff(&green().into(), unknown.clone());
+
+        assert_eq!(cleared.reported.colour, None);
+        assert_eq!(
+            steps(green(), vec![unknown, green()]),
+            [vec![], vec!["ci.settled Green"]],
+        );
+    }
+
+    #[test]
+    fn an_incomplete_required_set_holds_back_green_only() {
+        let unknown = |assessment| Poll {
+            ci: Some(Ci {
+                checks: vec![check("test", true, assessment)],
+                required_known: false,
+            }),
+            ..on(A, Vec::new())
+        };
+
+        let steps = steps(
+            on(A, Vec::new()),
+            vec![
+                unknown(Assessment::Passed),
+                unknown(Assessment::Waiting),
+                unknown(Assessment::Failed),
+            ],
+        );
+
+        assert_eq!(
+            steps,
+            [vec![], vec!["ci.settled Amber"], vec!["ci.settled Red"]]
+        );
+    }
+
+    #[test]
+    fn a_failed_check_that_does_not_decide_is_a_warning() {
+        let optional = Check {
+            job_id: None,
+            url: None,
+            ..check("coverage", false, Assessment::Failed)
+        };
+        let next = on(A, vec![check("test", true, Assessment::Passed), optional]);
+
+        let (events, _) = diff(&on(A, Vec::new()).into(), next);
+
+        assert_eq!(
+            serde_json::to_value(&events[0].detail).unwrap(),
+            json!({
+                "kind": "ci.settled",
+                "colour": "green",
+                "head_sha": A,
+                "checks": [],
+                "warnings": [{ "name": "coverage", "conclusion": "failed", "url": null }],
+            }),
+        );
+    }
+
+    #[test]
+    fn checks_that_do_not_decide_never_colour_and_warn_only_on_failure() {
+        let next = on(
+            A,
+            vec![
+                check("test", true, Assessment::Failed),
+                check("bench", false, Assessment::Pending),
+                check("preview", false, Assessment::Waiting),
+            ],
+        );
+
+        let (events, _) = diff(&on(A, Vec::new()).into(), next);
+
+        let [
+            Event {
+                detail:
+                    Detail::CiSettled {
+                        colour,
+                        checks,
+                        warnings,
+                        ..
+                    },
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("{events:?}");
+        };
+        assert_eq!(*colour, Colour::Red);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(warnings, &[]);
+    }
+
+    #[test]
+    fn a_push_reports_both_shas_and_starts_the_new_head_uncoloured() {
+        let red = on(A, vec![check("test", true, Assessment::Failed)]);
+        let running = on(B, vec![check("test", true, Assessment::Pending)]);
+
+        let (events, snapshot) = diff(&red.into(), running);
+
+        assert_eq!(
+            events.iter().map(|event| &event.detail).collect::<Vec<_>>(),
+            [&Detail::HeadPushed {
+                old_sha: A.to_owned(),
+                new_sha: B.to_owned(),
+            }],
+        );
+        assert_eq!(snapshot.reported.colour, None);
+    }
+
+    #[test]
+    fn returning_to_an_earlier_head_settles_it_again() {
+        let green = |head| on(head, vec![check("test", true, Assessment::Passed)]);
+
+        let steps = steps(green(A), vec![green(B), green(A)]);
+
+        let settled_again = vec!["ci.settled Green", "head.pushed"];
+        assert_eq!(steps, [settled_again.clone(), settled_again]);
     }
 }
