@@ -4,37 +4,55 @@ The language babysit uses for what it watches and what it reports.
 
 ## Language
 
-**Target**:
-A single pull request, merge request or issue being watched.
-_Avoid_: Item, watch
+### Watching
+
+**Forge**:
+A code-hosting service babysit watches, such as GitHub or GitLab.
+_Avoid_: Host, provider, platform
 
 **Snapshot**:
 Everything babysit knows about a target at one moment.
 _Avoid_: State, status
 
+**Target**:
+A single pull request, merge request or issue being watched.
+_Avoid_: Item, watch
+
+### Events
+
+**Actor**:
+The forge account that caused an event.
+_Avoid_: Author, user, sender
+
 **Event**:
-One thing that happened on a target.
+Something babysit saw happen on a target between two snapshots.
 _Avoid_: Change, update, notification
 
 **Event kind**:
 The closed category an event belongs to, such as `ci.settled` or `thread.opened`.
 _Avoid_: Event type, trigger
 
-**Thread**:
-A discussion on a target that can be resolved.
-_Avoid_: Discussion, conversation
+**Subject**:
+The forge account an event happened to, when that isn't the actor, such as the reviewer whose review
+was withdrawn.
+_Avoid_: Recipient
+
+### Conversation
 
 **Comment**:
-A remark on a target that isn't part of a thread.
+A single remark on a target, standing alone or inside a thread.
 _Avoid_: Note, message
 
-**Actor**:
-The forge account that caused an event.
-_Avoid_: Author, user, sender
+**Thread**:
+A resolvable series of comments on a target.
+_Avoid_: Discussion, conversation
 
-**Subject**:
-The forge account an event happened to, such as the reviewer whose approval was withdrawn.
-_Avoid_: Recipient
+### CI
+
+**CI colour**:
+The verdict on CI for a target's latest commit: green (every deciding check passed), amber (no
+deciding check failed, but CI can't finish until someone acts) or red (a deciding check failed).
+_Avoid_: CI status, CI result
 
 **Deciding check**:
 A check that must pass for a target's CI to count as passed.
@@ -43,8 +61,3 @@ _Avoid_: Blocking check, gate
 **Warning**:
 A failed check that isn't a deciding check.
 _Avoid_: Soft failure, allowed failure
-
-**CI colour**:
-The verdict on a target's CI: green (every deciding check passed), amber (none failed, but CI can't
-finish until someone acts) or red (one failed).
-_Avoid_: CI status, CI result
