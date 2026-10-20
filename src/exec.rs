@@ -8,8 +8,8 @@ const WAIT_STEP: Duration = Duration::from_millis(10);
 
 pub struct Output {
     pub code: Option<i32>,
-    pub stdout: String,
     pub stderr: String,
+    pub stdout: String,
 }
 
 #[derive(Debug)]
@@ -65,11 +65,15 @@ impl Exec for SystemExec {
         let stderr = drain(child.stderr.take());
         let call_limit = Instant::now() + self.call_limit;
         loop {
-            if let Some(status) = child.try_wait().map_err(Error::Io)? {
+            // A grandchild can hold the pipes past the child's exit, so wait for both drains.
+            if let Some(status) = child.try_wait().map_err(Error::Io)?
+                && stdout.is_finished()
+                && stderr.is_finished()
+            {
                 return Ok(Output {
                     code: status.code(),
-                    stdout: collect(stdout),
                     stderr: collect(stderr),
+                    stdout: collect(stdout),
                 });
             }
             let limit = if deadline.is_some_and(|deadline| SystemTime::now() >= deadline) {
@@ -80,7 +84,7 @@ impl Exec for SystemExec {
                 thread::sleep(WAIT_STEP);
                 continue;
             };
-            // The drain threads are left to finish on their own: a grandchild may still hold the pipes.
+            // The drains are left running: a grandchild may still hold the pipes.
             let _ = child.kill();
             let _ = child.wait();
             return Err(Error::TimedOut(limit));
@@ -187,6 +191,21 @@ mod tests {
         let deadline = SystemTime::now() + Duration::from_millis(200);
 
         let result = sh(&SystemExec::default(), "exec sleep 30", Some(deadline));
+
+        assert!(matches!(result, Err(Error::TimedOut(Limit::Deadline))));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn times_out_while_a_grandchild_holds_the_pipes() {
+        let started = Instant::now();
+        let deadline = SystemTime::now() + Duration::from_millis(200);
+
+        let result = sh(
+            &SystemExec::default(),
+            "sleep 10 & echo started",
+            Some(deadline),
+        );
 
         assert!(matches!(result, Err(Error::TimedOut(Limit::Deadline))));
         assert!(started.elapsed() < Duration::from_secs(5));

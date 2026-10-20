@@ -4,9 +4,9 @@ pub struct Reference {
     pub given: String,
     /// The host, port included.
     pub host: String,
+    pub number: u64,
     pub owner: String,
     pub repo: String,
-    pub number: u64,
 }
 
 pub fn parse(given: &str) -> Result<Reference, String> {
@@ -32,9 +32,9 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     Ok(Reference {
         given: given.to_owned(),
         host: host.to_owned(),
+        number: number.parse().map_err(|_| invalid())?,
         owner: owner.to_owned(),
         repo: repo.to_owned(),
-        number: number.parse().map_err(|_| invalid())?,
     })
 }
 
@@ -49,9 +49,9 @@ mod tests {
             Ok(Reference {
                 given: "http://ghe.example.com:8443/o/r/pull/12".to_owned(),
                 host: "ghe.example.com:8443".to_owned(),
+                number: 12,
                 owner: "o".to_owned(),
                 repo: "r".to_owned(),
-                number: 12,
             }),
         );
     }

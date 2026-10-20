@@ -5,6 +5,10 @@ use serde::Serialize;
 use crate::diff;
 use crate::forge::{Failure, Snapshot, TargetState};
 
+pub const EXIT_ERROR: u8 = 1;
+const EXIT_TIMED_OUT: u8 = 3;
+const EXIT_WOKE: u8 = 0;
+
 /// What a run prints on stdout once it ends past validation.
 #[derive(Debug, Serialize)]
 pub struct Envelope {
@@ -101,9 +105,9 @@ impl Envelope {
 
     pub fn exit_code(&self) -> u8 {
         match self.outcome {
-            Outcome::Woke => 0,
-            Outcome::Error => 1,
-            Outcome::TimedOut => 3,
+            Outcome::Error => EXIT_ERROR,
+            Outcome::TimedOut => EXIT_TIMED_OUT,
+            Outcome::Woke => EXIT_WOKE,
         }
     }
 

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File, TryLockError};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ struct Contents {
 
 #[derive(Debug)]
 pub enum OpenError {
-    /// The file can't be read as a version 1 snapshot file.
+    /// The file isn't a snapshot file of this version.
     Invalid(String),
     Io(io::Error),
     LockHeld,
@@ -82,10 +82,10 @@ impl SnapshotFile {
     pub fn save(&mut self, entry: Entry) -> io::Result<()> {
         self.contents.targets.insert(entry.url.clone(), entry);
         let temp_path = self.path.with_added_extension("tmp");
-        fs::write(
-            &temp_path,
-            serde_json::to_string_pretty(&self.contents)? + "\n",
-        )?;
+        let mut temp = File::create(&temp_path)?;
+        serde_json::to_writer_pretty(&mut temp, &self.contents)?;
+        writeln!(temp)?;
+        temp.sync_all()?;
         fs::rename(&temp_path, &self.path)
     }
 }

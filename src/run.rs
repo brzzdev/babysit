@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use crate::cli::Args;
 use crate::clock::{Clock, rfc3339};
 use crate::diff::diff;
-use crate::envelope::{self, Envelope, ErrorKind, Outcome, Summary};
+use crate::envelope::{self, EXIT_ERROR, Envelope, ErrorKind, Outcome, Summary};
 use crate::forge::{Backend, Snapshot, Target};
 use crate::snapshot_file::{Entry, OpenError, SnapshotFile};
 
@@ -12,8 +12,7 @@ use crate::snapshot_file::{Entry, OpenError, SnapshotFile};
 #[derive(Debug)]
 pub struct UsageError(pub String);
 
-/// Watches the target until it wakes, times out or fails, printing the envelope and saving what it
-/// saw. Returns the exit code.
+/// Watches the target until it wakes, times out or fails; prints, saves and returns the exit code.
 pub fn run(
     args: &Args,
     backend: &impl Backend,
@@ -22,6 +21,7 @@ pub fn run(
     stderr: &mut impl Write,
 ) -> Result<u8, UsageError> {
     let deadline = args.timeout.map(|timeout| clock.now() + timeout);
+    // `--timeout 0` polls once, so its already-passed deadline must not kill that poll.
     let call_deadline = args
         .timeout
         .filter(|timeout| !timeout.is_zero())
@@ -90,13 +90,13 @@ pub fn run(
         .map(|snapshot| Summary::new(&target.url, snapshot))
         .collect();
     if envelope.write(stdout).is_err() {
-        return Ok(1);
+        return Ok(EXIT_ERROR);
     }
     if let Some(snapshot) = polled
         && let Err(error) = file.save(entry(&target, snapshot))
     {
         let _ = writeln!(stderr, "babysit: could not save {snapshot_path}: {error}");
-        return Ok(1);
+        return Ok(EXIT_ERROR);
     }
     Ok(envelope.exit_code())
 }
@@ -128,7 +128,7 @@ fn fail_locally(stdout: &mut impl Write, kind: ErrorKind, message: String) -> u8
 fn report(stdout: &mut impl Write, envelope: &Envelope) -> u8 {
     match envelope.write(stdout) {
         Ok(()) => envelope.exit_code(),
-        Err(_) => 1,
+        Err(_) => EXIT_ERROR,
     }
 }
 
@@ -150,9 +150,9 @@ mod tests {
     use crate::forge::{Failure, Poll, poll};
     use crate::reference::{self, Reference};
 
-    const URL: &str = "https://github.com/o/r/pull/1";
     const NODE_ID: &str = "PR_1";
     const STARTED: u64 = 1_792_523_957;
+    const URL: &str = "https://github.com/o/r/pull/1";
 
     struct FakeClock(Cell<SystemTime>);
 
@@ -384,6 +384,20 @@ mod tests {
             saved(&sandbox.snapshot())["targets"][URL]["snapshot"],
             json!(poll(&["1", "2"]))
         );
+    }
+
+    #[test]
+    fn timeout_zero_against_a_baseline_polls_once() {
+        let sandbox = Sandbox::new("timeout-zero");
+        seed(&sandbox.snapshot(), &["1"]);
+        let once = args(&sandbox.snapshot(), Some(0));
+
+        let (quiet, _) = watch(&once, vec![returns(poll(&["1"]))]);
+        let (woke, envelope) = watch(&once, vec![returns(poll(&["1", "2"]))]);
+
+        assert_eq!(quiet, 3);
+        assert_eq!(woke, 0);
+        assert_eq!(envelope["events"][0]["comment_id"], "2");
     }
 
     #[test]

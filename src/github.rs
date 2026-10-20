@@ -11,9 +11,9 @@ use crate::reference::Reference;
 use crate::response::{self, Response};
 
 const CLI: &str = "gh";
-const POLL_QUERY: &str = include_str!("github/poll.graphql");
 const EXIT_AUTH: i32 = 4;
 const EXIT_NOT_FOUND: i32 = 127;
+const POLL_QUERY: &str = include_str!("github/poll.graphql");
 const STATUS_NOT_FOUND: u16 = 404;
 
 pub struct GitHub<'a, E> {
@@ -252,8 +252,8 @@ mod tests {
     fn gh(code: i32, stdout: &str, stderr: &str) -> Output {
         Output {
             code: Some(code),
-            stdout: stdout.to_owned(),
             stderr: stderr.to_owned(),
+            stdout: stdout.to_owned(),
         }
     }
 
@@ -309,7 +309,7 @@ mod tests {
                     }),
                     at: "2026-10-20T17:33:24Z".to_owned(),
                     body: "Paul's Codex:\n\n> Review verdict: Approved at \
-					       fb5f9a7d7df000a39a0b88667dad43be6b4814ca\n"
+                       fb5f9a7d7df000a39a0b88667dad43be6b4814ca\n"
                         .to_owned(),
                     id: "6297087190".to_owned(),
                     url: "https://github.com/brzzdev/babysit/pull/15#issuecomment-6297087190"

@@ -1,8 +1,8 @@
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const SLEEP_SLICE: Duration = Duration::from_secs(1);
 const SECONDS_PER_DAY: u64 = 86_400;
+const SLEEP_SLICE: Duration = Duration::from_secs(1);
 
 pub trait Clock {
     fn now(&self) -> SystemTime;
