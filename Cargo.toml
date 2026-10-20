@@ -1,0 +1,27 @@
+[package]
+name = "babysit"
+version = "0.1.0"
+edition = "2024"
+categories = ["command-line-utilities", "development-tools"]
+description = "Block until a pull request, merge request or issue thread does something an agent should act on"
+keywords = ["agent", "cli", "github", "gitlab", "pull-request"]
+license = "MIT"
+publish = false
+readme = "README.md"
+repository = "https://github.com/brzzdev/babysit"
+rust-version = "1.99"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
