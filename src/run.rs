@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::SystemTime;
 
@@ -7,6 +8,7 @@ use crate::diff::diff;
 use crate::envelope::{self, EXIT_ERROR, Envelope, ErrorKind, Outcome, Summary};
 use crate::exec::Exec;
 use crate::forge::{Backend, Failure, Snapshot, Target};
+use crate::rule;
 use crate::snapshot_file::{Entry, OpenError, SnapshotFile};
 use crate::target::{self, Locator};
 
@@ -62,15 +64,19 @@ pub fn run(
         .into_iter()
         .map(|target| Tracked {
             evaluated: false,
+            me: None,
             polled: None,
             stored: target::baseline(&mut file, &target),
             target,
         })
         .collect();
+    if let Err(envelope) = find_viewers(args, backend, &mut tracked, call_deadline) {
+        return Ok(report(stdout, &envelope));
+    }
     let mut write_failed = false;
     let mut envelope = loop {
         let started = clock.now();
-        match poll_round(&mut tracked, backend, clock, &mut file, call_deadline) {
+        match poll_round(args, &mut tracked, backend, clock, &mut file, call_deadline) {
             Ok(Some(ended)) => break ended,
             Ok(None) => {}
             Err(error) => {
@@ -116,13 +122,40 @@ pub fn run(
 struct Tracked {
     /// Whether the latest round polled it successfully.
     evaluated: bool,
+    /// The viewer's account id on the target's host, when a rule names `@me`.
+    me: Option<String>,
     polled: Option<Snapshot>,
     stored: Option<Snapshot>,
     target: Target,
 }
 
+/// Fills in each target's viewer, asking once per host and only when a rule names `@me`.
+fn find_viewers(
+    args: &Args,
+    backend: &impl Backend,
+    tracked: &mut [Tracked],
+    deadline: Option<SystemTime>,
+) -> Result<(), Envelope> {
+    if !rule::names_me(args.on.iter().chain(&args.ignore)) {
+        return Ok(());
+    }
+    let mut viewers = HashMap::new();
+    for tracked in tracked {
+        let host = &tracked.target.host;
+        if !viewers.contains_key(host) {
+            let viewer = backend
+                .viewer(host, deadline)
+                .map_err(|failure| Envelope::from_failure(failure, &tracked.target.url))?;
+            viewers.insert(host.clone(), viewer);
+        }
+        tracked.me = viewers.get(host).cloned();
+    }
+    Ok(())
+}
+
 /// Polls each target once, saving a first baseline at once; returns a wake, else the round's failure.
 fn poll_round(
+    args: &Args,
     tracked: &mut [Tracked],
     backend: &impl Backend,
     clock: &impl Clock,
@@ -154,8 +187,9 @@ fn poll_round(
             file.save([first])?;
             continue;
         };
-        let (seen, next) = diff(baseline, poll);
+        let (mut seen, next) = diff(baseline, poll);
         tracked.polled = Some(next);
+        seen.retain(|event| rule::wakes(&args.on, &args.ignore, event, tracked.me.as_deref()));
         if seen.is_empty() {
             continue;
         }
@@ -247,13 +281,14 @@ mod tests {
     use super::*;
     use crate::envelope::Forge;
     use crate::exec::{Output, Script};
-    use crate::forge::{Poll, poll};
+    use crate::forge::{Account, Poll, octocat, poll};
     use crate::reference::{self, Reference};
 
     const NODE_ID: &str = "PR_1";
     const OTHER: &str = "https://github.com/o/r/pull/2";
     const STARTED: u64 = 1_792_523_957;
     const URL: &str = "https://github.com/o/r/pull/1";
+    const VIEWER_ID: &str = "U_1";
 
     struct FakeClock(Cell<SystemTime>);
 
@@ -292,6 +327,10 @@ mod tests {
         fn poll(&self, target: &Target, _: Option<SystemTime>) -> Result<Poll, Failure> {
             let step = self.polls.borrow_mut().pop_front();
             step.expect("unexpected poll")(target)
+        }
+
+        fn viewer(&self, _: &str, _: Option<SystemTime>) -> Result<String, Failure> {
+            Ok(VIEWER_ID.to_owned())
         }
     }
 
@@ -364,6 +403,8 @@ mod tests {
 
     fn args(targets: &[&str], snapshot: &Path, timeout: Option<u64>) -> Args {
         Args {
+            ignore: Vec::new(),
+            on: Vec::new(),
             targets: targets
                 .iter()
                 .map(|target| reference::parse_name(target).unwrap())
@@ -526,6 +567,45 @@ mod tests {
             saved(&sandbox.snapshot())["targets"][URL]["snapshot"],
             json!(poll(&["1", "2"]))
         );
+    }
+
+    #[test]
+    fn an_ignored_event_is_saved_as_seen_for_later_runs() {
+        let sandbox = Sandbox::new("ignored");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let every_event = args(&[URL], &sandbox.snapshot(), Some(0));
+        let ignoring = Args {
+            ignore: vec![rule::parse("comment.created").unwrap()],
+            ..args(&[URL], &sandbox.snapshot(), Some(0))
+        };
+
+        let (ignored, envelope) = watch(&ignoring, vec![returns(URL, poll(&["1", "2"]))]);
+        let (later, _) = watch(&every_event, vec![returns(URL, poll(&["1", "2"]))]);
+
+        assert_eq!(ignored, 3);
+        assert_eq!(envelope, timed_out(&[summary(URL)]));
+        assert_eq!(later, 3);
+    }
+
+    #[test]
+    fn me_wakes_on_the_viewers_account_alone_whatever_its_login() {
+        let sandbox = Sandbox::new("me");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let mut next = poll(&["1", "2", "3"]);
+        next.comments[1].actor = Some(Account {
+            id: Some(VIEWER_ID.to_owned()),
+            ..octocat()
+        });
+        let mine = Args {
+            on: vec![rule::parse("actor=@me").unwrap()],
+            ..args(&[URL], &sandbox.snapshot(), Some(0))
+        };
+
+        let (code, envelope) = watch(&mine, vec![returns(URL, next)]);
+
+        assert_eq!(code, 0);
+        assert_eq!(envelope["events"].as_array().unwrap().len(), 1);
+        assert_eq!(envelope["events"][0]["comment_id"], "2");
     }
 
     #[test]
