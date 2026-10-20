@@ -1,0 +1,19 @@
+query ($id: ID!) {
+  node(id: $id) {
+    ... on PullRequest {
+      state
+      headRefOid
+      comments(last: 100) {
+        nodes {
+          databaseId
+          author {
+            login
+          }
+          body
+          createdAt
+          url
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Tue, 20 Oct 2026 18:31:11 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Oauth-Scopes: repo
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Edge-Region: uksouth
+X-Github-Media-Type: github.v4; format=json
+X-Github-Request-Id: F358:79EAB:173582:221C18:6AD7B36E
+X-Oauth-Scopes: delete_repo, gist, read:org, repo, workflow
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4475
+X-Ratelimit-Reset: 1792521228
+X-Ratelimit-Resource: graphql
+X-Ratelimit-Used: 525
+X-Xss-Protection: 0
+
+{"data":{"node":{"state":"MERGED","headRefOid":"fb5f9a7d7df000a39a0b88667dad43be6b4814ca","comments":{"nodes":[{"databaseId":6297087190,"author":{"login":"brzzdev"},"body":"Paul's Codex:\n\n> Review verdict: Approved at fb5f9a7d7df000a39a0b88667dad43be6b4814ca\n","createdAt":"2026-10-20T17:33:24Z","url":"https://github.com/brzzdev/babysit/pull/15#issuecomment-6297087190"}]}}}}
