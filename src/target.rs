@@ -56,7 +56,8 @@ enum Claim {
 }
 
 struct Remote {
-    host: String,
+    /// The host, with the port of an HTTP(S) URL but not of an SSH one.
+    authority: String,
     name: String,
     path: String,
 }
@@ -98,14 +99,17 @@ impl<'a, E: Exec> Locator<'a, E> {
         }
     }
 
-    fn claim(&mut self, host: &str) -> Result<Claim, Error> {
+    /// Which CLIs claim `authority`: gh by its bare host, since gh can't reach a host on a port, and
+    /// glab with the port, as it keys its hosts.
+    fn claim(&mut self, authority: &str) -> Result<Claim, Error> {
+        let host = without_port(authority);
         if host.eq_ignore_ascii_case(GITHUB_HOST) {
             return Ok(Claim::GitHub);
         }
         if host.eq_ignore_ascii_case(GITLAB_HOST) {
             return Ok(Claim::GitLab);
         }
-        if let Some(claim) = self.claims.get(host) {
+        if let Some(claim) = self.claims.get(authority) {
             return Ok(*claim);
         }
         let holds_token =
@@ -114,7 +118,7 @@ impl<'a, E: Exec> Locator<'a, E> {
             .call("gh", &["auth", "token", "--hostname", host])?
             .is_some_and(holds_token);
         let gitlab = self
-            .call("glab", &["config", "get", "token", "--host", host])?
+            .call("glab", &["config", "get", "token", "--host", authority])?
             .is_some_and(holds_token);
         let claim = match (github, gitlab) {
             (true, true) => Claim::Both,
@@ -122,7 +126,7 @@ impl<'a, E: Exec> Locator<'a, E> {
             (false, true) => Claim::GitLab,
             (false, false) => Claim::Neither,
         };
-        self.claims.insert(host.to_owned(), claim);
+        self.claims.insert(authority.to_owned(), claim);
         Ok(claim)
     }
 
@@ -149,7 +153,7 @@ impl<'a, E: Exec> Locator<'a, E> {
         let mut gitlab = Vec::new();
         let mut unclaimed = Vec::new();
         for remote in parse_remotes(&remotes.stdout) {
-            match self.claim(&remote.host)? {
+            match self.claim(&remote.authority)? {
                 Claim::Both => {
                     return Err(Error::Fatal {
                         forge: None,
@@ -157,14 +161,14 @@ impl<'a, E: Exec> Locator<'a, E> {
                         message: format!(
                             "both gh and glab hold a token for {}, so its forge is unknown; \
                              {PASS_THE_URL}",
-                            remote.host,
+                            remote.authority,
                         ),
                     });
                 }
                 Claim::GitHub => github.push(remote),
                 Claim::GitLab => gitlab.push(remote),
-                Claim::Neither if !unclaimed.contains(&remote.host) => {
-                    unclaimed.push(remote.host);
+                Claim::Neither if !unclaimed.contains(&remote.authority) => {
+                    unclaimed.push(remote.authority);
                 }
                 Claim::Neither => {}
             }
@@ -239,7 +243,7 @@ impl<'a, E: Exec> Locator<'a, E> {
             } else {
                 value
             };
-            (remote.host.as_str(), path)
+            (remote.authority.as_str(), path)
         } else {
             match remotes {
                 [] if unclaimed.is_empty() => {
@@ -254,7 +258,7 @@ impl<'a, E: Exec> Locator<'a, E> {
                         unclaimed.join(", "),
                     )));
                 }
-                [only] => (only.host.as_str(), only.path.as_str()),
+                [only] => (only.authority.as_str(), only.path.as_str()),
                 _ => {
                     return Err(usage(&format!(
                         "is ambiguous with several {forge_name} remotes and no {chosen_by}"
@@ -265,6 +269,10 @@ impl<'a, E: Exec> Locator<'a, E> {
         if !reference::is_project_path(forge, path) {
             return Err(usage(&format!("can't use the remote project `{path}`")));
         }
+        let host = match forge {
+            Forge::GitHub => without_port(host),
+            Forge::GitLab => host,
+        };
         Ok((host.to_owned(), path.to_owned()))
     }
 
@@ -367,13 +375,13 @@ fn parse_remotes(listing: &str) -> impl Iterator<Item = Remote> {
             .and_then(|(_, push)| split_remote_url(push));
         let names_project =
             |(_, path): &(String, String)| reference::is_project_path(Forge::GitHub, path);
-        let (host, path) = match (fetched, pushed) {
+        let (authority, path) = match (fetched, pushed) {
             (Some(fetched), _) if names_project(&fetched) => fetched,
             (_, Some(pushed)) if names_project(&pushed) => pushed,
             (fetched, pushed) => fetched.or(pushed)?,
         };
         Some(Remote {
-            host,
+            authority,
             name: name.to_owned(),
             path,
         })
@@ -438,30 +446,38 @@ fn glab_remote_rank(name: &str) -> u8 {
     }
 }
 
-/// Splits a remote URL, in URL or scp-like form, into its host and project path. The port is
-/// dropped, as `gh` drops it, since `gh` can't reach a host on one.
+/// Splits a remote URL, in URL or scp-like form, into its authority and project path. Only an
+/// HTTP(S) URL keeps its port, since an SSH port is the transport's, not the forge's.
 fn split_remote_url(url: &str) -> Option<(String, String)> {
-    let (authority, path) = if let Some((_, rest)) = url.split_once("://") {
-        rest.split_once('/')?
+    let (scheme, authority, path) = if let Some((scheme, rest)) = url.split_once("://") {
+        let (authority, path) = rest.split_once('/')?;
+        (Some(scheme), authority, path)
     } else {
         let (authority, path) = url.split_once(':')?;
         if authority.contains('/') {
             return None;
         }
-        (authority, path)
+        (None, authority, path)
     };
-    let host_and_port = authority
+    let authority = authority
         .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    let host = host_and_port
-        .split_once(':')
-        .map_or(host_and_port, |(host, _)| host);
+        .map_or(authority, |(_, authority)| authority);
+    let authority = match scheme {
+        Some("http" | "https") => authority,
+        _ => without_port(authority),
+    };
     let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
-    if !reference::is_authority(host) || path.is_empty() {
+    if !reference::is_authority(authority) || path.is_empty() {
         return None;
     }
-    Some((host.to_owned(), path.to_owned()))
+    Some((authority.to_owned(), path.to_owned()))
+}
+
+fn without_port(authority: &str) -> &str {
+    authority
+        .split_once(':')
+        .map_or(authority, |(host, _)| host)
 }
 
 #[cfg(test)]
@@ -486,19 +502,19 @@ mod tests {
         )
     }
 
-    fn tokens(host: &str, claim: Claim) -> [(String, Result<Output, exec::Error>); 2] {
+    fn tokens(authority: &str, claim: Claim) -> [(String, Result<Output, exec::Error>); 2] {
         let gh = matches!(claim, Claim::Both | Claim::GitHub);
         let glab = matches!(claim, Claim::Both | Claim::GitLab);
         [
             (
-                format!("gh auth token --hostname {host}"),
+                format!("gh auth token --hostname {}", without_port(authority)),
                 Ok(Output::exited(
                     i32::from(!gh),
                     if gh { "gho_x\n" } else { "" },
                 )),
             ),
             (
-                format!("glab config get token --host {host}"),
+                format!("glab config get token --host {authority}"),
                 Ok(Output::exited(0, if glab { "glpat-x\n" } else { "" })),
             ),
         ]
@@ -585,6 +601,33 @@ mod tests {
             locate(&script, &merge_request()),
             Ok(located_on_gitlab("gitlab.com", "headquarters/app")),
         );
+    }
+
+    #[test]
+    fn keeps_the_port_of_an_https_gitlab_remote_but_not_of_an_ssh_one() {
+        for (url, authority) in [
+            (
+                "https://gitlab.example.com:8443/g/p.git",
+                "gitlab.example.com:8443",
+            ),
+            (
+                "ssh://git@gitlab.example.com:2222/g/p.git",
+                "gitlab.example.com",
+            ),
+        ] {
+            let script = Script::new(
+                [remotes(&[("origin", url)])]
+                    .into_iter()
+                    .chain(tokens(authority, Claim::GitLab))
+                    .chain([(GLAB_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
+            );
+
+            assert_eq!(
+                locate(&script, &merge_request()),
+                Ok(located_on_gitlab(authority, "g/p")),
+                "{url}",
+            );
+        }
     }
 
     #[test]
@@ -711,7 +754,7 @@ mod tests {
             ])]
             .into_iter()
             .chain(tokens("git.example.org", Claim::Neither))
-            .chain(tokens("ghe.example.com", Claim::GitHub))
+            .chain(tokens("ghe.example.com:8443", Claim::GitHub))
             .chain([(GH_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
         );
 
