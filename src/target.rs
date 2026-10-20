@@ -109,7 +109,7 @@ impl<'a, E: Exec> Locator<'a, E> {
         let mut github = Vec::new();
         let mut gitlab = false;
         let mut unclaimed = Vec::new();
-        for remote in fetch_remotes(&remotes.stdout) {
+        for remote in parse_remotes(&remotes.stdout) {
             match self.claim(&remote.host)? {
                 Claim::Both => {
                     return Err(Error::Fatal {
@@ -219,12 +219,20 @@ fn default_remote(resolved: &str) -> Option<(&str, &str)> {
     })
 }
 
-/// The fetch remotes in `git remote -v` output whose URL names a host and project.
-fn fetch_remotes(listing: &str) -> impl Iterator<Item = Remote> {
-    listing.lines().filter_map(|line| {
-        let (name, rest) = line.split_once('\t')?;
-        let url = rest.strip_suffix(" (fetch)")?;
-        let (host, path) = split_remote_url(url)?;
+/// The remotes in `git remote -v` output whose fetch URL, or else push URL as `gh` falls back to,
+/// names a host and project.
+fn parse_remotes(listing: &str) -> impl Iterator<Item = Remote> {
+    let urls = |direction: &'static str| {
+        listing.lines().filter_map(move |line| {
+            let (name, rest) = line.split_once('\t')?;
+            Some((name, rest.strip_suffix(direction)?))
+        })
+    };
+    urls(" (fetch)").filter_map(move |(name, fetch)| {
+        let (host, path) = split_remote_url(fetch).or_else(|| {
+            let (_, push) = urls(" (push)").find(|(pushed, _)| *pushed == name)?;
+            split_remote_url(push)
+        })?;
         Some(Remote {
             host,
             name: name.to_owned(),
@@ -326,6 +334,23 @@ mod tests {
         assert_eq!(
             locate(&script, &checkout()),
             Ok(located("github.com", "o", "r"))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_push_url_when_the_fetch_url_names_no_project() {
+        let listing = "origin\t/srv/git/r.git (fetch)\norigin\tgit@github.com:o/r.git (push)\n";
+        let script = Script::new([
+            ("git remote -v".to_owned(), Ok(Output::exited(0, listing))),
+            (
+                GH_RESOLVED.to_owned(),
+                Ok(Output::exited(0, "remote.origin.gh-resolved base\n")),
+            ),
+        ]);
+
+        assert_eq!(
+            locate(&script, &checkout()),
+            Ok(located("github.com", "o", "r")),
         );
     }
 
