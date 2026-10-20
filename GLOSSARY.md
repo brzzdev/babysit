@@ -15,6 +15,11 @@ _Avoid_: Cursor, checkpoint, last seen
 A code-hosting service babysit watches, such as GitHub or GitLab.
 _Avoid_: Host, provider, platform
 
+**Poll**:
+One complete fetch of a target from its forge; a fetch that comes back partial is a failed poll, not
+a snapshot.
+_Avoid_: Refresh, check, sync
+
 **Snapshot**:
 Everything babysit knows about a target at one moment.
 _Avoid_: State, status
@@ -50,6 +55,10 @@ _Avoid_: Filter, matcher, predicate
 The forge account an event happened to, when that isn't the actor, such as the reviewer whose review
 was withdrawn.
 _Avoid_: Recipient
+
+**Wake**:
+A run ending because at least one event matched its rules.
+_Avoid_: Trigger, fire, alert
 
 ### Conversation
 
