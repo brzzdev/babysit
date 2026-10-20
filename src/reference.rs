@@ -77,7 +77,7 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     }
     let segments: Vec<_> = rest.split('/').collect();
     let (forge, kind, host, project, number) = match &segments[..] {
-        // `groups/` is reserved on GitLab: its work items belong to a group, not a project.
+        // `groups/` is a reserved GitLab route for group-level pages, never a project.
         [host, project @ .., "-", "issues" | "work_items", number]
             if project.len() >= 2 && project[0] != "groups" =>
         {
