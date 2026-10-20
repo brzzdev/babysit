@@ -36,6 +36,7 @@ const POLL_QUERY: &str = concat!(
 );
 const SECONDARY_RATE_LIMIT: &str = "secondary rate limit";
 const STATUS_FORBIDDEN: u16 = 403;
+const STATUS_GONE: u16 = 410;
 const STATUS_NOT_FOUND: u16 = 404;
 const STATUS_TOO_MANY_REQUESTS: u16 = 429;
 const STATUS_UNAUTHORIZED: u16 = 401;
@@ -78,7 +79,8 @@ impl<'a, E: Exec> GitHub<'a, E> {
         }
         match response.status {
             STATUS_UNAUTHORIZED | STATUS_FORBIDDEN => Err(fatal(ErrorKind::Auth, reason)),
-            STATUS_NOT_FOUND => {
+            // A deleted issue, or any issue where issues are disabled, is gone.
+            STATUS_GONE | STATUS_NOT_FOUND => {
                 let message = format!("not found or not visible to gh: {reason}");
                 Err(fatal(ErrorKind::TargetNotFound, &message))
             }
@@ -113,7 +115,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         if rest_names_secondary_limit(&response.body) {
             return Err(rate_limit(hints));
         }
-        let found: Found = decode(&response.body).map_err(|failure| failure.paced(hints))?;
+        let found: RestTarget = decode(&response.body).map_err(|failure| failure.paced(hints))?;
         let target = Target {
             forge: Forge::GitHub,
             forge_id: found.node_id,
@@ -395,7 +397,7 @@ fn gone(target: &Target) -> Failure {
 
 /// A pull request or issue as REST reports it; `pull_request` marks an issue that is one.
 #[derive(Deserialize)]
-struct Found {
+struct RestTarget {
     html_url: String,
     node_id: String,
     pull_request: Option<IgnoredAny>,
@@ -893,8 +895,7 @@ impl Standing {
 }
 
 impl Lifecycle {
-    /// When and by whom a close or reopen happened; a latest event that doesn't match the state
-    /// names no one.
+    /// When and by whom the latest close or reopen happened, if it set the current state.
     fn change(self) -> (Option<String>, Option<Account>) {
         let latest = self.state_changes.nodes.into_iter().last();
         let (at, by) = match (self.state, latest) {
@@ -1005,25 +1006,33 @@ mod tests {
         }
     }
 
-    fn resolve_issue(stdout: &str) -> Target {
+    fn resolve_issue(output: Output) -> Result<Target, Failure> {
         let exec = Script::new([(
             "gh api -i --hostname github.com repos/brzzdev/babysit/issues/9".to_owned(),
-            Ok(gh(0, stdout, "")),
+            Ok(output),
         )]);
         let reference = reference::parse("https://github.com/brzzdev/babysit/issues/9").unwrap();
-        GitHub::new(&exec).resolve(&reference, None).unwrap().0
+        GitHub::new(&exec)
+            .resolve(&reference, None)
+            .map(|(target, _)| target)
     }
 
     #[test]
     fn resolves_an_issue_to_its_url_and_node_id() {
-        let resolved = resolve_issue(include_str!("github/fixtures/resolve_issue.http"));
+        let resolved = resolve_issue(gh(
+            0,
+            include_str!("github/fixtures/resolve_issue.http"),
+            "",
+        ));
 
-        assert_eq!(resolved, issue());
+        assert_eq!(resolved.unwrap(), issue());
     }
 
     #[test]
     fn resolves_an_issue_that_is_a_pull_request_to_the_pull_request() {
-        let resolved = resolve_issue(include_str!("github/fixtures/resolve_issue_pull.http"));
+        let stdout = include_str!("github/fixtures/resolve_issue_pull.http");
+
+        let resolved = resolve_issue(gh(0, stdout, "")).unwrap();
 
         assert_eq!(
             resolved,
@@ -1035,6 +1044,18 @@ mod tests {
                 url: "https://github.com/brzzdev/babysit/pull/38".to_owned(),
             },
         );
+    }
+
+    #[test]
+    fn an_issue_gone_or_disabled_is_not_found() {
+        let failure = resolve_issue(gh(
+            1,
+            include_str!("github/fixtures/resolve_issue_gone.http"),
+            "gh: Issues are disabled for this repo (HTTP 410)",
+        ))
+        .unwrap_err();
+
+        assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
     }
 
     #[test]
