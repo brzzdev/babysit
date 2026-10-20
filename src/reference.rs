@@ -77,7 +77,10 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     }
     let segments: Vec<_> = rest.split('/').collect();
     let (forge, kind, host, project, number) = match &segments[..] {
-        [host, project @ .., "-", "issues", number] if project.len() >= 2 => {
+        // `groups/` is reserved on GitLab: its work items belong to a group, not a project.
+        [host, project @ .., "-", "issues" | "work_items", number]
+            if project.len() >= 2 && project[0] != "groups" =>
+        {
             (Forge::GitLab, TargetKind::Issue, *host, project, *number)
         }
         [host, project @ .., "-", "merge_requests", number] if project.len() >= 2 => (
@@ -236,6 +239,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_a_gitlab_work_item_url_as_an_issue() {
+        assert_eq!(
+            parse_name("https://gitlab.com/g/sub/p/-/work_items/12"),
+            Ok(Name::Url(Reference {
+                forge: Forge::GitLab,
+                given: "https://gitlab.com/g/sub/p/-/work_items/12".to_owned(),
+                host: "gitlab.com".to_owned(),
+                kind: TargetKind::Issue,
+                number: 12,
+                project: "g/sub/p".to_owned(),
+            })),
+        );
+    }
+
+    #[test]
     fn rejects_a_port_on_a_github_url() {
         let error = parse_name("https://ghe.example.com:8443/o/r/pull/12").unwrap_err();
 
@@ -318,6 +336,13 @@ mod tests {
             "https://gitlab.com/g/p/-/issues/12/",
             "https://gitlab.com/g/p/-/issues/012",
             "https://gitlab.com/g/p/-/issues/12#note_1",
+            "https://gitlab.com/p/-/work_items/12",
+            "https://gitlab.com/g/p/work_items/12",
+            "https://gitlab.com/g/p/-/work_items/12/",
+            "https://gitlab.com/g/p/-/work_items/12/designs",
+            "https://gitlab.com/g/p/-/work_items/012",
+            "https://gitlab.com/g/p/-/work_items/12#note_1",
+            "https://gitlab.com/groups/g/-/work_items/12",
         ] {
             assert!(parse_name(given).is_err(), "{given}");
         }
