@@ -40,7 +40,7 @@ pub fn parse_name(given: &str) -> Result<Name, String> {
 }
 
 pub fn parse(given: &str) -> Result<Reference, String> {
-    let invalid = || format!("`{given}` is not a GitHub pull request URL or `#<number>`");
+    let invalid = || format!("`{given}` is not a GitHub pull request URL");
     let rest = given
         .strip_prefix("https://")
         .or_else(|| given.strip_prefix("http://"))

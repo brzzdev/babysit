@@ -8,6 +8,9 @@ use crate::reference::{self, Name, Reference};
 
 const GITHUB_HOST: &str = "github.com";
 const GITLAB_HOST: &str = "gitlab.com";
+const EXIT_NOT_FOUND: i32 = 127;
+/// The git config key, under a remote, where `gh repo set-default` records its choice.
+const GH_RESOLVED_KEY: &str = "gh-resolved";
 /// The `gh-resolved` value marking the remote `gh repo set-default` chose.
 const RESOLVED_BASE: &str = "base";
 
@@ -73,20 +76,23 @@ impl<'a, E: Exec> Locator<'a, E> {
     }
 
     fn claim(&mut self, host: &str) -> Result<Claim, Error> {
-        match host {
-            GITHUB_HOST => return Ok(Claim::GitHub),
-            GITLAB_HOST => return Ok(Claim::GitLab),
-            _ => {}
+        if host.eq_ignore_ascii_case(GITHUB_HOST) {
+            return Ok(Claim::GitHub);
+        }
+        if host.eq_ignore_ascii_case(GITLAB_HOST) {
+            return Ok(Claim::GitLab);
         }
         if let Some(claim) = self.claims.get(host) {
             return Ok(*claim);
         }
+        let holds_token =
+            |output: Output| output.code == Some(0) && !output.stdout.trim().is_empty();
         let github = self
             .call("gh", &["auth", "token", "--hostname", host])?
-            .is_some_and(|output| output.code == Some(0));
+            .is_some_and(holds_token);
         let gitlab = self
             .call("glab", &["config", "get", "token", "--host", host])?
-            .is_some_and(|output| output.code == Some(0) && !output.stdout.trim().is_empty());
+            .is_some_and(holds_token);
         let claim = match (github, gitlab) {
             (true, true) => Claim::Both,
             (true, false) => Claim::GitHub,
@@ -129,16 +135,25 @@ impl<'a, E: Exec> Locator<'a, E> {
                 "is ambiguous in a checkout with GitHub and GitLab remotes"
             }));
         }
+        let pattern = format!(r"^remote\..*\.{GH_RESOLVED_KEY}$");
         let resolved = self
-            .call(
-                "git",
-                &["config", "--get-regexp", r"^remote\..*\.gh-resolved$"],
-            )?
+            .call("git", &["config", "--get-regexp", &pattern])?
             .map(|output| output.stdout)
             .unwrap_or_default();
-        let (host, path) = match default_remote(&resolved, &github) {
-            Some(default) => default,
-            None => match &github[..] {
+        let (host, path) = if let Some((name, value)) = default_remote(&resolved) {
+            let Some(remote) = github.iter().find(|remote| remote.name == name) else {
+                return Err(usage(&format!(
+                    "can't use `gh repo set-default` remote `{name}`, which isn't on a GitHub host"
+                )));
+            };
+            let path = if value == RESOLVED_BASE {
+                &remote.path
+            } else {
+                value
+            };
+            (remote.host.as_str(), path)
+        } else {
+            match &github[..] {
                 [] => return Err(usage("needs a checkout with a GitHub remote")),
                 [only] => (only.host.as_str(), only.path.as_str()),
                 _ => {
@@ -146,7 +161,7 @@ impl<'a, E: Exec> Locator<'a, E> {
                         "is ambiguous with several GitHub remotes and no `gh repo set-default`",
                     ));
                 }
-            },
+            }
         };
         let Some((owner, repo)) = path
             .split_once('/')
@@ -166,6 +181,7 @@ impl<'a, E: Exec> Locator<'a, E> {
     /// Runs a local command; `None` when the program isn't installed.
     fn call(&self, program: &str, args: &[&str]) -> Result<Option<Output>, Error> {
         match self.exec.run(program, args, self.deadline) {
+            Ok(output) if output.code == Some(EXIT_NOT_FOUND) => Ok(None),
             Ok(output) => Ok(Some(output)),
             Err(exec::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(exec::Error::Io(error)) => Err(Error::Fatal {
@@ -188,18 +204,15 @@ fn claimed_by_both(host: &str) -> Error {
     }
 }
 
-/// The host and project path of the remote `gh repo set-default` chose, among `github`.
-fn default_remote<'r>(resolved: &'r str, github: &'r [Remote]) -> Option<(&'r str, &'r str)> {
-    resolved.lines().find_map(|line| {
+/// The remote name and `gh-resolved` value `gh repo set-default` last recorded.
+fn default_remote(resolved: &str) -> Option<(&str, &str)> {
+    resolved.lines().rev().find_map(|line| {
         let (key, value) = line.split_once(' ')?;
-        let name = key.strip_prefix("remote.")?.strip_suffix(".gh-resolved")?;
-        let remote = github.iter().find(|remote| remote.name == name)?;
-        let path = if value == RESOLVED_BASE {
-            &remote.path
-        } else {
-            value
-        };
-        Some((remote.host.as_str(), path))
+        let name = key
+            .strip_prefix("remote.")?
+            .strip_suffix(GH_RESOLVED_KEY)?
+            .strip_suffix('.')?;
+        Some((name, value))
     })
 }
 
@@ -266,7 +279,9 @@ mod tests {
         )
     }
 
-    fn tokens(host: &str, gh: bool, glab: bool) -> [(String, Result<Output, exec::Error>); 2] {
+    fn tokens(host: &str, claim: Claim) -> [(String, Result<Output, exec::Error>); 2] {
+        let gh = matches!(claim, Claim::Both | Claim::GitHub);
+        let glab = matches!(claim, Claim::Both | Claim::GitLab);
         [
             (
                 format!("gh auth token --hostname {host}"),
@@ -353,17 +368,17 @@ mod tests {
         let script = Script::new(
             [remotes(&[
                 ("mirror", "https://git.example.org/o/r.git"),
-                ("origin", "https://ghe.example.com:8443/o/r.git"),
+                ("origin", "https://ghe.example.com/o/r.git"),
             ])]
             .into_iter()
-            .chain(tokens("git.example.org", false, false))
-            .chain(tokens("ghe.example.com:8443", true, false))
+            .chain(tokens("git.example.org", Claim::Neither))
+            .chain(tokens("ghe.example.com", Claim::GitHub))
             .chain([(GH_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
         );
 
         assert_eq!(
             locate(&script, &checkout()),
-            Ok(located("ghe.example.com:8443", "o", "r")),
+            Ok(located("ghe.example.com", "o", "r")),
         );
     }
 
@@ -399,15 +414,35 @@ mod tests {
 
     #[test]
     fn reports_a_missing_git() {
-        let script = Script::new([("git remote -v".to_owned(), missing())]);
+        for missing in [missing(), Ok(Output::exited(127, ""))] {
+            let script = Script::new([("git remote -v".to_owned(), missing)]);
 
-        assert!(matches!(
-            locate(&script, &checkout()),
-            Err(Error::Fatal {
-                kind: ErrorKind::CliMissing,
-                ..
-            }),
-        ));
+            assert!(matches!(
+                locate(&script, &checkout()),
+                Err(Error::Fatal {
+                    kind: ErrorKind::CliMissing,
+                    ..
+                }),
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_a_default_remote_on_an_unclaimed_host() {
+        let script = Script::new(
+            [remotes(&[
+                ("origin", "git@github-work:me/r.git"),
+                ("upstream", "https://github.com/o/r"),
+            ])]
+            .into_iter()
+            .chain(tokens("github-work", Claim::Neither))
+            .chain([(
+                GH_RESOLVED.to_owned(),
+                Ok(Output::exited(0, "remote.origin.gh-resolved base\n")),
+            )]),
+        );
+
+        assert!(matches!(locate(&script, &checkout()), Err(Error::Usage(_))));
     }
 
     #[test]
@@ -439,9 +474,9 @@ mod tests {
 
     #[test]
     fn rejects_a_host_claimed_by_both_clis_or_neither() {
-        for (gh, glab) in [(true, true), (false, false)] {
+        for claim in [Claim::Both, Claim::Neither] {
             let name = reference::parse_name("https://forge.example.com/o/r/pull/12").unwrap();
-            let script = Script::new(tokens("forge.example.com", gh, glab));
+            let script = Script::new(tokens("forge.example.com", claim));
 
             let Err(Error::Fatal { kind, message }) = locate(&script, &name) else {
                 panic!("expected an auth error");
@@ -460,7 +495,7 @@ mod tests {
                 ("upstream", "git@ghe.example.com:o/r.git"),
             ])]
             .into_iter()
-            .chain(tokens("ghe.example.com", true, false))
+            .chain(tokens("ghe.example.com", Claim::GitHub))
             .chain([(
                 GH_RESOLVED.to_owned(),
                 Ok(Output::exited(0, "remote.upstream.gh-resolved base\n")),
