@@ -45,7 +45,6 @@ pub enum Detail {
         reply_to: String,
         body: String,
         path: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
         line: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         review_id: Option<String>,
@@ -145,7 +144,6 @@ fn comment_edited(comment: &Comment, thread: Option<&Thread>) -> Event {
     }
 }
 
-/// A review submitted since the baseline, or one the baseline held that has since been dismissed.
 /// A review first seen dismissed was submitted and withdrawn in between, so it reports nothing.
 fn review_change(seen: Option<&Review>, review: &Review) -> Option<Event> {
     let withdrawn = review.state == ReviewState::Dismissed;
@@ -166,8 +164,8 @@ fn review_change(seen: Option<&Review>, review: &Review) -> Option<Event> {
                 review_id: review.id.clone(),
             },
             url: review.url.clone(),
-            at: None,
-            actor: None,
+            at: review.withdrawn_at.clone(),
+            actor: review.withdrawn_by.clone(),
             subject: review.actor.clone(),
         }),
         _ => None,
@@ -184,7 +182,7 @@ fn thread_comment(thread: &Thread, comment: &Comment) -> Event {
             body: comment.body.clone(),
             path: thread.path.clone(),
             line: thread.line,
-            review_id: comment.review.clone(),
+            review_id: comment.review_id.clone(),
         }
     } else {
         Detail::ThreadReplied {
@@ -192,7 +190,7 @@ fn thread_comment(thread: &Thread, comment: &Comment) -> Event {
             comment_id: comment.id.clone(),
             reply_to: thread.reply_to.clone(),
             body: comment.body.clone(),
-            review_id: comment.review.clone(),
+            review_id: comment.review_id.clone(),
         }
     };
     Event {
@@ -243,7 +241,7 @@ mod tests {
 
     fn reviewed(id: &str, review: &str) -> Comment {
         Comment {
-            review: Some(review.to_owned()),
+            review_id: Some(review.to_owned()),
             at: "2026-10-20T19:05:00Z".to_owned(),
             url: format!("https://github.com/o/r/pull/1#discussion_r{id}"),
             ..comment(id)
@@ -271,6 +269,8 @@ mod tests {
             id: "500".to_owned(),
             state,
             url: "https://github.com/o/r/pull/1#pullrequestreview-500".to_owned(),
+            withdrawn_at: None,
+            withdrawn_by: None,
         }
     }
 
@@ -448,11 +448,18 @@ mod tests {
     #[test]
     fn a_dismissal_withdraws_the_review_with_the_reviewer_as_subject() {
         let baseline = with_reviews(vec![review(ReviewState::Approved)]);
+        let hubot = Account {
+            bot: Some(false),
+            login: "hubot".to_owned(),
+        };
+        let dismissed = Review {
+            state: ReviewState::Dismissed,
+            withdrawn_at: Some("2026-10-20T19:40:00Z".to_owned()),
+            withdrawn_by: Some(hubot.clone()),
+            ..review(ReviewState::Approved)
+        };
 
-        let (events, _) = diff(
-            &baseline,
-            with_reviews(vec![review(ReviewState::Dismissed)]),
-        );
+        let (events, _) = diff(&baseline, with_reviews(vec![dismissed]));
 
         assert_eq!(
             events,
@@ -461,8 +468,8 @@ mod tests {
                     review_id: "500".to_owned(),
                 },
                 url: "https://github.com/o/r/pull/1#pullrequestreview-500".to_owned(),
-                at: None,
-                actor: None,
+                at: Some("2026-10-20T19:40:00Z".to_owned()),
+                actor: Some(hubot),
                 subject: Some(octocat()),
             }],
         );

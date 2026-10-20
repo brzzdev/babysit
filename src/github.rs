@@ -12,6 +12,7 @@ use crate::forge::{
 use crate::reference::Reference;
 use crate::response::{self, Response};
 
+const BOT_SUFFIX: &str = "[bot]";
 const CLI: &str = "gh";
 const EXIT_AUTH: i32 = 4;
 const EXIT_NOT_FOUND: i32 = 127;
@@ -106,12 +107,14 @@ impl<E: Exec> Backend for GitHub<'_, E> {
     /// Pages every connection to its end, failing the poll if the head moves between pages.
     fn poll(&self, target: &Target, deadline: Option<SystemTime>) -> Result<Poll, Failure> {
         let mut comments = Paged::new("comments");
+        let mut dismissals = Paged::new("dismissals");
         let mut reviews = Paged::new("reviews");
         let mut threads = Paged::new("threads");
         let mut first: Option<(String, State)> = None;
-        while !(comments.done() && reviews.done() && threads.done()) {
+        while !(comments.done() && dismissals.done() && reviews.done() && threads.done()) {
             let mut variables = vec![("-f", format!("id={}", target.forge_id))];
             variables.extend(comments.variable());
+            variables.extend(dismissals.variable());
             variables.extend(reviews.variable());
             variables.extend(threads.variable());
             let page: PullRequestPage =
@@ -121,6 +124,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
                 Some((head, _)) => same_head(head, &page.head_ref_oid)?,
             }
             comments.take(page.comments)?;
+            dismissals.take(page.dismissals)?;
             reviews.take(page.reviews)?;
             threads.take(page.review_threads)?;
         }
@@ -134,7 +138,11 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         Ok(Poll {
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
             head,
-            reviews: reviews.nodes.into_iter().filter_map(review).collect(),
+            reviews: reviews
+                .nodes
+                .into_iter()
+                .filter_map(|node| review(node, &dismissals.nodes))
+                .collect(),
             state: state.into(),
             threads: polled_threads,
         })
@@ -169,13 +177,12 @@ impl<E: Exec> GitHub<'_, E> {
         Ok(comments.nodes)
     }
 
-    /// One GraphQL page of `node(id:)`, whose missing node is reported as a missing `what`.
     fn query<T: DeserializeOwned>(
         &self,
         target: &Target,
         query: &str,
         variables: &[(&str, String)],
-        what: &str,
+        node_kind: &str,
         deadline: Option<SystemTime>,
     ) -> Result<T, Failure> {
         let query = format!("query={query}");
@@ -199,13 +206,12 @@ impl<E: Exec> GitHub<'_, E> {
         reply.data.and_then(|data| data.node).ok_or_else(|| {
             fatal(
                 ErrorKind::PollFailed,
-                &format!("{} returned no {what}", target.url),
+                &format!("{} returned no {node_kind}", target.url),
             )
         })
     }
 }
 
-/// One connection's nodes gathered so far, and where its next page starts.
 struct Paged<T> {
     name: &'static str,
     nodes: Vec<T>,
@@ -305,6 +311,7 @@ struct Data<T> {
 #[serde(rename_all = "camelCase")]
 struct PullRequestPage {
     comments: Option<Connection<CommentNode>>,
+    dismissals: Option<Connection<DismissalNode>>,
     head_ref_oid: String,
     review_threads: Option<Connection<ThreadNode>>,
     reviews: Option<Connection<ReviewNode>>,
@@ -315,12 +322,12 @@ struct PullRequestPage {
 #[serde(rename_all = "camelCase")]
 struct ThreadPage {
     comments: Connection<CommentNode>,
-    pull_request: HeadNode,
+    pull_request: PullRequestHead,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HeadNode {
+struct PullRequestHead {
     head_ref_oid: String,
 }
 
@@ -350,6 +357,14 @@ struct CommentNode {
     #[serde(default)]
     pull_request_review: Option<ReviewRef>,
     url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DismissalNode {
+    actor: Option<Author>,
+    created_at: String,
+    review: Option<ReviewRef>,
 }
 
 #[derive(Deserialize)]
@@ -397,14 +412,14 @@ struct ThreadFields {
     resolved_by: Option<Author>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Author {
     #[serde(rename = "__typename")]
     typename: Typename,
     login: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 enum Typename {
     Bot,
     User,
@@ -420,16 +435,17 @@ enum State {
     Open,
 }
 
-/// GraphQL reports a bot's login bare; REST, and so rules, carry the `[bot]` suffix.
+/// GraphQL reports a bot's login bare where REST suffixes it `[bot]`, except through `User`-typed
+/// fields such as `resolvedBy`, which name an app by its suffixed login.
 impl From<Author> for Account {
     fn from(author: Author) -> Self {
         match author.typename {
             Typename::Bot => Self {
                 bot: Some(true),
-                login: format!("{}[bot]", author.login),
+                login: format!("{}{BOT_SUFFIX}", author.login),
             },
             Typename::User => Self {
-                bot: Some(false),
+                bot: Some(author.login.ends_with(BOT_SUFFIX)),
                 login: author.login,
             },
             Typename::Other => Self {
@@ -449,7 +465,7 @@ impl From<CommentNode> for Comment {
             edited_at: node.last_edited_at,
             editor: node.editor.map(Account::from),
             id: node.database_id.to_string(),
-            review: node
+            review_id: node
                 .pull_request_review
                 .map(|review| review.database_id.to_string()),
             url: node.url,
@@ -457,8 +473,8 @@ impl From<CommentNode> for Comment {
     }
 }
 
-/// A pending review is the viewer's unsubmitted draft, so it and its comments are left out.
-fn review(node: ReviewNode) -> Option<Review> {
+/// A pending review is the viewer's unsubmitted draft, so it is left out.
+fn review(node: ReviewNode, dismissals: &[DismissalNode]) -> Option<Review> {
     let state = match node.state {
         ReviewNodeState::Approved => ReviewState::Approved,
         ReviewNodeState::ChangesRequested => ReviewState::ChangesRequested,
@@ -466,6 +482,12 @@ fn review(node: ReviewNode) -> Option<Review> {
         ReviewNodeState::Dismissed => ReviewState::Dismissed,
         ReviewNodeState::Pending => return None,
     };
+    let dismissal = dismissals.iter().rfind(|dismissal| {
+        dismissal
+            .review
+            .as_ref()
+            .is_some_and(|review| review.database_id == node.database_id)
+    });
     Some(Review {
         actor: node.author.map(Account::from),
         at: node.submitted_at?,
@@ -473,6 +495,10 @@ fn review(node: ReviewNode) -> Option<Review> {
         id: node.database_id.to_string(),
         state,
         url: node.url,
+        withdrawn_at: dismissal.map(|dismissal| dismissal.created_at.clone()),
+        withdrawn_by: dismissal
+            .and_then(|dismissal| dismissal.actor.clone())
+            .map(Account::from),
     })
 }
 
@@ -620,7 +646,8 @@ mod tests {
             graphql(
                 POLL_QUERY,
                 &format!(
-                    "-f id={POLLED_ID} -F comments=false -f reviewsAfter=REVIEWS_1 -F threads=false"
+                    "-f id={POLLED_ID} -F comments=false -F dismissals=false -f reviewsAfter=REVIEWS_1 \
+                     -F threads=false"
                 ),
                 include_str!("github/fixtures/poll_page_2.http"),
             ),
@@ -661,7 +688,7 @@ mod tests {
             edited_at: None,
             editor: None,
             id: id.to_owned(),
-            review: Some(review.to_owned()),
+            review_id: Some(review.to_owned()),
             url: format!("https://github.com/brzzdev/babysit/pull/30#discussion_r{id}"),
         };
         let review = |id: &str, at: &str, actor| Review {
@@ -671,6 +698,8 @@ mod tests {
             id: id.to_owned(),
             state: ReviewState::Commented,
             url: format!("https://github.com/brzzdev/babysit/pull/30#pullrequestreview-{id}"),
+            withdrawn_at: None,
+            withdrawn_by: None,
         };
         Poll {
             comments: vec![Comment {
@@ -680,7 +709,7 @@ mod tests {
                 edited_at: Some("2026-10-20T19:20:00Z".to_owned()),
                 editor: Some(account("brzzdev", false)),
                 id: "6298972911".to_owned(),
-                review: None,
+                review_id: None,
                 url: "https://github.com/brzzdev/babysit/pull/30#issuecomment-6298972911"
                     .to_owned(),
             }],
@@ -777,6 +806,44 @@ mod tests {
 
         assert_eq!(kind(&failure), ErrorKind::PollFailed);
         assert!(message(&failure).contains("does not appear to be a valid cursor"));
+    }
+
+    #[test]
+    fn a_dismissed_review_carries_its_dismisser_and_time() {
+        let dismissed = include_str!("github/fixtures/poll.http")
+            .replace(
+                r#""login":"gitar-bot"},"state":"COMMENTED""#,
+                r#""login":"gitar-bot"},"state":"DISMISSED""#,
+            )
+            .replace(
+                r#""nodes":[]},"reviews""#,
+                r#""nodes":[{"actor":{"__typename":"User","login":"brzzdev"},
+                    "createdAt":"2026-10-20T19:30:00Z",
+                    "review":{"databaseId":5590011214,"state":"DISMISSED"}}]},"reviews""#,
+            );
+
+        let poll = poll_with([first_page(&dismissed)]).unwrap();
+
+        let mut withdrawn = expected();
+        withdrawn.reviews[1].state = ReviewState::Dismissed;
+        withdrawn.reviews[1].withdrawn_at = Some("2026-10-20T19:30:00Z".to_owned());
+        withdrawn.reviews[1].withdrawn_by = Some(account("brzzdev", false));
+        assert_eq!(poll, withdrawn);
+    }
+
+    #[test]
+    fn an_app_resolving_a_thread_is_a_bot() {
+        let resolved_by_app = include_str!("github/fixtures/poll.http").replace(
+            r#""resolvedBy":{"__typename":"User","login":"brzzdev"}"#,
+            r#""resolvedBy":{"__typename":"User","login":"github-advanced-security[bot]"}"#,
+        );
+
+        let poll = poll_with([first_page(&resolved_by_app)]).unwrap();
+
+        assert_eq!(
+            poll.threads[0].resolved_by,
+            Some(account("github-advanced-security[bot]", true))
+        );
     }
 
     #[test]

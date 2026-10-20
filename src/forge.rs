@@ -62,7 +62,7 @@ pub struct Comment {
     pub edited_at: Option<String>,
     pub editor: Option<Account>,
     pub id: String,
-    pub review: Option<String>,
+    pub review_id: Option<String>,
     pub url: String,
 }
 
@@ -74,6 +74,8 @@ pub struct Review {
     pub id: String,
     pub state: ReviewState,
     pub url: String,
+    pub withdrawn_at: Option<String>,
+    pub withdrawn_by: Option<Account>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -122,7 +124,7 @@ pub fn comment(id: &str) -> Comment {
         edited_at: None,
         editor: None,
         id: id.to_owned(),
-        review: None,
+        review_id: None,
         url: format!("https://github.com/o/r/pull/1#issuecomment-{id}"),
     }
 }

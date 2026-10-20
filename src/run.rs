@@ -333,7 +333,7 @@ mod tests {
                                 "edited_at": null,
                                 "editor": null,
                                 "id": "1",
-                                "review": null,
+                                "review_id": null,
                                 "url": format!("{URL}#issuecomment-1"),
                             }],
                             "head": "abc123",

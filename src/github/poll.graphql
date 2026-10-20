@@ -2,6 +2,8 @@ query (
   $id: ID!
   $comments: Boolean = true
   $commentsAfter: String
+  $dismissals: Boolean = true
+  $dismissalsAfter: String
   $reviews: Boolean = true
   $reviewsAfter: String
   $threads: Boolean = true
@@ -18,6 +20,28 @@ query (
         }
         nodes {
           ...comment
+        }
+      }
+      dismissals: timelineItems(
+        first: 100
+        after: $dismissalsAfter
+        itemTypes: [REVIEW_DISMISSED_EVENT]
+      ) @include(if: $dismissals) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          ... on ReviewDismissedEvent {
+            actor {
+              ...author
+            }
+            createdAt
+            review {
+              databaseId
+              state
+            }
+          }
         }
       }
       reviews(first: 100, after: $reviewsAfter) @include(if: $reviews) {
