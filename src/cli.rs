@@ -105,7 +105,7 @@ mod tests {
                 "babysit",
                 "--snapshot",
                 "s.json",
-                "https://github.com/o/r/issues/1",
+                "https://github.com/o/r/discussions/1",
             ],
             &[
                 "babysit",

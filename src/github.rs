@@ -1,13 +1,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, IgnoredAny};
 
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::Exec;
 use crate::forge::{
     Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Merge, Poll, Position,
-    Review, ReviewState, Target, TargetState, Thread, run_cli,
+    Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
 use crate::graphql::{Connection, Paged, same_head};
 use crate::reference::Reference;
@@ -24,19 +24,26 @@ const HEADER_POLL_INTERVAL: &str = "x-poll-interval";
 const HEADER_REMAINING: &str = "x-ratelimit-remaining";
 const HEADER_RESET: &str = "x-ratelimit-reset";
 const HEADER_RETRY_AFTER: &str = "retry-after";
+const ISSUE_POLL_QUERY: &str = concat!(
+    include_str!("github/issue_poll.graphql"),
+    include_str!("github/fragments.graphql"),
+);
 const NODE_FIELD: &str = "node";
 const POLL_QUERY: &str = concat!(
     include_str!("github/poll.graphql"),
     include_str!("github/fragments.graphql"),
+    include_str!("github/thread_fragments.graphql"),
 );
 const SECONDARY_RATE_LIMIT: &str = "secondary rate limit";
 const STATUS_FORBIDDEN: u16 = 403;
+const STATUS_GONE: u16 = 410;
 const STATUS_NOT_FOUND: u16 = 404;
 const STATUS_TOO_MANY_REQUESTS: u16 = 429;
 const STATUS_UNAUTHORIZED: u16 = 401;
 const THREAD_COMMENTS_QUERY: &str = concat!(
     include_str!("github/thread_comments.graphql"),
     include_str!("github/fragments.graphql"),
+    include_str!("github/thread_fragments.graphql"),
 );
 const VIEWER_QUERY: &str = include_str!("github/viewer.graphql");
 
@@ -72,7 +79,8 @@ impl<'a, E: Exec> GitHub<'a, E> {
         }
         match response.status {
             STATUS_UNAUTHORIZED | STATUS_FORBIDDEN => Err(fatal(ErrorKind::Auth, reason)),
-            STATUS_NOT_FOUND => {
+            // A deleted issue, or any issue where issues are disabled, is gone.
+            STATUS_GONE | STATUS_NOT_FOUND => {
                 let message = format!("not found or not visible to gh: {reason}");
                 Err(fatal(ErrorKind::TargetNotFound, &message))
             }
@@ -91,7 +99,15 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         reference: &Reference,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
-        let path = format!("repos/{}/pulls/{}", reference.project, reference.number);
+        // The issues endpoint answers for a pull request too, with its own URL and node id.
+        let resource = match reference.kind {
+            TargetKind::ChangeRequest => "pulls",
+            TargetKind::Issue => "issues",
+        };
+        let path = format!(
+            "repos/{}/{resource}/{}",
+            reference.project, reference.number,
+        );
         let (response, hints) = self.call(
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
@@ -99,12 +115,16 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         if rest_names_secondary_limit(&response.body) {
             return Err(rate_limit(hints));
         }
-        let pull: PullRequest = decode(&response.body).map_err(|failure| failure.paced(hints))?;
+        let found: RestTarget = decode(&response.body).map_err(|failure| failure.paced(hints))?;
         let target = Target {
             forge: Forge::GitHub,
-            forge_id: pull.node_id,
+            forge_id: found.node_id,
             host: reference.host.clone(),
-            url: pull.html_url,
+            kind: match found.pull_request {
+                Some(_) => TargetKind::ChangeRequest,
+                None => reference.kind,
+            },
+            url: found.html_url,
         };
         Ok((target, hints))
     }
@@ -115,7 +135,11 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         deadline: Option<SystemTime>,
     ) -> Result<(Poll, Hints), Failure> {
         let mut hints = Hints::default();
-        match self.poll_pages(target, deadline, &mut hints) {
+        let polled = match target.kind {
+            TargetKind::ChangeRequest => self.poll_pages(target, deadline, &mut hints),
+            TargetKind::Issue => self.poll_issue(target, deadline, &mut hints),
+        };
+        match polled {
             Ok(poll) => Ok((poll, hints)),
             Err(failure) => Err(failure.paced(hints)),
         }
@@ -202,12 +226,12 @@ impl<E: Exec> GitHub<'_, E> {
             polled_threads.extend(thread(node.thread, comments));
         }
         let merge = standing.merge();
-        let state = standing.state.into();
+        let state = standing.lifecycle.state.into();
         let (state_changed_at, state_changed_by) = standing.change();
         Ok(Poll {
             ci: rollup_state.map(|state| ci(&state, &checks.nodes)),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
-            head,
+            head: Some(head),
             merge,
             reviews: reviews
                 .nodes
@@ -220,6 +244,41 @@ impl<E: Exec> GitHub<'_, E> {
             threads: polled_threads,
             url: target.url.clone(),
         })
+    }
+
+    /// Pages the issue's comments to their end.
+    fn poll_issue(
+        &self,
+        target: &Target,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Poll, Failure> {
+        let mut comments = Paged::new(Forge::GitHub, "comments");
+        loop {
+            let mut variables = vec![("-f", format!("id={}", target.forge_id))];
+            variables.extend(comments.variable());
+            let page: IssuePage = self
+                .query(target, ISSUE_POLL_QUERY, &variables, deadline, hints)?
+                .ok_or_else(|| gone(target))?;
+            comments.take(Some(page.comments))?;
+            if !comments.done() {
+                continue;
+            }
+            let state = page.lifecycle.state.into();
+            let (state_changed_at, state_changed_by) = page.lifecycle.change();
+            return Ok(Poll {
+                ci: None,
+                comments: comments.nodes.into_iter().map(Comment::from).collect(),
+                head: None,
+                merge: None,
+                reviews: Vec::new(),
+                state,
+                state_changed_at,
+                state_changed_by,
+                threads: Vec::new(),
+                url: target.url.clone(),
+            });
+        }
     }
 
     /// A thread's comments, paging past the first page the poll query brought, still on `head`.
@@ -336,10 +395,12 @@ fn gone(target: &Target) -> Failure {
     fatal(ErrorKind::TargetNotFound, &message)
 }
 
+/// A pull request or issue as REST reports it; `pull_request` marks an issue that is one.
 #[derive(Deserialize)]
-struct PullRequest {
+struct RestTarget {
     html_url: String,
     node_id: String,
+    pull_request: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -408,13 +469,27 @@ struct PullRequestPage {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Standing {
+    #[serde(flatten)]
+    lifecycle: Lifecycle,
     merge_state_status: String,
     mergeable: String,
     merged_at: Option<String>,
     merged_by: Option<Author>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Lifecycle {
     state: State,
     /// The latest close or reopen, which is a merged pull request's close too.
     state_changes: Nodes<StateChangeNode>,
+}
+
+#[derive(Deserialize)]
+struct IssuePage {
+    comments: Connection<CommentNode>,
+    #[serde(flatten)]
+    lifecycle: Lifecycle,
 }
 
 #[derive(Deserialize)]
@@ -810,11 +885,20 @@ impl Standing {
         }
     }
 
-    /// When and by whom; a latest event that doesn't match the state names no one.
+    /// When and by whom the pull request entered its state.
+    fn change(self) -> (Option<String>, Option<Account>) {
+        if matches!(self.lifecycle.state, State::Merged) {
+            return (self.merged_at, self.merged_by.map(Account::from));
+        }
+        self.lifecycle.change()
+    }
+}
+
+impl Lifecycle {
+    /// When and by whom the latest close or reopen happened, if it set the current state.
     fn change(self) -> (Option<String>, Option<Account>) {
         let latest = self.state_changes.nodes.into_iter().last();
         let (at, by) = match (self.state, latest) {
-            (State::Merged, _) => (self.merged_at, self.merged_by),
             (State::Closed, Some(StateChangeNode::ClosedEvent(change)))
             | (State::Open, Some(StateChangeNode::ReopenedEvent(change))) => {
                 (Some(change.created_at), change.actor)
@@ -879,6 +963,7 @@ mod tests {
             forge: Forge::GitHub,
             forge_id: NODE_ID.to_owned(),
             host: "github.com".to_owned(),
+            kind: TargetKind::ChangeRequest,
             url: "https://github.com/brzzdev/babysit/pull/15".to_owned(),
         }
     }
@@ -912,6 +997,67 @@ mod tests {
         assert_eq!(resolved.unwrap(), target());
     }
 
+    fn issue() -> Target {
+        Target {
+            forge_id: ISSUE_ID.to_owned(),
+            kind: TargetKind::Issue,
+            url: "https://github.com/brzzdev/babysit/issues/9".to_owned(),
+            ..target()
+        }
+    }
+
+    fn resolve_issue(output: Output) -> Result<Target, Failure> {
+        let exec = Script::new([(
+            "gh api -i --hostname github.com repos/brzzdev/babysit/issues/9".to_owned(),
+            Ok(output),
+        )]);
+        let reference = reference::parse("https://github.com/brzzdev/babysit/issues/9").unwrap();
+        GitHub::new(&exec)
+            .resolve(&reference, None)
+            .map(|(target, _)| target)
+    }
+
+    #[test]
+    fn resolves_an_issue_to_its_url_and_node_id() {
+        let resolved = resolve_issue(gh(
+            0,
+            include_str!("github/fixtures/resolve_issue.http"),
+            "",
+        ));
+
+        assert_eq!(resolved.unwrap(), issue());
+    }
+
+    #[test]
+    fn resolves_an_issue_that_is_a_pull_request_to_the_pull_request() {
+        let stdout = include_str!("github/fixtures/resolve_issue_pull.http");
+
+        let resolved = resolve_issue(gh(0, stdout, "")).unwrap();
+
+        assert_eq!(
+            resolved,
+            Target {
+                forge: Forge::GitHub,
+                forge_id: "PR_kwDOVQ0d8c8AAAABJqUrxg".to_owned(),
+                host: "github.com".to_owned(),
+                kind: TargetKind::ChangeRequest,
+                url: "https://github.com/brzzdev/babysit/pull/38".to_owned(),
+            },
+        );
+    }
+
+    #[test]
+    fn an_issue_gone_or_disabled_is_not_found() {
+        let failure = resolve_issue(gh(
+            1,
+            include_str!("github/fixtures/resolve_issue_gone.http"),
+            "gh: Issues are disabled for this repo (HTTP 410)",
+        ))
+        .unwrap_err();
+
+        assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
+    }
+
     #[test]
     fn a_secondary_rate_limit_on_a_200_resolve_is_a_rate_limit() {
         let stdout = include_str!("github/fixtures/resolve_secondary_rate_limit.http");
@@ -937,6 +1083,7 @@ mod tests {
     }
 
     const HEAD: &str = "dfd1945e66eb0008cad921a1230fd2c533598845";
+    const ISSUE_ID: &str = "I_kwDOVQ0d8c8AAAABYhoF-w";
     const JOB_ID: &str = "118827308709";
     /// When #30 merged, which its close event shares.
     const MERGED_AT: &str = "2026-10-20T19:08:24Z";
@@ -948,6 +1095,7 @@ mod tests {
             forge: Forge::GitHub,
             forge_id: POLLED_ID.to_owned(),
             host: "github.com".to_owned(),
+            kind: TargetKind::ChangeRequest,
             url: "https://github.com/brzzdev/babysit/pull/30".to_owned(),
         }
     }
@@ -1110,7 +1258,7 @@ mod tests {
                 url: "https://github.com/brzzdev/babysit/pull/30#issuecomment-6298972911"
                     .to_owned(),
             }],
-            head: HEAD.to_owned(),
+            head: Some(HEAD.to_owned()),
             merge: None,
             reviews: vec![
                 review("5590010588", "2026-10-20T18:52:30Z", Some(brzzdev())),
@@ -1148,6 +1296,51 @@ mod tests {
             }],
             url: polled().url,
         }
+    }
+
+    #[test]
+    fn polls_an_issue_for_its_comments_and_state_alone() {
+        let exec = Script::new([graphql(
+            ISSUE_POLL_QUERY,
+            &format!("-f id={ISSUE_ID}"),
+            include_str!("github/fixtures/issue_poll.http"),
+        )]);
+        let comment = |id: &str, body: &str, at: &str| Comment {
+            actor: Some(brzzdev()),
+            at: at.to_owned(),
+            body: body.to_owned(),
+            edited_at: None,
+            editor: None,
+            id: id.to_owned(),
+            reply_to: None,
+            review_id: None,
+            url: format!("https://github.com/brzzdev/babysit/issues/9#issuecomment-{id}"),
+        };
+
+        let (poll, _) = GitHub::new(&exec).poll(&issue(), None).unwrap();
+
+        assert_eq!(
+            poll,
+            Poll {
+                ci: None,
+                comments: vec![
+                    comment(
+                        "6290682886",
+                        "Inherited from [How does a caller say which events wake baby",
+                        "2026-10-20T12:19:30Z",
+                    ),
+                    comment("6297001219", "Resolved.", "2026-10-20T17:29:00Z"),
+                ],
+                head: None,
+                merge: None,
+                reviews: Vec::new(),
+                state: TargetState::Closed,
+                state_changed_at: Some("2026-10-20T17:29:02Z".to_owned()),
+                state_changed_by: Some(brzzdev()),
+                threads: Vec::new(),
+                url: issue().url,
+            },
+        );
     }
 
     #[test]

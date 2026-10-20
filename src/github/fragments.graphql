@@ -26,17 +26,3 @@ fragment comment on Comment {
     url
   }
 }
-
-fragment threadComments on PullRequestReviewCommentConnection {
-  pageInfo {
-    hasNextPage
-    endCursor
-  }
-  nodes {
-    ...comment
-    pullRequestReview {
-      databaseId
-      state
-    }
-  }
-}

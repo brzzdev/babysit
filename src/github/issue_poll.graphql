@@ -1,0 +1,33 @@
+query ($id: ID!, $commentsAfter: String) {
+  node(id: $id) {
+    ... on Issue {
+      state
+      stateChanges: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, REOPENED_EVENT]) {
+        nodes {
+          __typename
+          ... on ClosedEvent {
+            actor {
+              ...author
+            }
+            createdAt
+          }
+          ... on ReopenedEvent {
+            actor {
+              ...author
+            }
+            createdAt
+          }
+        }
+      }
+      comments(first: 100, after: $commentsAfter) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          ...comment
+        }
+      }
+    }
+  }
+}

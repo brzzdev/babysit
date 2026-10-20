@@ -1,0 +1,30 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Cache-Control: private, max-age=60, s-maxage=60
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Tue, 20 Oct 2026 22:45:13 GMT
+Etag: W/"934580609f35afd39cc7406a3fb425443cb5ae34aecdaf9880fcf704bdedc0d5"
+Last-Modified: Tue, 20 Oct 2026 17:29:01 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Oauth-Scopes: repo
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Api-Version-Selected: 2022-11-28
+X-Github-Edge-Region: uksouth
+X-Github-Media-Type: github.v3; format=json
+X-Github-Request-Id: F04C:173945:CF8C3:12FA3B:6AD7EEF9
+X-Oauth-Client-Id: 178c6fc778ccc68e1d6a
+X-Oauth-Scopes: delete_repo, gist, read:org, repo, workflow
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4904
+X-Ratelimit-Reset: 1792538469
+X-Ratelimit-Resource: core
+X-Ratelimit-Used: 96
+X-Xss-Protection: 0
+
+{"html_url":"https://github.com/brzzdev/babysit/issues/9","node_id":"I_kwDOVQ0d8c8AAAABYhoF-w","number":9}

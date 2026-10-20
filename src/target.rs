@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::{self, CALL_LIMIT, Exec, Limit, Output};
-use crate::forge::{Failure, Snapshot, Target};
+use crate::forge::{Failure, Snapshot, Target, TargetKind};
 use crate::reference::{self, Name, Prefix, Reference};
 use crate::snapshot_file::SnapshotFile;
 
@@ -177,23 +177,25 @@ impl<'a, E: Exec> Locator<'a, E> {
                 "is ambiguous in a checkout with GitHub and GitLab remotes",
             ));
         }
-        let (forge, remotes) = match prefix {
+        let (forge, kind, remotes) = match prefix {
             Prefix::Bang if !github.is_empty() => {
                 return Err(usage(
                     "names a GitLab merge request, in a checkout with only GitHub remotes",
                 ));
             }
-            Prefix::Bang => (Forge::GitLab, gitlab),
+            Prefix::Bang => (Forge::GitLab, TargetKind::ChangeRequest, gitlab),
             Prefix::Hash if !gitlab.is_empty() => {
                 return Err(usage("names a GitLab issue, which babysit can't watch yet"));
             }
-            Prefix::Hash => (Forge::GitHub, github),
+            // GitHub numbers pull requests as issues, and resolving one says which it is.
+            Prefix::Hash => (Forge::GitHub, TargetKind::Issue, github),
         };
         let (host, project) = self.choose_project(given, forge, &remotes, &unclaimed)?;
         Ok(Reference {
             forge,
             given: given.to_owned(),
             host,
+            kind,
             number,
             project,
         })
@@ -536,6 +538,7 @@ mod tests {
             forge: Forge::GitHub,
             given: "#12".to_owned(),
             host: host.to_owned(),
+            kind: TargetKind::Issue,
             number: 12,
             project: format!("{owner}/{repo}"),
         }
@@ -550,6 +553,7 @@ mod tests {
             forge: Forge::GitLab,
             given: "!12".to_owned(),
             host: host.to_owned(),
+            kind: TargetKind::ChangeRequest,
             number: 12,
             project: project.to_owned(),
         }
@@ -892,6 +896,7 @@ mod tests {
             forge: Forge::GitHub,
             forge_id: "PR_1".to_owned(),
             host: "ghe.example.com".to_owned(),
+            kind: TargetKind::ChangeRequest,
             url: "https://github.com/o/r/pull/1".to_owned(),
         };
         let reference = reference::parse(given).unwrap();

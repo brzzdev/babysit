@@ -7,7 +7,7 @@ use crate::envelope::{ErrorKind, Forge};
 use crate::exec::Exec;
 use crate::forge::{
     Account, Backend, Comment, Failure, Hints, Poll, Position, Review, ReviewState, Target,
-    TargetState, Thread, run_cli,
+    TargetKind, TargetState, Thread, run_cli,
 };
 use crate::graphql::{Connection, Paged, same_head};
 use crate::reference::Reference;
@@ -127,6 +127,7 @@ impl<E: Exec> Backend for GitLab<'_, E> {
             forge: Forge::GitLab,
             forge_id: format!("{MERGE_REQUEST_GID}{}", merge_request.id),
             host: reference.host.clone(),
+            kind: TargetKind::ChangeRequest,
             url: merge_request.web_url,
         };
         Ok((target, hints))
@@ -207,7 +208,7 @@ impl<E: Exec> GitLab<'_, E> {
         Ok(Poll {
             ci: None,
             comments,
-            head,
+            head: Some(head),
             merge: None,
             reviews,
             state: state.into(),
@@ -474,6 +475,7 @@ mod tests {
             forge: Forge::GitLab,
             forge_id: FORGE_ID.to_owned(),
             host: "gitlab.com".to_owned(),
+            kind: TargetKind::ChangeRequest,
             url: URL.to_owned(),
         }
     }
@@ -597,7 +599,7 @@ mod tests {
     fn maps_resolvable_threads_and_replyable_comments() {
         let poll = poll_with([graphql("", include_str!("gitlab/fixtures/poll.http"))]).unwrap();
 
-        assert_eq!(poll.head, HEAD);
+        assert_eq!(poll.head.as_deref(), Some(HEAD));
         assert_eq!(poll.state, TargetState::Open);
         let comments: Vec<_> = poll
             .comments

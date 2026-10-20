@@ -93,7 +93,7 @@ pub fn run(
         .iter()
         .filter_map(|tracked| {
             let snapshot = tracked.polled.as_ref()?;
-            Some(Summary::new(&tracked.target.url, snapshot))
+            Some(Summary::new(&tracked.target, snapshot))
         })
         .collect();
     if envelope.write(stdout).is_err() {
@@ -728,7 +728,7 @@ mod tests {
     use super::*;
     use crate::envelope::Forge;
     use crate::exec::{Output, Script};
-    use crate::forge::{Account, Merge, Poll, TargetState, octocat, poll};
+    use crate::forge::{Account, Merge, Poll, TargetKind, TargetState, octocat, poll};
     use crate::reference::{self, Reference};
 
     const ENTERPRISE: &str = "https://ghe.example.com/o/r/pull/3";
@@ -789,6 +789,7 @@ mod tests {
                 forge: *forge,
                 forge_id: format!("{id}_{number}"),
                 host: host.clone(),
+                kind: TargetKind::ChangeRequest,
                 url: format!("https://{host}/{project}/{path}/{number}"),
             };
             Ok((target, hints))
