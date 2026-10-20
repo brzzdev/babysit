@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +11,11 @@ pub trait Backend {
         &self,
         reference: &Reference,
         deadline: Option<SystemTime>,
-    ) -> Result<Target, Failure>;
-    fn poll(&self, target: &Target, deadline: Option<SystemTime>) -> Result<Poll, Failure>;
+    ) -> Result<(Target, Hints), Failure>;
+    fn poll(&self, target: &Target, deadline: Option<SystemTime>)
+    -> Result<(Poll, Hints), Failure>;
     /// The account id of whoever the forge's CLI is signed in as on `host`.
-    fn viewer(&self, host: &str, deadline: Option<SystemTime>) -> Result<String, Failure>;
+    fn viewer(&self, host: &str, deadline: Option<SystemTime>) -> Result<(String, Hints), Failure>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,8 +33,37 @@ pub enum Failure {
         kind: ErrorKind,
         message: String,
     },
+    RateLimited {
+        forge: Forge,
+        hints: Hints,
+    },
     /// The run's deadline killed the call.
     TimedOut,
+    Transient {
+        forge: Forge,
+        hints: Hints,
+        message: String,
+    },
+}
+
+/// How the forge asks to be paced, read off its replies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Hints {
+    pub poll_interval: Option<Duration>,
+    /// When the host's spent quota refills.
+    pub reset: Option<SystemTime>,
+    pub retry_after: Option<Duration>,
+}
+
+impl Hints {
+    /// The stricter of the two for each hint, across the calls of one poll.
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            poll_interval: self.poll_interval.max(other.poll_interval),
+            reset: self.reset.max(other.reset),
+            retry_after: self.retry_after.max(other.retry_after),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

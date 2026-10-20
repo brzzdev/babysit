@@ -88,19 +88,15 @@ impl Envelope {
     }
 
     pub fn from_failure(failure: Failure, target: &str) -> Self {
-        match failure {
-            Failure::Fatal {
-                forge,
-                kind,
-                message,
-            } => Self::failed(Error {
-                kind,
-                forge: Some(forge),
-                target: Some(target.to_owned()),
-                message,
-            }),
-            Failure::TimedOut => Self::ended(Outcome::TimedOut),
-        }
+        let Some((forge, kind, message)) = failure.into_error() else {
+            return Self::ended(Outcome::TimedOut);
+        };
+        Self::failed(Error {
+            kind,
+            forge: Some(forge),
+            target: Some(target.to_owned()),
+            message,
+        })
     }
 
     pub fn exit_code(&self) -> u8 {
@@ -115,6 +111,26 @@ impl Envelope {
         serde_json::to_writer_pretty(&mut *out, self)?;
         writeln!(out)?;
         out.flush()
+    }
+}
+
+impl Failure {
+    /// The error that ends a run on this failure, or `None` when the deadline killed the call.
+    pub fn into_error(self) -> Option<(Forge, ErrorKind, String)> {
+        match self {
+            Failure::Fatal {
+                forge,
+                kind,
+                message,
+            } => Some((forge, kind, message)),
+            Failure::RateLimited { forge, .. } => {
+                Some((forge, ErrorKind::PollFailed, "rate limited".to_owned()))
+            }
+            Failure::TimedOut => None,
+            Failure::Transient { forge, message, .. } => {
+                Some((forge, ErrorKind::PollFailed, message))
+            }
+        }
     }
 }
 

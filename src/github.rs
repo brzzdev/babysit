@@ -1,5 +1,5 @@
 use std::io;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -7,8 +7,8 @@ use serde::de::DeserializeOwned;
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::{self, CALL_LIMIT, Exec, Limit};
 use crate::forge::{
-    Account, Assessment, Backend, Check, Ci, Comment, Failure, Poll, Review, ReviewState, Target,
-    TargetState, Thread,
+    Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Poll, Review, ReviewState,
+    Target, TargetState, Thread,
 };
 use crate::reference::Reference;
 use crate::response::{self, Response};
@@ -19,11 +19,22 @@ const EXIT_AUTH: i32 = 4;
 const EXIT_NOT_FOUND: i32 = 127;
 /// The rollup and status-context state of a required check that has not reported.
 const EXPECTED: &str = "EXPECTED";
+const GRAPHQL_NOT_FOUND: &str = "NOT_FOUND";
+const GRAPHQL_RATE_LIMITED: &str = "RATE_LIMITED";
+const HEADER_POLL_INTERVAL: &str = "x-poll-interval";
+const HEADER_REMAINING: &str = "x-ratelimit-remaining";
+const HEADER_RESET: &str = "x-ratelimit-reset";
+const HEADER_RETRY_AFTER: &str = "retry-after";
+const NODE_FIELD: &str = "node";
 const POLL_QUERY: &str = concat!(
     include_str!("github/poll.graphql"),
     include_str!("github/fragments.graphql"),
 );
+const SECONDARY_RATE_LIMIT: &str = "secondary rate limit";
+const STATUS_FORBIDDEN: u16 = 403;
 const STATUS_NOT_FOUND: u16 = 404;
+const STATUS_TOO_MANY_REQUESTS: u16 = 429;
+const STATUS_UNAUTHORIZED: u16 = 401;
 const THREAD_COMMENTS_QUERY: &str = concat!(
     include_str!("github/thread_comments.graphql"),
     include_str!("github/fragments.graphql"),
@@ -39,13 +50,18 @@ impl<'a, E: Exec> GitHub<'a, E> {
         Self { exec }
     }
 
-    fn call(&self, args: &[&str], deadline: Option<SystemTime>) -> Result<Response, Failure> {
+    /// The reply and its pacing, or the failure, classified from stdout before stderr.
+    fn call(
+        &self,
+        args: &[&str],
+        deadline: Option<SystemTime>,
+    ) -> Result<(Response, Hints), Failure> {
         let output = match self.exec.run(CLI, args, deadline) {
             Ok(output) => output,
             Err(exec::Error::TimedOut(Limit::Deadline)) => return Err(Failure::TimedOut),
             Err(exec::Error::TimedOut(Limit::CallLimit)) => {
                 let message = format!("gh did not answer within {}s", CALL_LIMIT.as_secs());
-                return Err(fatal(ErrorKind::PollFailed, &message));
+                return Err(transient(&message));
             }
             Err(exec::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(fatal(
@@ -54,10 +70,7 @@ impl<'a, E: Exec> GitHub<'a, E> {
                 ));
             }
             Err(exec::Error::Io(error)) => {
-                return Err(fatal(
-                    ErrorKind::PollFailed,
-                    &format!("could not run gh: {error}"),
-                ));
+                return Err(transient(&format!("could not run gh: {error}")));
             }
         };
         let reason = output.stderr.trim();
@@ -66,23 +79,28 @@ impl<'a, E: Exec> GitHub<'a, E> {
             Some(EXIT_AUTH) => return Err(fatal(ErrorKind::Auth, reason)),
             _ => {}
         }
-        let response = response::parse(&output.stdout).ok_or_else(|| {
-            fatal(
-                ErrorKind::PollFailed,
-                &format!("gh printed no HTTP reply: {reason}"),
-            )
-        })?;
-        if (200..300).contains(&response.status) {
-            return Ok(response);
+        let Some(response) = response::parse(&output.stdout) else {
+            return Err(transient(&format!("gh printed no HTTP reply: {reason}")));
+        };
+        let hints = pacing(&response);
+        if response.is_success() {
+            return Ok((response, hints));
         }
-        if response.status == STATUS_NOT_FOUND {
-            let message = format!("not found or not visible to gh: {reason}");
-            return Err(fatal(ErrorKind::TargetNotFound, &message));
+        if rate_limited(&response) {
+            return Err(rate_limit(hints));
         }
-        Err(fatal(
-            ErrorKind::PollFailed,
-            &format!("HTTP {}: {reason}", response.status),
-        ))
+        match response.status {
+            STATUS_UNAUTHORIZED | STATUS_FORBIDDEN => Err(fatal(ErrorKind::Auth, reason)),
+            STATUS_NOT_FOUND => {
+                let message = format!("not found or not visible to gh: {reason}");
+                Err(fatal(ErrorKind::TargetNotFound, &message))
+            }
+            status => Err(Failure::Transient {
+                forge: Forge::GitHub,
+                hints,
+                message: format!("HTTP {status}: {reason}"),
+            }),
+        }
     }
 }
 
@@ -91,25 +109,56 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         &self,
         reference: &Reference,
         deadline: Option<SystemTime>,
-    ) -> Result<Target, Failure> {
+    ) -> Result<(Target, Hints), Failure> {
         let path = format!(
             "repos/{}/{}/pulls/{}",
             reference.owner, reference.repo, reference.number,
         );
-        let response = self.call(
+        let (response, hints) = self.call(
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
         )?;
-        let pull: PullRequest = decode(&response.body)?;
-        Ok(Target {
+        let pull: PullRequest = decode(&response.body).map_err(|failure| paced(failure, hints))?;
+        let target = Target {
             forge_id: pull.node_id,
             host: reference.host.clone(),
             url: pull.html_url,
-        })
+        };
+        Ok((target, hints))
     }
 
+    fn poll(
+        &self,
+        target: &Target,
+        deadline: Option<SystemTime>,
+    ) -> Result<(Poll, Hints), Failure> {
+        let mut hints = Hints::default();
+        match self.poll_pages(target, deadline, &mut hints) {
+            Ok(poll) => Ok((poll, hints)),
+            Err(failure) => Err(paced(failure, hints)),
+        }
+    }
+
+    fn viewer(&self, host: &str, deadline: Option<SystemTime>) -> Result<(String, Hints), Failure> {
+        let mut hints = Hints::default();
+        let reply: Reply<ViewerData> = self
+            .graphql(host, VIEWER_QUERY, &[], deadline, &mut hints)
+            .map_err(|failure| paced(failure, hints))?;
+        let viewer = reply
+            .data
+            .ok_or_else(|| paced(transient("gh returned no viewer"), hints))?;
+        Ok((viewer.viewer.id, hints))
+    }
+}
+
+impl<E: Exec> GitHub<'_, E> {
     /// Pages every connection to its end, failing the poll if the head moves between pages.
-    fn poll(&self, target: &Target, deadline: Option<SystemTime>) -> Result<Poll, Failure> {
+    fn poll_pages(
+        &self,
+        target: &Target,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Poll, Failure> {
         let mut checks = Paged::new("checks");
         let mut comments = Paged::new("comments");
         let mut dismissals = Paged::new("dismissals");
@@ -129,8 +178,9 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             variables.extend(dismissals.variable());
             variables.extend(reviews.variable());
             variables.extend(threads.variable());
-            let page: PullRequestPage =
-                self.query(target, POLL_QUERY, &variables, "pull request", deadline)?;
+            let page: PullRequestPage = self
+                .query(target, POLL_QUERY, &variables, deadline, hints)?
+                .ok_or_else(|| gone(target))?;
             // CI is judged on the head only, so a latest listed commit that isn't it has none.
             let rollup = page
                 .commits
@@ -159,8 +209,14 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         let (head, state) = first.expect("every poll fetches a first page");
         let mut polled_threads = Vec::new();
         for node in threads.nodes {
-            let comments =
-                self.thread_comments(target, &head, &node.thread.id, node.comments, deadline)?;
+            let comments = self.thread_comments(
+                target,
+                &head,
+                &node.thread.id,
+                node.comments,
+                deadline,
+                hints,
+            )?;
             polled_threads.extend(thread(node.thread, comments));
         }
         Ok(Poll {
@@ -178,14 +234,6 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         })
     }
 
-    fn viewer(&self, host: &str, deadline: Option<SystemTime>) -> Result<String, Failure> {
-        let data: Option<ViewerData> = self.graphql(host, VIEWER_QUERY, &[], deadline)?;
-        data.map(|data| data.viewer.id)
-            .ok_or_else(|| fatal(ErrorKind::PollFailed, "gh returned no viewer"))
-    }
-}
-
-impl<E: Exec> GitHub<'_, E> {
     /// A thread's comments, paging past the first page the poll query brought, still on `head`.
     fn thread_comments(
         &self,
@@ -194,61 +242,69 @@ impl<E: Exec> GitHub<'_, E> {
         thread_id: &str,
         first: Connection<CommentNode>,
         deadline: Option<SystemTime>,
+        hints: &mut Hints,
     ) -> Result<Vec<CommentNode>, Failure> {
         let mut comments = Paged::new("comments");
         comments.take(Some(first))?;
         while !comments.done() {
             let mut variables = vec![("-f", format!("id={thread_id}"))];
             variables.extend(comments.variable());
-            let page: ThreadPage = self.query(
-                target,
-                THREAD_COMMENTS_QUERY,
-                &variables,
-                "review thread",
-                deadline,
-            )?;
+            let page: ThreadPage = self
+                .query(target, THREAD_COMMENTS_QUERY, &variables, deadline, hints)?
+                .ok_or_else(|| transient(&format!("review thread {thread_id} vanished")))?;
             same_head(head, &page.pull_request.head_ref_oid)?;
             comments.take(Some(page.comments))?;
         }
         Ok(comments.nodes)
     }
 
+    /// The queried `node`, or `None` where GitHub reports it `NOT_FOUND`.
     fn query<T: DeserializeOwned>(
         &self,
         target: &Target,
         query: &str,
         variables: &[(&str, String)],
-        node_kind: &str,
         deadline: Option<SystemTime>,
-    ) -> Result<T, Failure> {
-        let data: Option<Data<T>> = self.graphql(&target.host, query, variables, deadline)?;
-        data.and_then(|data| data.node).ok_or_else(|| {
-            fatal(
-                ErrorKind::PollFailed,
-                &format!("{} returned no {node_kind}", target.url),
-            )
-        })
+        hints: &mut Hints,
+    ) -> Result<Option<T>, Failure> {
+        let reply: Reply<Data<T>> =
+            self.graphql(&target.host, query, variables, deadline, hints)?;
+        let node = reply.data.and_then(|data| data.node);
+        if node.is_none() && reply.errors.is_empty() {
+            return Err(transient(&format!(
+                "{} returned a null node with no error",
+                target.url,
+            )));
+        }
+        Ok(node)
     }
 
-    /// The reply's `data`, failing the call on any GraphQL `errors` entry.
+    /// The decoded reply, folding its pacing into `hints`; any GraphQL error but a missing `node`
+    /// fails the call.
     fn graphql<T: DeserializeOwned>(
         &self,
         host: &str,
         query: &str,
         variables: &[(&str, String)],
         deadline: Option<SystemTime>,
-    ) -> Result<Option<T>, Failure> {
+        hints: &mut Hints,
+    ) -> Result<Reply<T>, Failure> {
         let query = format!("query={query}");
         let mut args = vec!["api", "-i", "--hostname", host, "graphql", "-f", &query];
         for (flag, variable) in variables {
             args.extend([*flag, variable.as_str()]);
         }
-        let response = self.call(&args, deadline)?;
+        let (response, pacing) = self.call(&args, deadline)?;
+        *hints = hints.merge(pacing);
         let reply: Reply<T> = decode(&response.body)?;
-        if let Some(error) = reply.errors.first() {
-            return Err(fatal(ErrorKind::PollFailed, &error.message));
+        let secondary = reply.message.as_deref().is_some_and(names_secondary_limit);
+        if secondary || reply.errors.iter().any(GraphQlError::is_rate_limit) {
+            return Err(rate_limit(pacing));
         }
-        Ok(reply.data)
+        if let Some(error) = reply.errors.iter().find(|error| !error.is_missing_node()) {
+            return Err(transient(&error.message));
+        }
+        Ok(reply)
     }
 }
 
@@ -292,7 +348,7 @@ impl<T> Paged<T> {
         }
         let Some(connection) = connection else {
             let message = format!("the {} connection came back null", self.name);
-            return Err(fatal(ErrorKind::PollFailed, &message));
+            return Err(transient(&message));
         };
         self.nodes.extend(connection.nodes);
         self.page = match connection.page_info {
@@ -308,7 +364,7 @@ impl<T> Paged<T> {
                 end_cursor: None, ..
             } => {
                 let message = format!("the {} connection has a next page but no cursor", self.name);
-                return Err(fatal(ErrorKind::PollFailed, &message));
+                return Err(transient(&message));
             }
         };
         Ok(())
@@ -320,7 +376,49 @@ fn same_head(first: &str, page: &str) -> Result<(), Failure> {
         return Ok(());
     }
     let message = format!("the head moved from {first} to {page} between pages");
-    Err(fatal(ErrorKind::PollFailed, &message))
+    Err(transient(&message))
+}
+
+/// Header values parse as `u32` seconds, so adding one to the clock can never overflow.
+fn pacing(response: &Response) -> Hints {
+    let seconds = |name| {
+        let seconds: u32 = response.header(name)?.parse().ok()?;
+        Some(Duration::from_secs(seconds.into()))
+    };
+    Hints {
+        poll_interval: seconds(HEADER_POLL_INTERVAL),
+        reset: seconds(HEADER_RESET)
+            .filter(|_| quota_spent(response))
+            .map(|since_epoch| UNIX_EPOCH + since_epoch),
+        retry_after: seconds(HEADER_RETRY_AFTER),
+    }
+}
+
+/// A failed reply is a rate limit when it is a 429, spends the quota, or is a 403 naming a
+/// secondary limit. A `retry-after` alone is not one.
+fn rate_limited(response: &Response) -> bool {
+    if response.status == STATUS_TOO_MANY_REQUESTS || quota_spent(response) {
+        return true;
+    }
+    response.status == STATUS_FORBIDDEN
+        && serde_json::from_str::<RestError>(&response.body)
+            .is_ok_and(|error| names_secondary_limit(&error.message))
+}
+
+fn quota_spent(response: &Response) -> bool {
+    response.header(HEADER_REMAINING) == Some("0")
+}
+
+fn names_secondary_limit(message: &str) -> bool {
+    message.to_ascii_lowercase().contains(SECONDARY_RATE_LIMIT)
+}
+
+fn gone(target: &Target) -> Failure {
+    let message = format!(
+        "{} is gone: deleted, transferred, or no longer visible to gh's account",
+        target.url,
+    );
+    fatal(ErrorKind::TargetNotFound, &message)
 }
 
 #[derive(Deserialize)]
@@ -334,10 +432,32 @@ struct Reply<T> {
     data: Option<T>,
     #[serde(default)]
     errors: Vec<GraphQlError>,
+    /// A REST-shaped error, as a secondary rate limit can arrive on a 200.
+    message: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct GraphQlError {
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    path: Vec<serde_json::Value>,
+}
+
+impl GraphQlError {
+    fn is_missing_node(&self) -> bool {
+        self.kind.as_deref() == Some(GRAPHQL_NOT_FOUND) && self.path == [NODE_FIELD]
+    }
+
+    fn is_rate_limit(&self) -> bool {
+        self.kind.as_deref() == Some(GRAPHQL_RATE_LIMITED) || names_secondary_limit(&self.message)
+    }
+}
+
+#[derive(Deserialize)]
+struct RestError {
     message: String,
 }
 
@@ -758,12 +878,39 @@ impl From<State> for TargetState {
 }
 
 fn decode<T: DeserializeOwned>(body: &str) -> Result<T, Failure> {
-    serde_json::from_str(body).map_err(|error| {
-        fatal(
-            ErrorKind::PollFailed,
-            &format!("unreadable reply from gh: {error}"),
-        )
-    })
+    serde_json::from_str(body)
+        .map_err(|error| transient(&format!("unreadable reply from gh: {error}")))
+}
+
+/// `failure` with `hints` folded in, where it is to be retried.
+fn paced(failure: Failure, hints: Hints) -> Failure {
+    match failure {
+        Failure::Transient {
+            forge,
+            hints: own,
+            message,
+        } => Failure::Transient {
+            forge,
+            hints: own.merge(hints),
+            message,
+        },
+        other => other,
+    }
+}
+
+fn rate_limit(hints: Hints) -> Failure {
+    Failure::RateLimited {
+        forge: Forge::GitHub,
+        hints,
+    }
+}
+
+fn transient(message: &str) -> Failure {
+    Failure::Transient {
+        forge: Forge::GitHub,
+        hints: Hints::default(),
+        message: message.to_owned(),
+    }
 }
 
 fn fatal(kind: ErrorKind, message: &str) -> Failure {
@@ -808,13 +955,15 @@ mod tests {
 
     fn resolve_with(result: Result<Output, exec::Error>) -> Result<Target, Failure> {
         let exec = Script::new([(RESOLVE.to_owned(), result)]);
-        GitHub::new(&exec).resolve(&reference(), None)
+        GitHub::new(&exec)
+            .resolve(&reference(), None)
+            .map(|(target, _)| target)
     }
 
     fn kind(failure: &Failure) -> ErrorKind {
         match failure {
             Failure::Fatal { kind, .. } => *kind,
-            Failure::TimedOut => panic!("timed out"),
+            other => panic!("not fatal: {other:?}"),
         }
     }
 
@@ -863,6 +1012,15 @@ mod tests {
         graphql(POLL_QUERY, &format!("-f id={POLLED_ID}"), stdout)
     }
 
+    fn second_page(stdout: &str, code: i32) -> (String, Result<Output, exec::Error>) {
+        let call = format!(
+            "gh api -i --hostname github.com graphql -f query={POLL_QUERY} -f id={POLLED_ID} \
+             -F checks=false -F comments=false -F dismissals=false -f reviewsAfter=REVIEWS_1 \
+             -F threads=false"
+        );
+        (call, Ok(gh(code, stdout, "")))
+    }
+
     /// Reviews over two pages, then the thread's second page of comments answered by `thread_page`.
     fn paged(thread_page: &str) -> [(String, Result<Output, exec::Error>); 3] {
         [
@@ -883,17 +1041,50 @@ mod tests {
         ]
     }
 
-    fn poll_with(
+    fn poll_hinted(
         calls: impl IntoIterator<Item = (String, Result<Output, exec::Error>)>,
-    ) -> Result<Poll, Failure> {
+    ) -> Result<(Poll, Hints), Failure> {
         let exec = Script::new(calls);
         GitHub::new(&exec).poll(&polled(), None)
     }
 
+    fn poll_with(
+        calls: impl IntoIterator<Item = (String, Result<Output, exec::Error>)>,
+    ) -> Result<Poll, Failure> {
+        poll_hinted(calls).map(|(poll, _)| poll)
+    }
+
+    /// The failure of a poll whose first call answers `stdout`, exiting 1 as gh does on an error.
+    fn poll_failing(stdout: &str) -> Failure {
+        let (call, _) = first_page("");
+        poll_with([(call, Ok(gh(1, stdout, "gh: failed")))]).unwrap_err()
+    }
+
     fn message(failure: &Failure) -> &str {
         match failure {
-            Failure::Fatal { message, .. } => message,
-            Failure::TimedOut => panic!("timed out"),
+            Failure::Fatal { message, .. } | Failure::Transient { message, .. } => message,
+            other => panic!("no message: {other:?}"),
+        }
+    }
+
+    fn retry_after(seconds: u64) -> Hints {
+        Hints {
+            retry_after: Some(Duration::from_secs(seconds)),
+            ..Hints::default()
+        }
+    }
+
+    fn rate_limit_hints(failure: &Failure) -> Hints {
+        match failure {
+            Failure::RateLimited { hints, .. } => *hints,
+            other => panic!("not a rate limit: {other:?}"),
+        }
+    }
+
+    fn transient_hints(failure: &Failure) -> Hints {
+        match failure {
+            Failure::Transient { hints, .. } => *hints,
+            other => panic!("not transient: {other:?}"),
         }
     }
 
@@ -1017,7 +1208,7 @@ mod tests {
 
         let failure = poll_with(paged(&moved)).unwrap_err();
 
-        assert_eq!(kind(&failure), ErrorKind::PollFailed);
+        assert!(matches!(failure, Failure::Transient { .. }));
         assert_eq!(
             message(&failure),
             format!("the head moved from {HEAD} to f00d between pages")
@@ -1031,7 +1222,7 @@ mod tests {
 
         let failure = poll_with([first_page(&unfinished)]).unwrap_err();
 
-        assert_eq!(kind(&failure), ErrorKind::PollFailed);
+        assert!(matches!(failure, Failure::Transient { .. }));
         assert_eq!(
             message(&failure),
             "the reviews connection has a next page but no cursor"
@@ -1046,8 +1237,195 @@ mod tests {
 
         let failure = poll_with([(call, Ok(gh(1, stdout, stderr)))]).unwrap_err();
 
-        assert_eq!(kind(&failure), ErrorKind::PollFailed);
+        assert!(matches!(failure, Failure::Transient { .. }));
         assert!(message(&failure).contains("does not appear to be a valid cursor"));
+    }
+
+    #[test]
+    fn a_deleted_pull_request_is_target_not_found_naming_the_causes() {
+        let failure = poll_failing(include_str!("github/fixtures/poll_not_found.http"));
+
+        assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
+        assert_eq!(
+            message(&failure),
+            "https://github.com/brzzdev/babysit/pull/30 is gone: deleted, transferred, or no \
+             longer visible to gh's account",
+        );
+    }
+
+    #[test]
+    fn a_not_found_error_off_the_targets_own_path_is_transient() {
+        let nested = include_str!("github/fixtures/poll.http").replace(
+            "]}}}}\n",
+            r#"]}}},"errors":[{"type":"NOT_FOUND","path":["node","reviews"],
+                "message":"Could not resolve to a node"}]}"#,
+        );
+
+        let failure = poll_with([first_page(&nested)]).unwrap_err();
+
+        assert!(matches!(failure, Failure::Transient { .. }));
+        assert_eq!(message(&failure), "Could not resolve to a node");
+    }
+
+    #[test]
+    fn a_thread_gone_mid_poll_is_transient() {
+        let failure =
+            poll_with(paged(include_str!("github/fixtures/poll_not_found.http"))).unwrap_err();
+
+        assert!(matches!(failure, Failure::Transient { .. }));
+        assert_eq!(
+            message(&failure),
+            format!("review thread {THREAD_ID} vanished")
+        );
+    }
+
+    #[test]
+    fn bad_credentials_and_gh_exit_4_are_auth() {
+        let rejected = poll_failing(include_str!("github/fixtures/poll_bad_credentials.http"));
+        let (call, _) = first_page("");
+        let logged_out = poll_with([(call, Ok(gh(4, "", "gh auth login")))]).unwrap_err();
+
+        assert_eq!(kind(&rejected), ErrorKind::Auth);
+        assert_eq!(kind(&logged_out), ErrorKind::Auth);
+    }
+
+    #[test]
+    fn a_forbidden_reply_that_names_no_rate_limit_is_auth() {
+        let forbidden = include_str!("github/fixtures/poll_secondary_rate_limit.http").replace(
+            "You have exceeded a secondary rate limit",
+            "Resource not accessible by integration",
+        );
+
+        assert_eq!(kind(&poll_failing(&forbidden)), ErrorKind::Auth);
+    }
+
+    #[test]
+    fn empty_stdout_is_transient() {
+        let (call, _) = first_page("");
+        let stderr = "error connecting to api.github.com";
+
+        let failure = poll_with([(call, Ok(gh(1, "", stderr)))]).unwrap_err();
+
+        assert!(matches!(failure, Failure::Transient { .. }));
+        assert_eq!(
+            message(&failure),
+            "gh printed no HTTP reply: error connecting to api.github.com"
+        );
+    }
+
+    #[test]
+    fn a_call_past_the_call_limit_is_transient() {
+        let (call, _) = first_page("");
+
+        let failure =
+            poll_with([(call, Err(exec::Error::TimedOut(Limit::CallLimit)))]).unwrap_err();
+
+        assert!(matches!(failure, Failure::Transient { .. }));
+        assert_eq!(message(&failure), "gh did not answer within 60s");
+    }
+
+    #[test]
+    fn a_server_error_is_transient_and_carries_its_retry_after() {
+        let failure = poll_failing(include_str!("github/fixtures/poll_unavailable.http"));
+
+        assert_eq!(
+            transient_hints(&failure).retry_after,
+            Some(Duration::from_secs(90))
+        );
+    }
+
+    #[test]
+    fn a_graphql_rate_limit_waits_for_the_quota_reset() {
+        let failure = poll_failing(include_str!("github/fixtures/poll_rate_limited.http"));
+
+        assert_eq!(
+            rate_limit_hints(&failure),
+            Hints {
+                reset: Some(UNIX_EPOCH + Duration::from_secs(1_792_528_442)),
+                ..Hints::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_secondary_rate_limit_waits_for_its_retry_after() {
+        let failure = poll_failing(include_str!(
+            "github/fixtures/poll_secondary_rate_limit.http"
+        ));
+
+        assert_eq!(rate_limit_hints(&failure), retry_after(120));
+    }
+
+    #[test]
+    fn a_secondary_rate_limit_on_a_200_is_a_rate_limit() {
+        let ok = include_str!("github/fixtures/poll_secondary_rate_limit.http")
+            .replace("HTTP/2.0 403 Forbidden", "HTTP/2.0 200 OK");
+        let (call, _) = first_page("");
+
+        let failure = poll_with([(call, Ok(gh(0, &ok, "")))]).unwrap_err();
+
+        assert_eq!(rate_limit_hints(&failure), retry_after(120));
+    }
+
+    #[test]
+    fn a_transient_graphql_error_keeps_the_replys_retry_after() {
+        let stdout = include_str!("github/fixtures/poll_invalid_cursor.http").replacen(
+            "\r\n",
+            "\r\nRetry-After: 90\r\n",
+            1,
+        );
+
+        let failure = poll_failing(&stdout);
+
+        assert_eq!(transient_hints(&failure), retry_after(90));
+    }
+
+    #[test]
+    fn an_undecodable_reply_keeps_its_retry_after() {
+        let garbled = include_str!("github/fixtures/poll.http")
+            .replacen('\n', "\nRetry-After: 90\n", 1)
+            .replace(r#"{"data":"#, r#"{"data""#);
+
+        let failure = poll_with([first_page(&garbled)]).unwrap_err();
+
+        assert_eq!(transient_hints(&failure), retry_after(90));
+    }
+
+    #[test]
+    fn a_later_page_failing_keeps_the_earlier_pages_pacing() {
+        let slower = include_str!("github/fixtures/poll_page_1.http").replacen(
+            '\n',
+            "\nX-Poll-Interval: 60\n",
+            1,
+        );
+
+        let failure = poll_with([
+            first_page(&slower),
+            second_page(include_str!("github/fixtures/poll_unavailable.http"), 1),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            transient_hints(&failure),
+            Hints {
+                poll_interval: Some(Duration::from_secs(60)),
+                ..retry_after(90)
+            }
+        );
+    }
+
+    #[test]
+    fn a_poll_that_spends_the_quota_is_still_a_poll() {
+        let spent = include_str!("github/fixtures/poll.http")
+            .replace("X-Ratelimit-Remaining: 4962", "X-Ratelimit-Remaining: 0");
+
+        let (poll, hints) = poll_hinted([first_page(&spent)]).unwrap();
+
+        assert_eq!(poll, expected());
+        assert_eq!(
+            hints.reset,
+            Some(UNIX_EPOCH + Duration::from_secs(1_792_526_402))
+        );
     }
 
     #[test]
@@ -1118,7 +1496,7 @@ mod tests {
 
         let viewer = GitHub::new(&exec).viewer("github.com", None);
 
-        assert_eq!(viewer.unwrap(), BRZZDEV_ID);
+        assert_eq!(viewer.unwrap().0, BRZZDEV_ID);
     }
 
     #[test]
