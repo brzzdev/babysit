@@ -173,10 +173,7 @@ impl<'a, E: Exec> Locator<'a, E> {
                 }
             }
         };
-        let Some((owner, repo)) = path
-            .split_once('/')
-            .filter(|(owner, repo)| reference::is_name(owner) && reference::is_name(repo))
-        else {
+        let Some((owner, repo)) = owner_and_repo(path) else {
             return Err(usage(&format!("can't use the remote project `{path}`")));
         };
         Ok(Reference {
@@ -219,26 +216,41 @@ fn default_remote(resolved: &str) -> Option<(&str, &str)> {
     })
 }
 
-/// The remotes in `git remote -v` output whose fetch URL, or else push URL as `gh` falls back to,
-/// names a host and project.
+/// The remotes in `git remote -v` output, each at its fetch URL, or its last push URL where only
+/// that names an `owner/repo` project.
 fn parse_remotes(listing: &str) -> impl Iterator<Item = Remote> {
-    let urls = |direction: &'static str| {
-        listing.lines().filter_map(move |line| {
-            let (name, rest) = line.split_once('\t')?;
-            Some((name, rest.strip_suffix(direction)?))
-        })
-    };
-    urls(" (fetch)").filter_map(move |(name, fetch)| {
-        let (host, path) = split_remote_url(fetch).or_else(|| {
-            let (_, push) = urls(" (push)").find(|(pushed, _)| *pushed == name)?;
-            split_remote_url(push)
-        })?;
+    listing.lines().filter_map(move |line| {
+        let (name, fetch) = remote_url(line, " (fetch)")?;
+        let fetched = split_remote_url(fetch);
+        let pushed = listing
+            .lines()
+            .rev()
+            .filter_map(|line| remote_url(line, " (push)"))
+            .find(|(pushed, _)| *pushed == name)
+            .and_then(|(_, push)| split_remote_url(push));
+        let names_project = |(_, path): &(String, String)| owner_and_repo(path).is_some();
+        let (host, path) = match (fetched, pushed) {
+            (Some(fetched), _) if names_project(&fetched) => fetched,
+            (_, Some(pushed)) if names_project(&pushed) => pushed,
+            (fetched, pushed) => fetched.or(pushed)?,
+        };
         Some(Remote {
             host,
             name: name.to_owned(),
             path,
         })
     })
+}
+
+/// A `git remote -v` line's remote name and URL, when it lists the URL for `direction`.
+fn remote_url<'a>(line: &'a str, direction: &str) -> Option<(&'a str, &'a str)> {
+    let (name, rest) = line.split_once('\t')?;
+    Some((name, rest.strip_suffix(direction)?))
+}
+
+fn owner_and_repo(path: &str) -> Option<(&str, &str)> {
+    path.split_once('/')
+        .filter(|(owner, repo)| reference::is_name(owner) && reference::is_name(repo))
 }
 
 /// Splits a remote URL, in URL or scp-like form, into its host and project path. The port is
@@ -346,6 +358,22 @@ mod tests {
                 GH_RESOLVED.to_owned(),
                 Ok(Output::exited(0, "remote.origin.gh-resolved base\n")),
             ),
+        ]);
+
+        assert_eq!(
+            locate(&script, &checkout()),
+            Ok(located("github.com", "o", "r")),
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_last_push_url_when_the_fetch_path_is_no_project() {
+        let listing = "origin\tssh://mirror/srv/git/r.git (fetch)\n\
+                       origin\tgit@github.com:me/r.git (push)\n\
+                       origin\tgit@github.com:o/r.git (push)\n";
+        let script = Script::new([
+            ("git remote -v".to_owned(), Ok(Output::exited(0, listing))),
+            (GH_RESOLVED.to_owned(), Ok(Output::exited(1, ""))),
         ]);
 
         assert_eq!(
