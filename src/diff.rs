@@ -183,23 +183,30 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         }
     }
     // A new head starts uncoloured, so returning to an earlier one settles it again.
-    let mut reported = if poll.head == baseline.head {
-        reported.clone()
+    let previous = if poll.head == baseline.head {
+        reported.colour
     } else {
         events.push(head_pushed(&baseline.head, &poll));
-        Reported::default()
+        None
     };
+    // Unsettled CI keeps no colour, so settling again after a re-run is reported again.
+    let colour = poll.ci.as_ref().and_then(Ci::colour);
     if let Some(ci) = &poll.ci
-        && let Some(colour) = ci.colour()
-        && reported.colour != Some(colour)
+        && let Some(colour) = colour
+        && previous != Some(colour)
     {
         events.push(ci_settled(&poll, ci, colour));
-        reported.colour = Some(colour);
     }
     events.sort_by(|a, b| {
         (a.at.is_none(), &a.at, &a.detail).cmp(&(b.at.is_none(), &b.at, &b.detail))
     });
-    (events, Snapshot { poll, reported })
+    (
+        events,
+        Snapshot {
+            poll,
+            reported: Reported { colour },
+        },
+    )
 }
 
 fn head_pushed(old_sha: &str, poll: &Poll) -> Event {
@@ -713,13 +720,17 @@ mod tests {
         }
     }
 
-    /// The events of each poll after `first`, which is taken as the baseline.
+    /// The events of each poll after `first`, the baseline, with each snapshot saved and reloaded
+    /// between polls as a restart would.
     fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
-        let mut snapshot = Snapshot::from(first);
+        let reload = |snapshot: &Snapshot| {
+            serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap()
+        };
+        let mut snapshot = reload(&Snapshot::from(first));
         rest.into_iter()
             .map(|next| {
                 let (events, next) = diff(&snapshot, next);
-                snapshot = next;
+                snapshot = reload(&next);
                 events.iter().map(label).collect()
             })
             .collect()
@@ -780,19 +791,74 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_fires_only_when_it_changes() {
-        let test = |assessment| on(A, vec![check("test", true, assessment)]);
-
-        let steps = steps(
-            test(Assessment::Failed),
+    fn a_repeated_colour_fires_only_after_ci_went_unsettled() {
+        let test = |assessment| check("test", true, assessment);
+        let failing = || on(A, vec![test(Assessment::Failed)]);
+        let rerun = || on(A, vec![test(Assessment::Pending)]);
+        let failing_while_another_runs = on(
+            A,
             vec![
-                test(Assessment::Pending),
                 test(Assessment::Failed),
-                test(Assessment::Passed),
+                check("lint", true, Assessment::Pending),
             ],
         );
 
-        assert_eq!(steps, [vec![], vec![], vec!["ci.settled Green"]]);
+        let steps = steps(
+            failing(),
+            vec![
+                failing_while_another_runs,
+                failing(),
+                rerun(),
+                failing(),
+                rerun(),
+                on(A, vec![test(Assessment::Passed)]),
+            ],
+        );
+
+        let red = vec!["ci.settled Red"];
+        assert_eq!(
+            steps,
+            [
+                vec![],
+                vec![],
+                vec![],
+                red,
+                vec![],
+                vec!["ci.settled Green"]
+            ]
+        );
+    }
+
+    #[test]
+    fn unsettled_ci_clears_the_reported_colour() {
+        let green = || on(A, vec![check("test", true, Assessment::Passed)]);
+        let unknown = Poll {
+            ci: Some(Ci {
+                checks: vec![check("test", true, Assessment::Passed)],
+                required_known: false,
+            }),
+            ..green()
+        };
+        let waiting = || on(A, vec![check("deploy", true, Assessment::Waiting)]);
+        let approved = on(A, vec![check("deploy", true, Assessment::Pending)]);
+
+        let (_, cleared) = diff(&green().into(), unknown.clone());
+        let steps = steps(
+            green(),
+            vec![unknown, green(), waiting(), approved, waiting()],
+        );
+
+        assert_eq!(cleared.reported.colour, None);
+        assert_eq!(
+            steps,
+            [
+                vec![],
+                vec!["ci.settled Green"],
+                vec!["ci.settled Amber"],
+                vec![],
+                vec!["ci.settled Amber"],
+            ],
+        );
     }
 
     #[test]

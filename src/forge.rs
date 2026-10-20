@@ -63,7 +63,7 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reported {
-    /// The colour last reported for the snapshot's head.
+    /// The colour reported for the snapshot's head, kept only while its CI stays settled.
     pub colour: Option<Colour>,
 }
 
