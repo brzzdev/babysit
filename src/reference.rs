@@ -21,7 +21,7 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     let [host, owner, repo, "pull", number] = rest.split('/').collect::<Vec<_>>()[..] else {
         return Err(invalid());
     };
-    if [host, owner, repo].contains(&"") || host.contains('@') {
+    if !is_authority(host) || owner.is_empty() || repo.is_empty() {
         return Err(invalid());
     }
     if number.starts_with('0') || !number.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -36,6 +36,18 @@ pub fn parse(given: &str) -> Result<Reference, String> {
         owner: owner.to_owned(),
         repo: repo.to_owned(),
     })
+}
+
+/// A hostname, optionally followed by `:` and a decimal port from 1 to 65535.
+fn is_authority(authority: &str) -> bool {
+    let (host, port) = authority.split_once(':').unwrap_or((authority, "1"));
+    let host_is_valid = !host.is_empty()
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.');
+    let port_is_valid = port.bytes().all(|byte| byte.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|port| port != 0);
+    host_is_valid && port_is_valid
 }
 
 #[cfg(test)]
@@ -73,6 +85,11 @@ mod tests {
             "https://github.com/o/r/pull/",
             "https://github.com//r/pull/12",
             "https://user@github.com/o/r/pull/12",
+            "https://bad host/o/r/pull/12",
+            "https://github.com:/o/r/pull/12",
+            "https://github.com:8a/o/r/pull/12",
+            "https://github.com:99999/o/r/pull/12",
+            "https://github.com:0/o/r/pull/12",
         ] {
             assert!(parse(given).is_err(), "{given}");
         }

@@ -466,13 +466,17 @@ mod tests {
     #[test]
     fn an_unreadable_or_other_version_snapshot_file_is_a_usage_error() {
         let sandbox = Sandbox::new("usage");
-        for contents in ["not json", r#"{"version": 2, "targets": {}}"#] {
+        for contents in [
+            &b"not json"[..],
+            br#"{"version": 2, "targets": {}}"#,
+            b"\xff",
+        ] {
             fs::write(sandbox.snapshot(), contents).unwrap();
 
             let (code, _) = watch_into(&args(&sandbox.snapshot(), None), vec![], &mut Vec::new());
 
-            assert!(code.is_err(), "{contents}");
-            assert_eq!(fs::read_to_string(sandbox.snapshot()).unwrap(), contents);
+            assert!(code.is_err(), "{contents:?}");
+            assert_eq!(fs::read(sandbox.snapshot()).unwrap(), contents);
         }
     }
 

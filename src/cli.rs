@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use clap::Parser;
 
@@ -40,11 +40,18 @@ fn parse_duration(given: &str) -> Result<Duration, String> {
     if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid());
     }
-    let seconds = number
+    let duration = number
         .parse::<u64>()
         .ok()
-        .and_then(|number| number.checked_mul(unit));
-    seconds.map(Duration::from_secs).ok_or_else(invalid)
+        .and_then(|number| number.checked_mul(unit))
+        .map(Duration::from_secs)
+        .ok_or_else(invalid)?;
+    if SystemTime::now().checked_add(duration).is_none() {
+        return Err(format!(
+            "`{given}` reaches past the latest time the clock can hold"
+        ));
+    }
+    Ok(duration)
 }
 
 fn parse_interval(given: &str) -> Result<Duration, String> {
@@ -79,6 +86,7 @@ mod tests {
             "10ms",
             "1d",
             "99999999999999999999h",
+            "18446744073709551615s",
         ] {
             assert!(parse_duration(given).is_err(), "{given}");
         }

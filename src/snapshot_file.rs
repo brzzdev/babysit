@@ -54,8 +54,8 @@ impl SnapshotFile {
             Err(TryLockError::WouldBlock) => return Err(OpenError::LockHeld),
             Err(TryLockError::Error(error)) => return Err(OpenError::Io(error)),
         };
-        let contents = match fs::read_to_string(path) {
-            Ok(text) => parse(&text).map_err(|reason| {
+        let contents = match fs::read(path) {
+            Ok(bytes) => parse(&bytes).map_err(|reason| {
                 OpenError::Invalid(format!(
                     "{} is not a babysit snapshot file: {reason}",
                     path.display()
@@ -96,8 +96,8 @@ impl Drop for Lock {
     }
 }
 
-fn parse(text: &str) -> Result<Contents, String> {
-    let contents: Contents = serde_json::from_str(text).map_err(|error| error.to_string())?;
+fn parse(bytes: &[u8]) -> Result<Contents, String> {
+    let contents: Contents = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     if contents.version != VERSION {
         return Err(format!("version {} is not supported", contents.version));
     }
