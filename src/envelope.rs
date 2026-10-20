@@ -141,7 +141,10 @@ impl Summary {
             state: snapshot.poll.state,
             head: snapshot.poll.head.clone(),
             colour: snapshot.reported.colour,
-            merge: snapshot.reported.merge,
+            merge: snapshot
+                .reported
+                .merge
+                .filter(|_| snapshot.poll.state == TargetState::Open),
             unresolved_threads: Some(
                 snapshot
                     .poll

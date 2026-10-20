@@ -136,13 +136,13 @@ impl Ci {
     }
 }
 
-/// A first poll as baseline: whatever colour and mergeability it shows count as reported.
+/// A first poll as baseline: its colour, and an open target's mergeability, count as reported.
 impl From<Poll> for Snapshot {
     fn from(poll: Poll) -> Self {
         Self {
             reported: Reported {
                 colour: poll.ci.as_ref().and_then(Ci::colour),
-                merge: poll.merge,
+                merge: poll.merge.filter(|_| poll.state == TargetState::Open),
             },
             poll,
         }
@@ -1084,6 +1084,16 @@ mod tests {
             }],
         );
         assert_eq!(snapshot.reported.merge, Some(Merge::Clean));
+    }
+
+    #[test]
+    fn a_target_first_seen_closed_adopts_its_mergeability_on_reopening() {
+        let steps = steps(
+            standing(TargetState::Closed, Some(Merge::Clean)),
+            vec![standing(TargetState::Open, Some(Merge::Conflicted))],
+        );
+
+        assert_eq!(steps, [vec!["state.reopened"]]);
     }
 
     #[test]
