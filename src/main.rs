@@ -9,6 +9,7 @@ mod reference;
 mod response;
 mod run;
 mod snapshot_file;
+mod target;
 
 use std::io;
 use std::process::ExitCode;
@@ -28,6 +29,7 @@ fn main() -> ExitCode {
     let code = run::run(
         &args,
         &GitHub::new(&exec),
+        &exec,
         &SystemClock,
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),

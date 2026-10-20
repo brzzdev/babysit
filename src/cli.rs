@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use crate::reference::{self, Reference};
+use crate::reference::{self, Name};
 
 #[derive(Debug, Parser)]
 #[command(name = "babysit", version, about, long_about = None)]
 pub struct Args {
-    /// The pull request to watch, as its GitHub web URL
-    #[arg(value_name = "TARGET", value_parser = reference::parse)]
-    pub target: Reference,
+    /// The pull request to watch, as its GitHub web URL or `#<number>` inside a checkout
+    #[arg(value_name = "TARGET", value_parser = reference::parse_name)]
+    pub target: Name,
 
     /// The file that keeps what babysit has seen between runs
     #[arg(long, value_name = "PATH")]

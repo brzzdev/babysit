@@ -5,8 +5,10 @@ use crate::cli::Args;
 use crate::clock::{Clock, rfc3339};
 use crate::diff::diff;
 use crate::envelope::{self, EXIT_ERROR, Envelope, ErrorKind, Outcome, Summary};
+use crate::exec::Exec;
 use crate::forge::{Backend, Snapshot, Target};
 use crate::snapshot_file::{Entry, OpenError, SnapshotFile};
+use crate::target::{self, Locator};
 
 /// A usage error found after argument parsing, such as an unreadable snapshot file.
 #[derive(Debug)]
@@ -16,6 +18,7 @@ pub struct UsageError(pub String);
 pub fn run(
     args: &Args,
     backend: &impl Backend,
+    exec: &impl Exec,
     clock: &impl Clock,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
@@ -51,13 +54,15 @@ pub fn run(
             return Ok(fail_locally(stdout, ErrorKind::SnapshotIo, message));
         }
     };
-    let target = match backend.resolve(&args.target, call_deadline) {
+    let given = args.target.given();
+    let reference = match Locator::new(exec, call_deadline).locate(&args.target) {
+        Ok(reference) => reference,
+        Err(error) => return report_unlocated(stdout, given, error),
+    };
+    let target = match backend.resolve(&reference, call_deadline) {
         Ok(target) => target,
         Err(failure) => {
-            return Ok(report(
-                stdout,
-                &Envelope::from_failure(failure, &args.target.given),
-            ));
+            return Ok(report(stdout, &Envelope::from_failure(failure, given)));
         }
     };
     let stored = file.entry(&target.url).map(|entry| entry.snapshot.clone());
@@ -137,6 +142,24 @@ fn fail_locally(stdout: &mut impl Write, kind: ErrorKind, message: String) -> u8
     report(stdout, &Envelope::failed(error))
 }
 
+fn report_unlocated(
+    stdout: &mut impl Write,
+    given: &str,
+    error: target::Error,
+) -> Result<u8, UsageError> {
+    let envelope = match error {
+        target::Error::Fatal { kind, message } => Envelope::failed(envelope::Error {
+            kind,
+            forge: None,
+            target: Some(given.to_owned()),
+            message,
+        }),
+        target::Error::TimedOut => Envelope::ended(Outcome::TimedOut),
+        target::Error::Usage(message) => return Err(UsageError(message)),
+    };
+    Ok(report(stdout, &envelope))
+}
+
 fn report(stdout: &mut impl Write, envelope: &Envelope) -> u8 {
     match envelope.write(stdout) {
         Ok(()) => envelope.exit_code(),
@@ -159,6 +182,7 @@ mod tests {
 
     use super::*;
     use crate::envelope::Forge;
+    use crate::exec::{self, Output, Script};
     use crate::forge::{Failure, Poll, poll};
     use crate::reference::{self, Reference};
 
@@ -249,7 +273,7 @@ mod tests {
 
     fn args(snapshot: &Path, timeout: Option<u64>) -> Args {
         Args {
-            target: reference::parse(URL).unwrap(),
+            target: reference::parse_name(URL).unwrap(),
             snapshot: snapshot.to_owned(),
             interval: Duration::from_secs(30),
             timeout: timeout.map(Duration::from_secs),
@@ -276,7 +300,14 @@ mod tests {
             polls: RefCell::new(polls.into()),
         };
         let mut stderr = Vec::new();
-        let code = run(args, &backend, &clock, stdout, &mut stderr);
+        let code = run(
+            args,
+            &backend,
+            &Script::new([]),
+            &clock,
+            stdout,
+            &mut stderr,
+        );
         (code, String::from_utf8(stderr).unwrap())
     }
 
@@ -460,6 +491,53 @@ mod tests {
             envelope["error"],
             json!({ "kind": "auth", "forge": "github", "target": URL, "message": "gh auth login" }),
         );
+    }
+
+    #[test]
+    fn an_unclaimed_host_is_auth_naming_the_target_as_given() {
+        let sandbox = Sandbox::new("unclaimed");
+        let given = "https://forge.example.com/o/r/pull/1";
+        let args = Args {
+            target: reference::parse_name(given).unwrap(),
+            ..args(&sandbox.snapshot(), None)
+        };
+        let no_token = || -> Result<Output, exec::Error> {
+            Ok(Output {
+                code: Some(1),
+                stderr: String::new(),
+                stdout: String::new(),
+            })
+        };
+        let exec = Script::new([
+            (
+                "gh auth token --hostname forge.example.com".to_owned(),
+                no_token(),
+            ),
+            (
+                "glab config get token --host forge.example.com".to_owned(),
+                no_token(),
+            ),
+        ]);
+        let clock = FakeClock(Cell::new(UNIX_EPOCH + Duration::from_secs(STARTED)));
+        let backend = FakeBackend {
+            polls: RefCell::default(),
+        };
+        let mut stdout = Vec::new();
+
+        let code = run(&args, &backend, &exec, &clock, &mut stdout, &mut Vec::new());
+
+        let envelope: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(code.unwrap(), 1);
+        assert_eq!(
+            envelope["error"],
+            json!({
+                "kind": "auth",
+                "forge": null,
+                "target": given,
+                "message": "neither gh nor glab holds a token for forge.example.com",
+            }),
+        );
+        assert!(!sandbox.snapshot().exists());
     }
 
     #[test]
