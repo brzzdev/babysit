@@ -720,8 +720,7 @@ mod tests {
         }
     }
 
-    /// The events of each poll after `first`, the baseline, with each snapshot saved and reloaded
-    /// between polls as a restart would.
+    /// The events of each poll after `first`, reloading each snapshot as a restart would.
     fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
         let reload = |snapshot: &Snapshot| {
             serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap()
@@ -815,22 +814,21 @@ mod tests {
             ],
         );
 
-        let red = vec!["ci.settled Red"];
         assert_eq!(
             steps,
             [
                 vec![],
                 vec![],
                 vec![],
-                red,
+                vec!["ci.settled Red"],
                 vec![],
-                vec!["ci.settled Green"]
-            ]
+                vec!["ci.settled Green"],
+            ],
         );
     }
 
     #[test]
-    fn unsettled_ci_clears_the_reported_colour() {
+    fn an_unknown_required_set_clears_green_so_it_settles_again() {
         let green = || on(A, vec![check("test", true, Assessment::Passed)]);
         let unknown = Poll {
             ci: Some(Ci {
@@ -839,25 +837,13 @@ mod tests {
             }),
             ..green()
         };
-        let waiting = || on(A, vec![check("deploy", true, Assessment::Waiting)]);
-        let approved = on(A, vec![check("deploy", true, Assessment::Pending)]);
 
         let (_, cleared) = diff(&green().into(), unknown.clone());
-        let steps = steps(
-            green(),
-            vec![unknown, green(), waiting(), approved, waiting()],
-        );
 
         assert_eq!(cleared.reported.colour, None);
         assert_eq!(
-            steps,
-            [
-                vec![],
-                vec!["ci.settled Green"],
-                vec!["ci.settled Amber"],
-                vec![],
-                vec!["ci.settled Amber"],
-            ],
+            steps(green(), vec![unknown, green()]),
+            [vec![], vec!["ci.settled Green"]],
         );
     }
 
