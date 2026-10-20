@@ -41,7 +41,7 @@ pub struct Summary {
     pub head: String,
     pub colour: Option<String>,
     pub merge: Option<String>,
-    pub unresolved_threads: Option<u32>,
+    pub unresolved_threads: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -126,7 +126,13 @@ impl Summary {
             head: snapshot.head.clone(),
             colour: None,
             merge: None,
-            unresolved_threads: None,
+            unresolved_threads: Some(
+                snapshot
+                    .threads
+                    .iter()
+                    .filter(|thread| !thread.resolved)
+                    .count(),
+            ),
         }
     }
 }

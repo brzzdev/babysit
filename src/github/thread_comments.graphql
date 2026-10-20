@@ -1,0 +1,12 @@
+query ($id: ID!, $commentsAfter: String) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      pullRequest {
+        headRefOid
+      }
+      comments(first: 100, after: $commentsAfter) {
+        ...threadComments
+      }
+    }
+  }
+}

@@ -1,17 +1,81 @@
-query ($id: ID!) {
+query (
+  $id: ID!
+  $comments: Boolean = true
+  $commentsAfter: String
+  $dismissals: Boolean = true
+  $dismissalsAfter: String
+  $reviews: Boolean = true
+  $reviewsAfter: String
+  $threads: Boolean = true
+  $threadsAfter: String
+) {
   node(id: $id) {
     ... on PullRequest {
       state
       headRefOid
-      comments(last: 100) {
+      comments(first: 100, after: $commentsAfter) @include(if: $comments) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          ...comment
+        }
+      }
+      dismissals: timelineItems(
+        first: 100
+        after: $dismissalsAfter
+        itemTypes: [REVIEW_DISMISSED_EVENT]
+      ) @include(if: $dismissals) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          ... on ReviewDismissedEvent {
+            actor {
+              ...author
+            }
+            createdAt
+            review {
+              databaseId
+              state
+            }
+          }
+        }
+      }
+      reviews(first: 100, after: $reviewsAfter) @include(if: $reviews) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           databaseId
           author {
-            login
+            ...author
           }
+          state
           body
-          createdAt
+          submittedAt
           url
+        }
+      }
+      reviewThreads(first: 100, after: $threadsAfter) @include(if: $threads) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          isResolved
+          resolvedBy {
+            ...author
+          }
+          path
+          line
+          comments(first: 100) {
+            ...threadComments
+          }
         }
       }
     }

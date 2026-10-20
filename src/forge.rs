@@ -36,9 +36,12 @@ pub enum Failure {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Poll {
+    /// The comments outside any thread.
     pub comments: Vec<Comment>,
     pub head: String,
+    pub reviews: Vec<Review>,
     pub state: TargetState,
+    pub threads: Vec<Thread>,
 }
 
 pub type Snapshot = Poll;
@@ -56,7 +59,44 @@ pub struct Comment {
     pub actor: Option<Account>,
     pub at: String,
     pub body: String,
+    pub edited_at: Option<String>,
+    pub editor: Option<Account>,
     pub id: String,
+    pub review_id: Option<String>,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Review {
+    pub actor: Option<Account>,
+    pub at: String,
+    pub body: String,
+    pub id: String,
+    pub state: ReviewState,
+    pub url: String,
+    pub withdrawn_at: Option<String>,
+    pub withdrawn_by: Option<Account>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    Commented,
+    Dismissed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thread {
+    pub comments: Vec<Comment>,
+    pub id: String,
+    pub line: Option<u64>,
+    pub path: String,
+    /// Where a reply goes, in the form the forge's reply call takes.
+    pub reply_to: String,
+    pub resolved: bool,
+    pub resolved_by: Option<Account>,
     pub url: String,
 }
 
@@ -68,15 +108,23 @@ pub struct Account {
 }
 
 #[cfg(test)]
+pub fn octocat() -> Account {
+    Account {
+        bot: None,
+        login: "octocat".to_owned(),
+    }
+}
+
+#[cfg(test)]
 pub fn comment(id: &str) -> Comment {
     Comment {
-        actor: Some(Account {
-            bot: None,
-            login: "octocat".to_owned(),
-        }),
+        actor: Some(octocat()),
         at: "2026-10-20T19:00:00Z".to_owned(),
         body: format!("comment {id}"),
+        edited_at: None,
+        editor: None,
         id: id.to_owned(),
+        review_id: None,
         url: format!("https://github.com/o/r/pull/1#issuecomment-{id}"),
     }
 }
@@ -86,6 +134,8 @@ pub fn poll(ids: &[&str]) -> Poll {
     Poll {
         comments: ids.iter().map(|id| comment(id)).collect(),
         head: "abc123".to_owned(),
+        reviews: Vec::new(),
         state: TargetState::Open,
+        threads: Vec::new(),
     }
 }
