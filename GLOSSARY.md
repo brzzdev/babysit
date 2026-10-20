@@ -6,6 +6,11 @@ The language babysit uses for what it watches and what it reports.
 
 ### Watching
 
+**Baseline**:
+The snapshot a run starts from: the one the previous run ended on, or the run's own first snapshot
+when there is none.
+_Avoid_: Cursor, checkpoint, last seen
+
 **Forge**:
 A code-hosting service babysit watches, such as GitHub or GitLab.
 _Avoid_: Host, provider, platform
