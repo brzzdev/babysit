@@ -545,6 +545,9 @@ impl Schedule {
     /// the host until the refill it returns.
     fn polled(&mut self, host: &str, hints: Hints, now: SystemTime) -> Option<SystemTime> {
         self.hosts.entry(host.to_owned()).or_default().backoffs = 0;
+        if self.once {
+            return None;
+        }
         self.pause(host, refill(hints, now))
     }
 
@@ -1801,6 +1804,28 @@ mod tests {
         assert!(woke(&traced));
         assert_eq!(seconds(&traced), [90]);
         assert_eq!(traced.stderr, "");
+    }
+
+    #[test]
+    fn timeout_zero_polls_every_target_once_after_a_poll_spends_the_quota() {
+        let sandbox = Sandbox::new("once-spent");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        seed(&sandbox.snapshot(), OTHER, "PR_2", &["1"]);
+        let spent = Hints {
+            reset: Some(at(300)),
+            ..Hints::default()
+        };
+
+        let traced = trace(
+            &args(&[URL, OTHER], &sandbox.snapshot(), Some(0)),
+            vec![
+                paced(URL, poll(&["1"]), spent),
+                returns(OTHER, poll(&["1", "2"])),
+            ],
+        );
+
+        assert!(woke(&traced));
+        assert_eq!(traced.envelope["events"][0]["target"], OTHER);
     }
 
     #[test]
