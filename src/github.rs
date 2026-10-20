@@ -7,7 +7,8 @@ use serde::de::DeserializeOwned;
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::{self, CALL_LIMIT, Exec, Limit};
 use crate::forge::{
-    Account, Backend, Comment, Failure, Poll, Review, ReviewState, Target, TargetState, Thread,
+    Account, Assessment, Backend, Check, Ci, Comment, Failure, Poll, Review, ReviewState, Target,
+    TargetState, Thread,
 };
 use crate::reference::Reference;
 use crate::response::{self, Response};
@@ -16,6 +17,8 @@ const BOT_SUFFIX: &str = "[bot]";
 const CLI: &str = "gh";
 const EXIT_AUTH: i32 = 4;
 const EXIT_NOT_FOUND: i32 = 127;
+/// The rollup and status-context state of a required check that has not reported.
+const EXPECTED: &str = "EXPECTED";
 const POLL_QUERY: &str = concat!(
     include_str!("github/poll.graphql"),
     include_str!("github/fragments.graphql"),
@@ -107,29 +110,49 @@ impl<E: Exec> Backend for GitHub<'_, E> {
 
     /// Pages every connection to its end, failing the poll if the head moves between pages.
     fn poll(&self, target: &Target, deadline: Option<SystemTime>) -> Result<Poll, Failure> {
+        let mut checks = Paged::new("checks");
         let mut comments = Paged::new("comments");
         let mut dismissals = Paged::new("dismissals");
         let mut reviews = Paged::new("reviews");
         let mut threads = Paged::new("threads");
-        let mut first: Option<(String, State)> = None;
-        while !(comments.done() && dismissals.done() && reviews.done() && threads.done()) {
+        let mut first: Option<(String, State, Option<String>)> = None;
+        while !(checks.done()
+            && comments.done()
+            && dismissals.done()
+            && reviews.done()
+            && threads.done())
+        {
             let mut variables = vec![("-f", format!("id={}", target.forge_id))];
+            variables.extend(checks.variable());
             variables.extend(comments.variable());
             variables.extend(dismissals.variable());
             variables.extend(reviews.variable());
             variables.extend(threads.variable());
             let page: PullRequestPage =
                 self.query(target, POLL_QUERY, &variables, "pull request", deadline)?;
+            let commit = page.commits.nodes.into_iter().next().ok_or_else(|| {
+                fatal(ErrorKind::PollFailed, "the pull request has no head commit")
+            })?;
+            same_head(&page.head_ref_oid, &commit.commit.oid)?;
+            let rollup = commit.commit.status_check_rollup;
             match &first {
-                None => first = Some((page.head_ref_oid, page.state)),
-                Some((head, _)) => same_head(head, &page.head_ref_oid)?,
+                None => {
+                    // A head with no CI has no rollup, so there are no checks to page.
+                    if rollup.is_none() {
+                        checks.page = Page::Done;
+                    }
+                    let state = rollup.as_ref().map(|rollup| rollup.state.clone());
+                    first = Some((page.head_ref_oid, page.state, state));
+                }
+                Some((head, ..)) => same_head(head, &page.head_ref_oid)?,
             }
+            checks.take(rollup.and_then(|rollup| rollup.contexts))?;
             comments.take(page.comments)?;
             dismissals.take(page.dismissals)?;
             reviews.take(page.reviews)?;
             threads.take(page.review_threads)?;
         }
-        let (head, state) = first.expect("every poll fetches a first page");
+        let (head, state, rollup) = first.expect("every poll fetches a first page");
         let mut polled_threads = Vec::new();
         for node in threads.nodes {
             let comments =
@@ -137,6 +160,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             polled_threads.extend(thread(node.thread, comments));
         }
         Ok(Poll {
+            ci: rollup.map(|state| ci(&state, &checks.nodes)),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
             head,
             reviews: reviews
@@ -146,6 +170,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
                 .collect(),
             state: state.into(),
             threads: polled_threads,
+            url: target.url.clone(),
         })
     }
 
@@ -331,6 +356,7 @@ struct Viewer {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PullRequestPage {
+    commits: Nodes<CommitNode>,
     comments: Option<Connection<CommentNode>>,
     dismissals: Option<Connection<DismissalNode>>,
     head_ref_oid: String,
@@ -364,6 +390,70 @@ struct Connection<T> {
 struct PageInfo {
     end_cursor: Option<String>,
     has_next_page: bool,
+}
+
+#[derive(Deserialize)]
+struct Nodes<T> {
+    nodes: Vec<T>,
+}
+
+#[derive(Deserialize)]
+struct CommitNode {
+    commit: Commit,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Commit {
+    oid: String,
+    status_check_rollup: Option<Rollup>,
+}
+
+#[derive(Deserialize)]
+struct Rollup {
+    contexts: Option<Connection<ContextNode>>,
+    state: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "__typename")]
+enum ContextNode {
+    CheckRun(CheckRunNode),
+    StatusContext(StatusContextNode),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckRunNode {
+    check_suite: Option<CheckSuite>,
+    conclusion: Option<String>,
+    database_id: u64,
+    details_url: Option<String>,
+    is_required: bool,
+    name: String,
+    status: String,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CheckSuite {
+    database_id: u64,
+    workflow_run: Option<WorkflowRun>,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowRun {
+    database_id: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusContextNode {
+    context: String,
+    is_required: bool,
+    state: String,
+    target_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -552,6 +642,88 @@ fn thread(node: ThreadFields, comments: Vec<CommentNode>) -> Option<Thread> {
     })
 }
 
+/// The head's checks at their latest attempts, deciding on the required ones when any exist.
+fn ci(rollup_state: &str, contexts: &[ContextNode]) -> Ci {
+    let any_required = contexts.iter().any(|context| match context {
+        ContextNode::CheckRun(run) => run.is_required,
+        ContextNode::StatusContext(status) => status.is_required,
+    });
+    let deciding = |is_required: bool| is_required || !any_required;
+    let runs: Vec<_> = contexts
+        .iter()
+        .filter_map(|context| match context {
+            ContextNode::CheckRun(run) => Some(run),
+            ContextNode::StatusContext(_) => None,
+        })
+        .collect();
+    let superseded = |run: &CheckRunNode| {
+        runs.iter().any(|other| {
+            other.name == run.name
+                && other.check_suite == run.check_suite
+                && other.database_id > run.database_id
+        })
+    };
+    let mut expected_seen = false;
+    let mut checks = Vec::new();
+    for context in contexts {
+        match context {
+            ContextNode::CheckRun(run) if superseded(run) => {}
+            ContextNode::CheckRun(run) => checks.push(Check {
+                assessment: check_run_assessment(&run.status, run.conclusion.as_deref()),
+                conclusion: run
+                    .conclusion
+                    .as_ref()
+                    .unwrap_or(&run.status)
+                    .to_ascii_lowercase(),
+                deciding: deciding(run.is_required),
+                job_id: run
+                    .check_suite
+                    .as_ref()
+                    .and_then(|suite| suite.workflow_run.as_ref())
+                    .map(|_| run.database_id.to_string()),
+                name: run.name.clone(),
+                url: run.details_url.clone(),
+            }),
+            ContextNode::StatusContext(status) => {
+                expected_seen |= status.state == EXPECTED;
+                checks.push(Check {
+                    assessment: status_assessment(&status.state),
+                    conclusion: status.state.to_ascii_lowercase(),
+                    deciding: deciding(status.is_required),
+                    job_id: None,
+                    name: status.context.clone(),
+                    url: status.target_url.clone(),
+                });
+            }
+        }
+    }
+    Ci {
+        checks,
+        // The rollup expects a check that no context names.
+        required_known: expected_seen || rollup_state != EXPECTED,
+    }
+}
+
+/// A completed run without a conclusion, or a word this mapping doesn't know, is unsettled.
+fn check_run_assessment(status: &str, conclusion: Option<&str>) -> Assessment {
+    match (conclusion, status) {
+        (Some("SUCCESS" | "NEUTRAL" | "SKIPPED"), _) => Assessment::Passed,
+        (Some("CANCELLED" | "FAILURE" | "STARTUP_FAILURE" | "TIMED_OUT"), _) => Assessment::Failed,
+        (Some("ACTION_REQUIRED" | "STALE"), _) | (None, "WAITING") => Assessment::Waiting,
+        _ => Assessment::Pending,
+    }
+}
+
+/// `EXPECTED` is a required status that hasn't reported, amber once nothing else is unsettled.
+fn status_assessment(state: &str) -> Assessment {
+    match state {
+        "SUCCESS" => Assessment::Passed,
+        "ERROR" | "FAILURE" => Assessment::Failed,
+        EXPECTED => Assessment::Waiting,
+        _ => Assessment::Pending,
+    }
+}
+
 impl From<State> for TargetState {
     fn from(state: State) -> Self {
         match state {
@@ -640,6 +812,7 @@ mod tests {
     }
 
     const HEAD: &str = "dfd1945e66eb0008cad921a1230fd2c533598845";
+    const JOB_ID: &str = "118827308709";
     const POLLED_ID: &str = "PR_kwDOVQ0d8c8AAAABJn0ayQ";
     const THREAD_ID: &str = "PRRT_kwDOVQ0d8c6ueY8r";
 
@@ -671,7 +844,7 @@ mod tests {
             graphql(
                 POLL_QUERY,
                 &format!(
-                    "-f id={POLLED_ID} -F comments=false -F dismissals=false -f reviewsAfter=REVIEWS_1 \
+                    "-f id={POLLED_ID} -F checks=false -F comments=false -F dismissals=false -f reviewsAfter=REVIEWS_1 \
                      -F threads=false"
                 ),
                 include_str!("github/fixtures/poll_page_2.http"),
@@ -739,6 +912,19 @@ mod tests {
             withdrawn_by: None,
         };
         Poll {
+            ci: Some(Ci {
+                checks: vec![Check {
+                    assessment: Assessment::Passed,
+                    conclusion: "success".to_owned(),
+                    deciding: true,
+                    job_id: Some(JOB_ID.to_owned()),
+                    name: "test".to_owned(),
+                    url: Some(format!(
+                        "https://github.com/brzzdev/babysit/actions/runs/39480449747/job/{JOB_ID}"
+                    )),
+                }],
+                required_known: true,
+            }),
             comments: vec![Comment {
                 actor: Some(brzzdev()),
                 at: "2026-10-20T19:07:43Z".to_owned(),
@@ -781,6 +967,7 @@ mod tests {
                 resolved_by: Some(brzzdev()),
                 url: "https://github.com/brzzdev/babysit/pull/30#discussion_r4328942196".to_owned(),
             }],
+            url: polled().url,
         }
     }
 
@@ -921,5 +1108,136 @@ mod tests {
             resolve_with(Err(exec::Error::Io(io::ErrorKind::NotFound.into()))).unwrap_err();
 
         assert_eq!(kind(&failure), ErrorKind::CliMissing);
+    }
+
+    /// The recorded poll with its head's `statusCheckRollup` replaced by `rollup`.
+    fn with_rollup(rollup: &str) -> String {
+        let fixture = include_str!("github/fixtures/poll.http");
+        let start = fixture.find(r#""statusCheckRollup":"#).unwrap();
+        let end = fixture.find(r#","comments":{"#).unwrap();
+        let (before, after) = (&fixture[..start], &fixture[end..]);
+        format!(r#"{before}"statusCheckRollup":{rollup}}}}}]}}{after}"#)
+    }
+
+    fn checks(nodes: &str) -> String {
+        format!(r#"{{"pageInfo":{{"hasNextPage":false,"endCursor":"MQ"}},"nodes":[{nodes}]}}"#)
+    }
+
+    fn ci_of(stdout: &str) -> Option<Ci> {
+        poll_with([first_page(stdout)]).unwrap().ci
+    }
+
+    #[test]
+    fn judges_each_check_on_its_latest_attempt_and_decides_on_the_required_ones() {
+        let actions = r#"{"databaseId":1,"workflowRun":{"databaseId":10}}"#;
+        let contexts = checks(&format!(
+            r#"{{"__typename":"CheckRun","checkSuite":{actions},"conclusion":"FAILURE",
+                "databaseId":100,"detailsUrl":"https://example.com/job/100","isRequired":true,
+                "name":"test","status":"COMPLETED"}},
+              {{"__typename":"CheckRun","checkSuite":{actions},"conclusion":null,
+                "databaseId":101,"detailsUrl":"https://example.com/job/101","isRequired":true,
+                "name":"test","status":"IN_PROGRESS"}},
+              {{"__typename":"CheckRun","checkSuite":{{"databaseId":2,"workflowRun":null}},
+                "conclusion":"FAILURE","databaseId":200,"detailsUrl":"https://codecov.io/1",
+                "isRequired":false,"name":"codecov","status":"COMPLETED"}},
+              {{"__typename":"StatusContext","context":"ci/deploy","isRequired":true,
+                "state":"EXPECTED","targetUrl":null}}"#
+        ));
+
+        let ci = ci_of(&with_rollup(&format!(
+            r#"{{"state":"FAILURE","contexts":{contexts}}}"#
+        )));
+
+        assert_eq!(
+            ci,
+            Some(Ci {
+                checks: vec![
+                    Check {
+                        assessment: Assessment::Pending,
+                        conclusion: "in_progress".to_owned(),
+                        deciding: true,
+                        job_id: Some("101".to_owned()),
+                        name: "test".to_owned(),
+                        url: Some("https://example.com/job/101".to_owned()),
+                    },
+                    Check {
+                        assessment: Assessment::Failed,
+                        conclusion: "failure".to_owned(),
+                        deciding: false,
+                        job_id: None,
+                        name: "codecov".to_owned(),
+                        url: Some("https://codecov.io/1".to_owned()),
+                    },
+                    Check {
+                        assessment: Assessment::Waiting,
+                        conclusion: "expected".to_owned(),
+                        deciding: true,
+                        job_id: None,
+                        name: "ci/deploy".to_owned(),
+                        url: None,
+                    },
+                ],
+                required_known: true,
+            }),
+        );
+    }
+
+    #[test]
+    fn a_head_without_a_rollup_has_no_ci() {
+        assert_eq!(ci_of(&with_rollup("null")), None);
+    }
+
+    #[test]
+    fn an_expected_rollup_naming_no_check_leaves_the_required_set_unknown() {
+        let contexts = checks(
+            r#"{"__typename":"StatusContext","context":"lint","isRequired":false,
+                "state":"SUCCESS","targetUrl":null}"#,
+        );
+
+        let ci = ci_of(&with_rollup(&format!(
+            r#"{{"state":"EXPECTED","contexts":{contexts}}}"#
+        )))
+        .unwrap();
+
+        assert!(!ci.required_known);
+        assert!(ci.checks[0].deciding);
+    }
+
+    #[test]
+    fn maps_every_github_row_of_the_colour_table() {
+        use Assessment::{Failed, Passed, Pending, Waiting};
+        let completed = |conclusion| check_run_assessment("COMPLETED", Some(conclusion));
+        for (conclusion, assessment) in [
+            ("ACTION_REQUIRED", Waiting),
+            ("CANCELLED", Failed),
+            ("FAILURE", Failed),
+            ("NEUTRAL", Passed),
+            ("SKIPPED", Passed),
+            ("STALE", Waiting),
+            ("STARTUP_FAILURE", Failed),
+            ("SUCCESS", Passed),
+            ("TIMED_OUT", Failed),
+        ] {
+            assert_eq!(completed(conclusion), assessment, "{conclusion}");
+        }
+        for (status, assessment) in [
+            ("COMPLETED", Pending),
+            ("IN_PROGRESS", Pending),
+            ("PENDING", Pending),
+            ("QUEUED", Pending),
+            ("REQUESTED", Pending),
+            ("WAITING", Waiting),
+        ] {
+            assert_eq!(check_run_assessment(status, None), assessment, "{status}");
+        }
+        for (state, assessment) in [
+            ("ERROR", Failed),
+            ("EXPECTED", Waiting),
+            ("FAILURE", Failed),
+            ("PENDING", Pending),
+            ("SUCCESS", Passed),
+        ] {
+            assert_eq!(status_assessment(state), assessment, "{state}");
+        }
     }
 }

@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use serde::Serialize;
 
 use crate::diff;
-use crate::forge::{Failure, Snapshot, TargetState};
+use crate::forge::{Colour, Failure, Snapshot, TargetState};
 
 pub const EXIT_ERROR: u8 = 1;
 const EXIT_TIMED_OUT: u8 = 3;
@@ -39,7 +39,7 @@ pub struct Summary {
     pub target: String,
     pub state: TargetState,
     pub head: String,
-    pub colour: Option<String>,
+    pub colour: Option<Colour>,
     pub merge: Option<String>,
     pub unresolved_threads: Option<usize>,
 }
@@ -122,12 +122,13 @@ impl Summary {
     pub fn new(target: &str, snapshot: &Snapshot) -> Self {
         Self {
             target: target.to_owned(),
-            state: snapshot.state,
-            head: snapshot.head.clone(),
-            colour: None,
+            state: snapshot.poll.state,
+            head: snapshot.poll.head.clone(),
+            colour: snapshot.reported.colour,
             merge: None,
             unresolved_threads: Some(
                 snapshot
+                    .poll
                     .threads
                     .iter()
                     .filter(|thread| !thread.resolved)
