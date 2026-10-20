@@ -23,7 +23,7 @@ pub struct Target {
     pub url: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Failure {
     Fatal {
         forge: Forge,
