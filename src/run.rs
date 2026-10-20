@@ -581,8 +581,9 @@ impl Schedule {
         match failure {
             Failure::TimedOut => Fallout::Deadline,
             Failure::RateLimited { hints, .. } => {
-                let until = self.rate_limited(call.host, hints, now);
-                notify_wait(stderr, call.host, until);
+                if let Some(until) = self.rate_limited(call.host, hints, now) {
+                    notify_wait(stderr, call.host, until);
+                }
                 Fallout::Retry
             }
             Failure::Transient { hints, message, .. }
@@ -598,8 +599,12 @@ impl Schedule {
         }
     }
 
-    /// When the host may be called again: `retry-after`, the quota reset, or a doubling backoff.
-    fn rate_limited(&mut self, host: &str, hints: Hints, now: SystemTime) -> SystemTime {
+    /// When the host may be called again: `retry-after`, the quota reset, or a doubling backoff;
+    /// `once` holds nothing.
+    fn rate_limited(&mut self, host: &str, hints: Hints, now: SystemTime) -> Option<SystemTime> {
+        if self.once {
+            return None;
+        }
         let cooldown = self.hosts.entry(host.to_owned()).or_default();
         let named = hints
             .retry_after
@@ -613,7 +618,7 @@ impl Schedule {
                 .min(RATE_LIMIT_WAIT_MAX)
         });
         cooldown.until = Some(until);
-        until
+        Some(until)
     }
 }
 
@@ -1826,6 +1831,42 @@ mod tests {
 
         assert!(woke(&traced));
         assert_eq!(traced.envelope["events"][0]["target"], OTHER);
+    }
+
+    #[test]
+    fn timeout_zero_polls_past_a_rate_limited_target_and_wakes() {
+        let sandbox = Sandbox::new("once-limited-wake");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        seed(&sandbox.snapshot(), OTHER, "PR_2", &["1"]);
+
+        let traced = trace(
+            &args(&[URL, OTHER], &sandbox.snapshot(), Some(0)),
+            vec![
+                fails(URL, rate_limited(retry_after(60))),
+                returns(OTHER, poll(&["1", "2"])),
+            ],
+        );
+
+        assert!(woke(&traced));
+        assert_eq!(traced.stderr, "");
+    }
+
+    #[test]
+    fn timeout_zero_with_only_a_rate_limit_times_out_after_polling_every_target() {
+        let sandbox = Sandbox::new("once-limited-quiet");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        seed(&sandbox.snapshot(), OTHER, "PR_2", &["1"]);
+
+        let traced = trace(
+            &args(&[URL, OTHER], &sandbox.snapshot(), Some(0)),
+            vec![
+                fails(URL, rate_limited(retry_after(60))),
+                returns(OTHER, poll(&["1"])),
+            ],
+        );
+
+        assert_eq!(traced.code, 3);
+        assert_eq!(seconds(&traced), [0, 0]);
     }
 
     #[test]
