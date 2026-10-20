@@ -193,7 +193,7 @@ impl<E: Exec> GitLab<'_, E> {
             match &first {
                 None => {
                     let pipeline = page.head_pipeline.as_ref();
-                    if !pipeline.is_some_and(|pipeline| pipeline.may_build(&head)) {
+                    if !pipeline.is_some_and(|pipeline| pipeline.sha == head || pipeline.merged()) {
                         jobs.finish();
                     }
                 }
@@ -278,14 +278,24 @@ impl<E: Exec> GitLab<'_, E> {
         if pipeline.sha == head {
             return Ok(true);
         }
-        if !pipeline.may_build(head) {
+        if !pipeline.merged() {
             return Ok(false);
         }
         let path = format!(
             "projects/{project_id}/repository/commits/{}?stats=false",
             pipeline.sha,
         );
-        let (response, pacing) = self.call(&["api", "-i", "--hostname", host, &path], deadline)?;
+        // Only the merge request's own absence ends the run.
+        let (response, pacing) = self
+            .call(&["api", "-i", "--hostname", host, &path], deadline)
+            .map_err(|failure| match failure {
+                Failure::Fatal {
+                    kind: ErrorKind::TargetNotFound,
+                    message,
+                    ..
+                } => transient(&message),
+                other => other,
+            })?;
         *hints = hints.merge(pacing);
         let commit: Commit = decode(&response.body)?;
         Ok(commit
@@ -295,11 +305,11 @@ impl<E: Exec> GitLab<'_, E> {
     }
 }
 
-/// The head pipeline's jobs at their latest attempts, deciding unless allowed to fail, with a
-/// skipped pipeline as a check of its own.
+/// The head pipeline's jobs at their latest attempts, deciding unless their failure is a warning,
+/// and the pipeline itself where it was skipped or no job decides.
 fn ci(pipeline: &HeadPipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: bool) -> Ci {
     let origin = web_origin(target_url);
-    // Jobs held behind a blocking manual job stay created while the pipeline waits on it.
+    // Jobs held behind a deciding manual job stay created while the pipeline waits on it.
     let blocked = pipeline.status == CI_MANUAL;
     let mut checks: Vec<_> = jobs
         .into_iter()
@@ -313,12 +323,13 @@ fn ci(pipeline: &HeadPipeline, jobs: Vec<Job>, target_url: &str, skipped_accepte
             url: job.web_path.map(|path| format!("{origin}{path}")),
         })
         .collect();
-    if pipeline.status == CI_SKIPPED {
+    let skipped = pipeline.status == CI_SKIPPED;
+    if skipped || !checks.iter().any(|check| check.deciding) {
         checks.push(Check {
-            assessment: if skipped_accepted {
-                Assessment::Passed
-            } else {
-                Assessment::Waiting
+            assessment: match skipped {
+                true if skipped_accepted => Assessment::Passed,
+                true => Assessment::Waiting,
+                false => job_assessment(&pipeline.status),
             },
             conclusion: pipeline.status.to_ascii_lowercase(),
             deciding: true,
@@ -511,6 +522,14 @@ struct MergeRequestPage {
     state: State,
 }
 
+impl MergeRequestPage {
+    fn pipeline_id(&self) -> Option<&str> {
+        self.head_pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.id.as_str())
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HeadPipeline {
@@ -522,22 +541,13 @@ struct HeadPipeline {
     status: String,
 }
 
-impl MergeRequestPage {
-    fn pipeline_id(&self) -> Option<&str> {
-        self.head_pipeline
-            .as_ref()
-            .map(|pipeline| pipeline.id.as_str())
-    }
-}
-
 impl HeadPipeline {
-    /// Whether the pipeline ran `head`, or may have through a merge commit only REST can show.
-    fn may_build(&self, head: &str) -> bool {
-        self.sha == head
-            || matches!(
-                self.merge_request_event_type.as_deref(),
-                Some(MERGED_RESULT | MERGE_TRAIN)
-            )
+    /// Whether GitLab ran the pipeline on a merge commit rather than on the head itself.
+    fn merged(&self) -> bool {
+        matches!(
+            self.merge_request_event_type.as_deref(),
+            Some(MERGED_RESULT | MERGE_TRAIN)
+        )
     }
 }
 
@@ -961,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn allowed_failures_warn_and_a_blocking_manual_job_holds_the_pipeline_amber() {
+    fn failures_that_do_not_decide_warn_and_a_deciding_manual_job_holds_the_pipeline_amber() {
         let pipeline = pipeline(
             "MANUAL",
             &json!([
@@ -1005,6 +1015,31 @@ mod tests {
             Some(Some("https://gitlab.com/gitlab-org/cli/-/pipelines/7")),
         );
         assert_eq!(accepted.colour(), Some(Colour::Green));
+    }
+
+    #[test]
+    fn the_pipeline_decides_where_no_job_does() {
+        let warned = ci_of(
+            pipeline("SUCCESS", &json!([job(1, "lint", "FAILED", true)])),
+            false,
+        );
+        let failed = ci_of(pipeline("FAILED", &json!([])), false);
+
+        assert_eq!(warned.unwrap().colour(), Some(Colour::Green));
+        assert_eq!(failed.unwrap().colour(), Some(Colour::Red));
+    }
+
+    #[test]
+    fn a_merge_commit_that_cannot_be_found_fails_only_the_poll() {
+        let missing = include_str!("gitlab/fixtures/resolve_not_found.http");
+        let exec = Script::new([
+            graphql("", include_str!("gitlab/fixtures/poll.http")),
+            (commit_lookup("").0, Ok(Output::exited(1, missing))),
+        ]);
+
+        let failure = GitLab::new(&exec).poll(&target(), None).unwrap_err();
+
+        assert!(matches!(failure, Failure::Transient { .. }), "{failure:?}");
     }
 
     #[test]
