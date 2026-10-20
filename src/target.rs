@@ -99,8 +99,7 @@ impl<'a, E: Exec> Locator<'a, E> {
         }
     }
 
-    /// Which CLIs claim `authority`: gh by its bare host, since gh can't reach a host on a port, and
-    /// glab with the port, as it keys its hosts.
+    /// Which CLIs claim `authority`, asking gh by its bare host and glab by the whole authority.
     fn claim(&mut self, authority: &str) -> Result<Claim, Error> {
         let host = without_port(authority);
         if host.eq_ignore_ascii_case(GITHUB_HOST) {
@@ -462,9 +461,13 @@ fn split_remote_url(url: &str) -> Option<(String, String)> {
     let authority = authority
         .rsplit_once('@')
         .map_or(authority, |(_, authority)| authority);
-    let authority = match scheme {
-        Some("http" | "https") => authority,
-        _ => without_port(authority),
+    let is_http = scheme.is_some_and(|scheme| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    });
+    let authority = if is_http {
+        authority
+    } else {
+        without_port(authority)
     };
     let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
@@ -608,6 +611,10 @@ mod tests {
         for (url, authority) in [
             (
                 "https://gitlab.example.com:8443/g/p.git",
+                "gitlab.example.com:8443",
+            ),
+            (
+                "HTTPS://gitlab.example.com:8443/g/p.git",
                 "gitlab.example.com:8443",
             ),
             (
