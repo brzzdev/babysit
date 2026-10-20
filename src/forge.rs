@@ -32,7 +32,6 @@ pub struct Target {
     pub url: String,
 }
 
-/// What a target is, whichever forge it is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetKind {
     /// A GitHub pull request or GitLab merge request.

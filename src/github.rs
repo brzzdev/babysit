@@ -19,15 +19,15 @@ const EXIT_AUTH: i32 = 4;
 /// The rollup and status-context state of a required check that has not reported.
 const EXPECTED: &str = "EXPECTED";
 const GRAPHQL_NOT_FOUND: &str = "NOT_FOUND";
-const ISSUE_POLL_QUERY: &str = concat!(
-    include_str!("github/issue_poll.graphql"),
-    include_str!("github/fragments.graphql"),
-);
 const GRAPHQL_RATE_LIMITED: &str = "RATE_LIMITED";
 const HEADER_POLL_INTERVAL: &str = "x-poll-interval";
 const HEADER_REMAINING: &str = "x-ratelimit-remaining";
 const HEADER_RESET: &str = "x-ratelimit-reset";
 const HEADER_RETRY_AFTER: &str = "retry-after";
+const ISSUE_POLL_QUERY: &str = concat!(
+    include_str!("github/issue_poll.graphql"),
+    include_str!("github/fragments.graphql"),
+);
 const NODE_FIELD: &str = "node";
 const POLL_QUERY: &str = concat!(
     include_str!("github/poll.graphql"),
@@ -252,31 +252,31 @@ impl<E: Exec> GitHub<'_, E> {
         hints: &mut Hints,
     ) -> Result<Poll, Failure> {
         let mut comments = Paged::new(Forge::GitHub, "comments");
-        let mut lifecycle = None;
-        while !comments.done() {
+        loop {
             let mut variables = vec![("-f", format!("id={}", target.forge_id))];
             variables.extend(comments.variable());
             let page: IssuePage = self
                 .query(target, ISSUE_POLL_QUERY, &variables, deadline, hints)?
                 .ok_or_else(|| gone(target))?;
             comments.take(Some(page.comments))?;
-            lifecycle.get_or_insert(page.lifecycle);
+            if !comments.done() {
+                continue;
+            }
+            let state = page.lifecycle.state.into();
+            let (state_changed_at, state_changed_by) = page.lifecycle.change();
+            return Ok(Poll {
+                ci: None,
+                comments: comments.nodes.into_iter().map(Comment::from).collect(),
+                head: None,
+                merge: None,
+                reviews: Vec::new(),
+                state,
+                state_changed_at,
+                state_changed_by,
+                threads: Vec::new(),
+                url: target.url.clone(),
+            });
         }
-        let lifecycle = lifecycle.expect("every poll fetches a first page");
-        let state = lifecycle.state.into();
-        let (state_changed_at, state_changed_by) = lifecycle.change();
-        Ok(Poll {
-            ci: None,
-            comments: comments.nodes.into_iter().map(Comment::from).collect(),
-            head: None,
-            merge: None,
-            reviews: Vec::new(),
-            state,
-            state_changed_at,
-            state_changed_by,
-            threads: Vec::new(),
-            url: target.url.clone(),
-        })
     }
 
     /// A thread's comments, paging past the first page the poll query brought, still on `head`.
@@ -670,7 +670,7 @@ enum Typename {
     Other,
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum State {
     Closed,
@@ -885,7 +885,7 @@ impl Standing {
 
     /// When and by whom the pull request entered its state.
     fn change(self) -> (Option<String>, Option<Account>) {
-        if self.lifecycle.state == State::Merged {
+        if matches!(self.lifecycle.state, State::Merged) {
             return (self.merged_at, self.merged_by.map(Account::from));
         }
         self.lifecycle.change()
@@ -996,6 +996,15 @@ mod tests {
         assert_eq!(resolved.unwrap(), target());
     }
 
+    fn issue() -> Target {
+        Target {
+            forge_id: ISSUE_ID.to_owned(),
+            kind: TargetKind::Issue,
+            url: "https://github.com/brzzdev/babysit/issues/9".to_owned(),
+            ..target()
+        }
+    }
+
     fn resolve_issue(stdout: &str) -> Target {
         let exec = Script::new([(
             "gh api -i --hostname github.com repos/brzzdev/babysit/issues/9".to_owned(),
@@ -1009,16 +1018,7 @@ mod tests {
     fn resolves_an_issue_to_its_url_and_node_id() {
         let resolved = resolve_issue(include_str!("github/fixtures/resolve_issue.http"));
 
-        assert_eq!(
-            resolved,
-            Target {
-                forge: Forge::GitHub,
-                forge_id: ISSUE_ID.to_owned(),
-                host: "github.com".to_owned(),
-                kind: TargetKind::Issue,
-                url: "https://github.com/brzzdev/babysit/issues/9".to_owned(),
-            },
-        );
+        assert_eq!(resolved, issue());
     }
 
     #[test]
@@ -1279,13 +1279,6 @@ mod tests {
 
     #[test]
     fn polls_an_issue_for_its_comments_and_state_alone() {
-        let issue = Target {
-            forge: Forge::GitHub,
-            forge_id: ISSUE_ID.to_owned(),
-            host: "github.com".to_owned(),
-            kind: TargetKind::Issue,
-            url: "https://github.com/brzzdev/babysit/issues/9".to_owned(),
-        };
         let exec = Script::new([graphql(
             ISSUE_POLL_QUERY,
             &format!("-f id={ISSUE_ID}"),
@@ -1303,7 +1296,7 @@ mod tests {
             url: format!("https://github.com/brzzdev/babysit/issues/9#issuecomment-{id}"),
         };
 
-        let (poll, _) = GitHub::new(&exec).poll(&issue, None).unwrap();
+        let (poll, _) = GitHub::new(&exec).poll(&issue(), None).unwrap();
 
         assert_eq!(
             poll,
@@ -1324,7 +1317,7 @@ mod tests {
                 state_changed_at: Some("2026-10-20T17:29:02Z".to_owned()),
                 state_changed_by: Some(brzzdev()),
                 threads: Vec::new(),
-                url: issue.url,
+                url: issue().url,
             },
         );
     }

@@ -93,7 +93,7 @@ pub fn run(
         .iter()
         .filter_map(|tracked| {
             let snapshot = tracked.polled.as_ref()?;
-            Some(Summary::new(&tracked.target.url, snapshot))
+            Some(Summary::new(&tracked.target, snapshot))
         })
         .collect();
     if envelope.write(stdout).is_err() {

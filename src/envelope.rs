@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use serde::Serialize;
 
 use crate::diff;
-use crate::forge::{Colour, Failure, Merge, Snapshot, TargetState};
+use crate::forge::{Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
 
 pub const EXIT_ERROR: u8 = 1;
 const EXIT_TIMED_OUT: u8 = 3;
@@ -38,14 +38,14 @@ pub struct Event {
 pub struct Summary {
     pub target: String,
     pub state: TargetState,
-    /// `None` for an issue, which has no commits, CI, mergeability or threads.
+    /// `None` for an issue.
     #[serde(flatten)]
     pub change: Option<ChangeSummary>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ChangeSummary {
-    pub head: String,
+    pub head: Option<String>,
     pub colour: Option<Colour>,
     pub merge: Option<Merge>,
     pub unresolved_threads: usize,
@@ -144,13 +144,13 @@ impl Failure {
 }
 
 impl Summary {
-    pub fn new(target: &str, snapshot: &Snapshot) -> Self {
+    pub fn new(target: &Target, snapshot: &Snapshot) -> Self {
         let poll = &snapshot.poll;
         Self {
-            target: target.to_owned(),
+            target: target.url.clone(),
             state: poll.state,
-            change: poll.head.as_ref().map(|head| ChangeSummary {
-                head: head.clone(),
+            change: (target.kind == TargetKind::ChangeRequest).then(|| ChangeSummary {
+                head: poll.head.clone(),
                 colour: snapshot.reported.colour,
                 merge: snapshot
                     .reported
@@ -175,12 +175,19 @@ mod tests {
 
     #[test]
     fn an_issue_summary_names_only_its_target_and_state() {
+        let target = Target {
+            forge: Forge::GitHub,
+            forge_id: "I_1".to_owned(),
+            host: "github.com".to_owned(),
+            kind: TargetKind::Issue,
+            url: "https://github.com/o/r/issues/1".to_owned(),
+        };
         let issue = Poll {
             head: None,
             ..poll(&[])
         };
 
-        let summary = Summary::new("https://github.com/o/r/issues/1", &issue.into());
+        let summary = Summary::new(&target, &issue.into());
 
         assert_eq!(
             serde_json::to_value(summary).unwrap(),
