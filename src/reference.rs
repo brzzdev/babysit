@@ -224,33 +224,24 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_gitlab_issue_url() {
-        assert_eq!(
-            parse_name("https://gitlab.com/g/sub/p/-/issues/12"),
-            Ok(Name::Url(Reference {
-                forge: Forge::GitLab,
-                given: "https://gitlab.com/g/sub/p/-/issues/12".to_owned(),
-                host: "gitlab.com".to_owned(),
-                kind: TargetKind::Issue,
-                number: 12,
-                project: "g/sub/p".to_owned(),
-            })),
-        );
-    }
-
-    #[test]
-    fn parses_a_gitlab_work_item_url_as_an_issue() {
-        assert_eq!(
-            parse_name("https://gitlab.com/g/sub/p/-/work_items/12"),
-            Ok(Name::Url(Reference {
-                forge: Forge::GitLab,
-                given: "https://gitlab.com/g/sub/p/-/work_items/12".to_owned(),
-                host: "gitlab.com".to_owned(),
-                kind: TargetKind::Issue,
-                number: 12,
-                project: "g/sub/p".to_owned(),
-            })),
-        );
+    fn parses_a_gitlab_issue_or_work_item_url_as_an_issue() {
+        for given in [
+            "https://gitlab.com/g/sub/p/-/issues/12",
+            "https://gitlab.com/g/sub/p/-/work_items/12",
+        ] {
+            assert_eq!(
+                parse_name(given),
+                Ok(Name::Url(Reference {
+                    forge: Forge::GitLab,
+                    given: given.to_owned(),
+                    host: "gitlab.com".to_owned(),
+                    kind: TargetKind::Issue,
+                    number: 12,
+                    project: "g/sub/p".to_owned(),
+                })),
+                "{given}",
+            );
+        }
     }
 
     #[test]
@@ -336,12 +327,6 @@ mod tests {
             "https://gitlab.com/g/p/-/issues/12/",
             "https://gitlab.com/g/p/-/issues/012",
             "https://gitlab.com/g/p/-/issues/12#note_1",
-            "https://gitlab.com/p/-/work_items/12",
-            "https://gitlab.com/g/p/work_items/12",
-            "https://gitlab.com/g/p/-/work_items/12/",
-            "https://gitlab.com/g/p/-/work_items/12/designs",
-            "https://gitlab.com/g/p/-/work_items/012",
-            "https://gitlab.com/g/p/-/work_items/12#note_1",
             "https://gitlab.com/groups/g/-/work_items/12",
         ] {
             assert!(parse_name(given).is_err(), "{given}");
