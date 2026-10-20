@@ -66,3 +66,26 @@ pub struct Account {
     pub bot: Option<bool>,
     pub login: String,
 }
+
+#[cfg(test)]
+pub fn comment(id: &str) -> Comment {
+    Comment {
+        actor: Some(Account {
+            bot: None,
+            login: "octocat".to_owned(),
+        }),
+        at: "2026-10-20T19:00:00Z".to_owned(),
+        body: format!("comment {id}"),
+        id: id.to_owned(),
+        url: format!("https://github.com/o/r/pull/1#issuecomment-{id}"),
+    }
+}
+
+#[cfg(test)]
+pub fn poll(ids: &[&str]) -> Poll {
+    Poll {
+        comments: ids.iter().map(|id| comment(id)).collect(),
+        head: "abc123".to_owned(),
+        state: TargetState::Open,
+    }
+}

@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use crate::cli::Args;
 use crate::clock::{Clock, rfc3339};
@@ -22,23 +22,21 @@ pub fn run(
     stderr: &mut impl Write,
 ) -> Result<u8, UsageError> {
     let deadline = args.timeout.map(|timeout| clock.now() + timeout);
-    let call_deadline = deadline.filter(|_| args.timeout != Some(Duration::ZERO));
+    let call_deadline = args
+        .timeout
+        .filter(|timeout| !timeout.is_zero())
+        .and(deadline);
+    let snapshot_path = args.snapshot.display();
     let mut file = match SnapshotFile::open(&args.snapshot) {
         Ok(file) => file,
         Err(OpenError::Invalid(message)) => return Err(UsageError(message)),
-        Err(OpenError::LockHeld(lock_path)) => {
-            let message = format!("{} is held by another babysit run", lock_path.display());
-            return Ok(report(
-                stdout,
-                &Envelope::failed(local_error(ErrorKind::LockHeld, message)),
-            ));
+        Err(OpenError::LockHeld) => {
+            let message = format!("{snapshot_path} is locked by another babysit run");
+            return Ok(fail_locally(stdout, ErrorKind::LockHeld, message));
         }
         Err(OpenError::Io(error)) => {
-            let message = format!("{}: {error}", args.snapshot.display());
-            return Ok(report(
-                stdout,
-                &Envelope::failed(local_error(ErrorKind::SnapshotIo, message)),
-            ));
+            let message = format!("{snapshot_path}: {error}");
+            return Ok(fail_locally(stdout, ErrorKind::SnapshotIo, message));
         }
     };
     let target = match backend.resolve(&args.target, call_deadline) {
@@ -50,27 +48,25 @@ pub fn run(
             ));
         }
     };
-    let mut snapshot = file.entry(&target.url).map(|entry| entry.snapshot.clone());
-    let mut evaluated = false;
+    let stored = file.entry(&target.url).map(|entry| entry.snapshot.clone());
+    let mut polled: Option<Snapshot> = None;
     let mut envelope = loop {
         let started = clock.now();
         let poll = match backend.poll(&target, call_deadline) {
             Ok(poll) => poll,
             Err(failure) => break Envelope::from_failure(failure, &target.url),
         };
-        evaluated = true;
-        match &snapshot {
+        match polled.as_ref().or(stored.as_ref()) {
             None => {
                 if let Err(error) = file.save(entry(&target, poll.clone())) {
-                    let message = format!("{}: {error}", file.path().display());
-                    let error = local_error(ErrorKind::SnapshotIo, message);
-                    return Ok(report(stdout, &Envelope::failed(error)));
+                    let message = format!("{snapshot_path}: {error}");
+                    return Ok(fail_locally(stdout, ErrorKind::SnapshotIo, message));
                 }
-                snapshot = Some(poll);
+                polled = Some(poll);
             }
             Some(baseline) => {
                 let (events, next) = diff(baseline, poll);
-                snapshot = Some(next);
+                polled = Some(next);
                 if !events.is_empty() {
                     let observed_at = rfc3339(clock.now());
                     let events = events.into_iter().map(|event| envelope::Event {
@@ -89,22 +85,17 @@ pub fn run(
             break Envelope::ended(Outcome::TimedOut);
         }
     };
-    let saved = snapshot.filter(|_| evaluated);
-    envelope.targets = saved
+    envelope.targets = polled
         .iter()
         .map(|snapshot| Summary::new(&target.url, snapshot))
         .collect();
     if envelope.write(stdout).is_err() {
         return Ok(1);
     }
-    if let Some(snapshot) = saved
+    if let Some(snapshot) = polled
         && let Err(error) = file.save(entry(&target, snapshot))
     {
-        let _ = writeln!(
-            stderr,
-            "babysit: could not save {}: {error}",
-            file.path().display()
-        );
+        let _ = writeln!(stderr, "babysit: could not save {snapshot_path}: {error}");
         return Ok(1);
     }
     Ok(envelope.exit_code())
@@ -124,13 +115,14 @@ fn entry(target: &Target, snapshot: Snapshot) -> Entry {
     }
 }
 
-fn local_error(kind: ErrorKind, message: String) -> envelope::Error {
-    envelope::Error {
+fn fail_locally(stdout: &mut impl Write, kind: ErrorKind, message: String) -> u8 {
+    let error = envelope::Error {
         kind,
         forge: None,
         target: None,
         message,
-    }
+    };
+    report(stdout, &Envelope::failed(error))
 }
 
 fn report(stdout: &mut impl Write, envelope: &Envelope) -> u8 {
@@ -149,15 +141,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process;
-    use std::sync::{MutexGuard, PoisonError};
-    use std::time::UNIX_EPOCH;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use serde_json::{Value, json};
 
     use super::*;
     use crate::envelope::Forge;
-    use crate::exec::SPAWN_GUARD;
-    use crate::forge::{Account, Comment, Failure, Poll, TargetState};
+    use crate::forge::{Failure, Poll, poll};
     use crate::reference::{self, Reference};
 
     const URL: &str = "https://github.com/o/r/pull/1";
@@ -217,22 +207,16 @@ mod tests {
         }
     }
 
-    /// A fresh directory under the system temp dir, removed on drop.
     struct Sandbox {
         dir: PathBuf,
-        _spawn_guard: MutexGuard<'static, ()>,
     }
 
     impl Sandbox {
         fn new(name: &str) -> Self {
-            let spawn_guard = SPAWN_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
             let dir = std::env::temp_dir().join(format!("babysit-{}-{name}", process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
-            Self {
-                dir,
-                _spawn_guard: spawn_guard,
-            }
+            Self { dir }
         }
 
         fn snapshot(&self) -> PathBuf {
@@ -244,27 +228,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::set_permissions(&self.dir, fs::Permissions::from_mode(0o755));
             let _ = fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    fn comment(id: &str) -> Comment {
-        Comment {
-            actor: Some(Account {
-                bot: None,
-                login: "octocat".to_owned(),
-            }),
-            at: "2026-10-20T19:00:00Z".to_owned(),
-            body: format!("comment {id}"),
-            id: id.to_owned(),
-            url: format!("{URL}#issuecomment-{id}"),
-        }
-    }
-
-    fn poll(ids: &[&str]) -> Poll {
-        Poll {
-            comments: ids.iter().map(|id| comment(id)).collect(),
-            head: "abc123".to_owned(),
-            state: TargetState::Open,
         }
     }
 

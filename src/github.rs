@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::envelope::{ErrorKind, Forge};
-use crate::exec::{self, Exec, Limit};
+use crate::exec::{self, CALL_LIMIT, Exec, Limit};
 use crate::forge::{Account, Backend, Comment, Failure, Poll, Target, TargetState};
 use crate::reference::Reference;
 use crate::response::{self, Response};
@@ -30,7 +30,8 @@ impl<'a, E: Exec> GitHub<'a, E> {
             Ok(output) => output,
             Err(exec::Error::TimedOut(Limit::Deadline)) => return Err(Failure::TimedOut),
             Err(exec::Error::TimedOut(Limit::CallLimit)) => {
-                return Err(fatal(ErrorKind::PollFailed, "gh did not answer within 60s"));
+                let message = format!("gh did not answer within {}s", CALL_LIMIT.as_secs());
+                return Err(fatal(ErrorKind::PollFailed, &message));
             }
             Err(exec::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(fatal(
@@ -57,8 +58,12 @@ impl<'a, E: Exec> GitHub<'a, E> {
                 &format!("gh printed no HTTP reply: {reason}"),
             )
         })?;
-        if response.status == STATUS_NOT_FOUND || (200..300).contains(&response.status) {
+        if (200..300).contains(&response.status) {
             return Ok(response);
+        }
+        if response.status == STATUS_NOT_FOUND {
+            let message = format!("not found or not visible to gh: {reason}");
+            return Err(fatal(ErrorKind::TargetNotFound, &message));
         }
         Err(fatal(
             ErrorKind::PollFailed,
@@ -81,12 +86,6 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
         )?;
-        if response.status == STATUS_NOT_FOUND {
-            return Err(fatal(
-                ErrorKind::TargetNotFound,
-                &format!("{} does not exist or is not visible to gh", reference.given),
-            ));
-        }
         let pull: PullRequest = decode(&response.body)?;
         Ok(Target {
             forge_id: pull.node_id,
@@ -258,6 +257,11 @@ mod tests {
         }
     }
 
+    fn resolve_with(result: Result<Output, exec::Error>) -> Result<Target, Failure> {
+        let exec = Script::new([(RESOLVE.to_owned(), result)]);
+        GitHub::new(&exec).resolve(&reference(), None)
+    }
+
     fn kind(failure: &Failure) -> ErrorKind {
         match failure {
             Failure::Fatal { kind, .. } => *kind,
@@ -267,29 +271,19 @@ mod tests {
 
     #[test]
     fn resolves_a_pull_request_to_its_url_and_node_id() {
-        let exec = Script::new([(
-            RESOLVE.to_owned(),
-            Ok(gh(0, include_str!("github/fixtures/resolve.http"), "")),
-        )]);
+        let resolved = resolve_with(Ok(gh(0, include_str!("github/fixtures/resolve.http"), "")));
 
-        assert_eq!(
-            GitHub::new(&exec).resolve(&reference(), None).unwrap(),
-            target()
-        );
+        assert_eq!(resolved.unwrap(), target());
     }
 
     #[test]
     fn a_missing_pull_request_is_not_found() {
-        let exec = Script::new([(
-            RESOLVE.to_owned(),
-            Ok(gh(
-                1,
-                include_str!("github/fixtures/resolve_not_found.http"),
-                "gh: Not Found (HTTP 404)",
-            )),
-        )]);
-
-        let failure = GitHub::new(&exec).resolve(&reference(), None).unwrap_err();
+        let failure = resolve_with(Ok(gh(
+            1,
+            include_str!("github/fixtures/resolve_not_found.http"),
+            "gh: Not Found (HTTP 404)",
+        )))
+        .unwrap_err();
 
         assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
     }
@@ -329,24 +323,15 @@ mod tests {
 
     #[test]
     fn a_call_killed_at_the_deadline_times_out() {
-        let exec = Script::new([(
-            RESOLVE.to_owned(),
-            Err(exec::Error::TimedOut(Limit::Deadline)),
-        )]);
-
-        let failure = GitHub::new(&exec).resolve(&reference(), None).unwrap_err();
+        let failure = resolve_with(Err(exec::Error::TimedOut(Limit::Deadline))).unwrap_err();
 
         assert!(matches!(failure, Failure::TimedOut));
     }
 
     #[test]
     fn a_missing_gh_is_cli_missing() {
-        let exec = Script::new([(
-            RESOLVE.to_owned(),
-            Err(exec::Error::Io(io::ErrorKind::NotFound.into())),
-        )]);
-
-        let failure = GitHub::new(&exec).resolve(&reference(), None).unwrap_err();
+        let failure =
+            resolve_with(Err(exec::Error::Io(io::ErrorKind::NotFound.into()))).unwrap_err();
 
         assert_eq!(kind(&failure), ErrorKind::CliMissing);
     }

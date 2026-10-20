@@ -41,34 +41,13 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::{Comment, TargetState};
-
-    fn comment(id: &str) -> Comment {
-        Comment {
-            actor: Some(Account {
-                bot: None,
-                login: "octocat".to_owned(),
-            }),
-            at: "2026-10-20T17:33:24Z".to_owned(),
-            body: format!("comment {id}"),
-            id: id.to_owned(),
-            url: format!("https://github.com/o/r/pull/1#issuecomment-{id}"),
-        }
-    }
-
-    fn poll(comments: Vec<Comment>) -> Poll {
-        Poll {
-            comments,
-            head: "abc123".to_owned(),
-            state: TargetState::Open,
-        }
-    }
+    use crate::forge::poll;
 
     #[test]
     fn a_new_comment_is_created() {
-        let next = poll(vec![comment("1"), comment("2")]);
+        let next = poll(&["1", "2"]);
 
-        let (events, snapshot) = diff(&poll(vec![comment("1")]), next.clone());
+        let (events, snapshot) = diff(&poll(&["1"]), next.clone());
 
         assert_eq!(
             events,
@@ -78,7 +57,7 @@ mod tests {
                     body: "comment 2".to_owned(),
                 },
                 url: "https://github.com/o/r/pull/1#issuecomment-2".to_owned(),
-                at: "2026-10-20T17:33:24Z".to_owned(),
+                at: "2026-10-20T19:00:00Z".to_owned(),
                 actor: Some(Account {
                     bot: None,
                     login: "octocat".to_owned(),
@@ -90,10 +69,7 @@ mod tests {
 
     #[test]
     fn seen_and_vanished_comments_are_quiet() {
-        let (events, _) = diff(
-            &poll(vec![comment("1"), comment("2")]),
-            poll(vec![comment("2")]),
-        );
+        let (events, _) = diff(&poll(&["1", "2"]), poll(&["2"]));
 
         assert_eq!(events, []);
     }

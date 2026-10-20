@@ -102,11 +102,6 @@ fn collect(drained: JoinHandle<Vec<u8>>) -> String {
     String::from_utf8_lossy(&drained.join().unwrap_or_default()).into_owned()
 }
 
-/// Serialises tests that spawn children with tests that retake a snapshot lock: a child mid-spawn
-/// briefly shares every open file of the test process, a just-dropped lock included.
-#[cfg(test)]
-pub static SPAWN_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// A fake `Exec` that answers an ordered script of calls, asserting each call's command line.
 #[cfg(test)]
 pub struct Script {
@@ -152,14 +147,11 @@ impl Drop for Script {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::PoisonError;
-
     use super::*;
 
     const FLOOD_BYTES: usize = 1_000_000;
 
     fn sh(exec: &SystemExec, script: &str, deadline: Option<SystemTime>) -> Result<Output, Error> {
-        let _guard = SPAWN_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
         exec.run("sh", &["-c", script], deadline)
     }
 
@@ -215,7 +207,6 @@ mod tests {
 
     #[test]
     fn reports_a_missing_program_as_not_found() {
-        let _guard = SPAWN_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
         let result = SystemExec::default().run("babysit-no-such-program", &[], None);
 
         assert!(matches!(result, Err(Error::Io(error)) if error.kind() == io::ErrorKind::NotFound));
