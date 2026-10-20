@@ -110,7 +110,7 @@ struct Tracked {
     target: Target,
 }
 
-/// Polls each target once, in order, saving a first baseline at once. Returns the envelope the
+/// Polls each target once, in order, saving first baselines before the round returns. Returns the envelope the
 /// round ends the run with: a wake, else its first failure.
 fn poll_round(
     tracked: &mut [Tracked],
@@ -121,7 +121,8 @@ fn poll_round(
 ) -> io::Result<Option<Envelope>> {
     let mut events = Vec::new();
     let mut failed = None;
-    for tracked in tracked {
+    let mut baselines = Vec::new();
+    for tracked in tracked.iter_mut() {
         let poll = match backend.poll(&tracked.target, call_deadline) {
             Ok(poll) => poll,
             // Every later call would be killed at once by the passed deadline.
@@ -135,18 +136,24 @@ fn poll_round(
             }
         };
         let Some(baseline) = tracked.polled.as_ref().or(tracked.stored.as_ref()) else {
-            file.save([entry(&tracked.target, poll.clone())])?;
+            baselines.push(entry(&tracked.target, poll.clone()));
             tracked.polled = Some(poll);
             continue;
         };
         let (seen, next) = diff(baseline, poll);
         tracked.polled = Some(next);
+        if seen.is_empty() {
+            continue;
+        }
         let observed_at = rfc3339(clock.now());
         events.extend(seen.into_iter().map(|event| envelope::Event {
             seen: event,
             target: tracked.target.url.clone(),
             observed_at: observed_at.clone(),
         }));
+    }
+    if !baselines.is_empty() {
+        file.save(baselines)?;
     }
     if events.is_empty() {
         return Ok(failed);
@@ -187,10 +194,13 @@ fn report_unresolved(
     error: target::Error,
 ) -> Result<u8, UsageError> {
     let envelope = match error {
-        target::Error::Backend(failure) => Envelope::from_failure(failure, given),
-        target::Error::Fatal { kind, message } => Envelope::failed(envelope::Error {
+        target::Error::Fatal {
+            forge,
             kind,
-            forge: None,
+            message,
+        } => Envelope::failed(envelope::Error {
+            kind,
+            forge,
             target: Some(given.to_owned()),
             message,
         }),
@@ -315,35 +325,42 @@ mod tests {
         }
     }
 
-    fn returns(poll: Poll) -> Step {
-        returns_for(URL, poll)
+    fn returns(url: &'static str, poll: Poll) -> Step {
+        step(url, Ok(poll))
     }
 
-    fn returns_for(url: &'static str, poll: Poll) -> Step {
-        fails_for(url, Ok(poll))
+    fn fails(url: &'static str, failure: Failure) -> Step {
+        step(url, Err(failure))
     }
 
-    fn fails_for(url: &'static str, result: Result<Poll, Failure>) -> Step {
+    fn step(url: &'static str, result: Result<Poll, Failure>) -> Step {
         Box::new(move |target| {
             assert_eq!(target.url, url);
             result
         })
     }
 
-    fn args(snapshot: &Path, timeout: Option<u64>) -> Args {
+    fn auth_failure() -> Failure {
+        Failure::Fatal {
+            forge: Forge::GitHub,
+            kind: ErrorKind::Auth,
+            message: "gh auth login".to_owned(),
+        }
+    }
+
+    fn args(targets: &[&str], snapshot: &Path, timeout: Option<u64>) -> Args {
         Args {
-            targets: vec![reference::parse_name(URL).unwrap()],
+            targets: targets
+                .iter()
+                .map(|target| reference::parse_name(target).unwrap())
+                .collect(),
             snapshot: snapshot.to_owned(),
             interval: Duration::from_secs(30),
             timeout: timeout.map(Duration::from_secs),
         }
     }
 
-    fn seed(snapshot: &Path, ids: &[&str]) {
-        seed_entry(snapshot, URL, NODE_ID, ids);
-    }
-
-    fn seed_entry(snapshot: &Path, url: &str, forge_id: &str, ids: &[&str]) {
+    fn seed(snapshot: &Path, url: &str, forge_id: &str, ids: &[&str]) {
         let mut file = SnapshotFile::open(snapshot).unwrap();
         file.save([Entry {
             forge_id: forge_id.to_owned(),
@@ -385,11 +402,7 @@ mod tests {
         serde_json::from_str(&fs::read_to_string(snapshot).unwrap()).unwrap()
     }
 
-    fn summary() -> Value {
-        summary_of(URL)
-    }
-
-    fn summary_of(url: &str) -> Value {
+    fn summary(url: &str) -> Value {
         json!({
             "target": url,
             "state": "open",
@@ -409,12 +422,12 @@ mod tests {
         let sandbox = Sandbox::new("first-run");
 
         let (code, envelope) = watch(
-            &args(&sandbox.snapshot(), Some(0)),
-            vec![returns(poll(&["1"]))],
+            &args(&[URL], &sandbox.snapshot(), Some(0)),
+            vec![returns(URL, poll(&["1"]))],
         );
 
         assert_eq!(code, 3);
-        assert_eq!(envelope, timed_out(&[summary()]));
+        assert_eq!(envelope, timed_out(&[summary(URL)]));
         assert_eq!(
             saved(&sandbox.snapshot()),
             json!({
@@ -458,22 +471,22 @@ mod tests {
         });
 
         let (code, envelope) = watch(
-            &args(&sandbox.snapshot(), Some(600)),
-            vec![returns(poll(&["1"])), check],
+            &args(&[URL], &sandbox.snapshot(), Some(600)),
+            vec![returns(URL, poll(&["1"])), check],
         );
 
         assert_eq!(code, 3);
-        assert_eq!(envelope, timed_out(&[summary()]));
+        assert_eq!(envelope, timed_out(&[summary(URL)]));
     }
 
     #[test]
     fn a_later_run_wakes_on_a_new_comment_then_saves() {
         let sandbox = Sandbox::new("wake");
-        seed(&sandbox.snapshot(), &["1"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
 
         let (code, envelope) = watch(
-            &args(&sandbox.snapshot(), None),
-            vec![returns(poll(&["1"])), returns(poll(&["1", "2"]))],
+            &args(&[URL], &sandbox.snapshot(), None),
+            vec![returns(URL, poll(&["1"])), returns(URL, poll(&["1", "2"]))],
         );
 
         assert_eq!(code, 0);
@@ -491,7 +504,7 @@ mod tests {
                     "target": URL,
                     "observed_at": "2026-10-20T19:19:47Z",
                 }],
-                "targets": [summary()],
+                "targets": [summary(URL)],
                 "error": null,
             }),
         );
@@ -504,11 +517,11 @@ mod tests {
     #[test]
     fn timeout_zero_against_a_baseline_polls_once() {
         let sandbox = Sandbox::new("timeout-zero");
-        seed(&sandbox.snapshot(), &["1"]);
-        let once = args(&sandbox.snapshot(), Some(0));
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let once = args(&[URL], &sandbox.snapshot(), Some(0));
 
-        let (quiet, _) = watch(&once, vec![returns(poll(&["1"]))]);
-        let (woke, envelope) = watch(&once, vec![returns(poll(&["1", "2"]))]);
+        let (quiet, _) = watch(&once, vec![returns(URL, poll(&["1"]))]);
+        let (woke, envelope) = watch(&once, vec![returns(URL, poll(&["1", "2"]))]);
 
         assert_eq!(quiet, 3);
         assert_eq!(woke, 0);
@@ -518,26 +531,26 @@ mod tests {
     #[test]
     fn the_timeout_ends_the_run_at_the_deadline() {
         let sandbox = Sandbox::new("timeout");
-        seed(&sandbox.snapshot(), &["1"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
 
         let (code, envelope) = watch(
-            &args(&sandbox.snapshot(), Some(45)),
-            vec![returns(poll(&["1"])), returns(poll(&["1"]))],
+            &args(&[URL], &sandbox.snapshot(), Some(45)),
+            vec![returns(URL, poll(&["1"])), returns(URL, poll(&["1"]))],
         );
 
         assert_eq!(code, 3);
-        assert_eq!(envelope, timed_out(&[summary()]));
+        assert_eq!(envelope, timed_out(&[summary(URL)]));
     }
 
     #[test]
     fn a_call_killed_at_the_deadline_times_out_leaving_the_baseline() {
         let sandbox = Sandbox::new("killed");
-        seed(&sandbox.snapshot(), &["1"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
         let before = saved(&sandbox.snapshot());
 
         let (code, envelope) = watch(
-            &args(&sandbox.snapshot(), Some(600)),
-            vec![Box::new(|_: &Target| Err(Failure::TimedOut))],
+            &args(&[URL], &sandbox.snapshot(), Some(600)),
+            vec![fails(URL, Failure::TimedOut)],
         );
 
         assert_eq!(code, 3);
@@ -548,15 +561,9 @@ mod tests {
     #[test]
     fn a_fatal_failure_reports_the_error() {
         let sandbox = Sandbox::new("fatal");
-        let failure = Box::new(|_: &Target| {
-            Err(Failure::Fatal {
-                forge: Forge::GitHub,
-                kind: ErrorKind::Auth,
-                message: "gh auth login".to_owned(),
-            })
-        });
+        let failure = fails(URL, auth_failure());
 
-        let (code, envelope) = watch(&args(&sandbox.snapshot(), None), vec![failure]);
+        let (code, envelope) = watch(&args(&[URL], &sandbox.snapshot(), None), vec![failure]);
 
         assert_eq!(code, 1);
         assert_eq!(
@@ -568,10 +575,7 @@ mod tests {
     #[test]
     fn a_remote_host_claimed_by_both_clis_is_auth_naming_the_target_as_given() {
         let sandbox = Sandbox::new("claimed-by-both");
-        let args = Args {
-            targets: vec![reference::parse_name("#1").unwrap()],
-            ..args(&sandbox.snapshot(), None)
-        };
+        let args = args(&["#1"], &sandbox.snapshot(), None);
         let exec = Script::new([
             (
                 "git remote -v".to_owned(),
@@ -615,7 +619,7 @@ mod tests {
     #[test]
     fn a_duration_past_the_clocks_reach_is_a_usage_error_before_any_write() {
         let sandbox = Sandbox::new("overflow");
-        let mut too_long = args(&sandbox.snapshot(), Some(u64::MAX));
+        let mut too_long = args(&[URL], &sandbox.snapshot(), Some(u64::MAX));
 
         let (timeout, _) = watch_into(&too_long, vec![], &mut Vec::new());
         too_long.timeout = None;
@@ -633,7 +637,7 @@ mod tests {
         let lock = File::create(sandbox.dir.join("snapshot.json.lock")).unwrap();
         lock.try_lock().unwrap();
 
-        let (code, envelope) = watch(&args(&sandbox.snapshot(), None), vec![]);
+        let (code, envelope) = watch(&args(&[URL], &sandbox.snapshot(), None), vec![]);
 
         assert_eq!(code, 1);
         assert_eq!(envelope["outcome"], "error");
@@ -650,7 +654,11 @@ mod tests {
         ] {
             fs::write(sandbox.snapshot(), contents).unwrap();
 
-            let (code, _) = watch_into(&args(&sandbox.snapshot(), None), vec![], &mut Vec::new());
+            let (code, _) = watch_into(
+                &args(&[URL], &sandbox.snapshot(), None),
+                vec![],
+                &mut Vec::new(),
+            );
 
             assert!(code.is_err(), "{contents:?}");
             assert_eq!(fs::read(sandbox.snapshot()).unwrap(), contents);
@@ -660,12 +668,12 @@ mod tests {
     #[test]
     fn a_failed_stdout_write_exits_1_without_saving() {
         let sandbox = Sandbox::new("stdout");
-        seed(&sandbox.snapshot(), &["1"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
         let before = saved(&sandbox.snapshot());
 
         let (code, stderr) = watch_into(
-            &args(&sandbox.snapshot(), None),
-            vec![returns(poll(&["1", "2"]))],
+            &args(&[URL], &sandbox.snapshot(), None),
+            vec![returns(URL, poll(&["1", "2"]))],
             &mut FailingWriter,
         );
 
@@ -677,13 +685,13 @@ mod tests {
     #[test]
     fn a_save_failing_after_a_printed_wake_exits_1_with_one_stderr_line() {
         let sandbox = Sandbox::new("save");
-        seed(&sandbox.snapshot(), &["1"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
         fs::set_permissions(&sandbox.dir, fs::Permissions::from_mode(0o555)).unwrap();
         let mut stdout = Vec::new();
 
         let (code, stderr) = watch_into(
-            &args(&sandbox.snapshot(), None),
-            vec![returns(poll(&["1", "2"]))],
+            &args(&[URL], &sandbox.snapshot(), None),
+            vec![returns(URL, poll(&["1", "2"]))],
             &mut stdout,
         );
 
@@ -694,30 +702,12 @@ mod tests {
         assert!(stderr.starts_with("babysit: could not save "), "{stderr}");
     }
 
-    fn auth_failure() -> Failure {
-        Failure::Fatal {
-            forge: Forge::GitHub,
-            kind: ErrorKind::Auth,
-            message: "gh auth login".to_owned(),
-        }
-    }
-
-    fn of_targets(urls: &[&str], snapshot: &Path, timeout: Option<u64>) -> Args {
-        Args {
-            targets: urls
-                .iter()
-                .map(|url| reference::parse_name(url).unwrap())
-                .collect(),
-            ..args(snapshot, timeout)
-        }
-    }
-
     #[test]
     fn several_targets_report_in_invocation_order_once_each() {
         let sandbox = Sandbox::new("several");
-        seed(&sandbox.snapshot(), &["1"]);
-        seed_entry(&sandbox.snapshot(), OTHER, "PR_2", &["1"]);
-        let args = of_targets(
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        seed(&sandbox.snapshot(), OTHER, "PR_2", &["1"]);
+        let args = args(
             &[OTHER, URL, "http://github.com/o/r/pull/2"],
             &sandbox.snapshot(),
             None,
@@ -726,8 +716,8 @@ mod tests {
         let (code, envelope) = watch(
             &args,
             vec![
-                returns_for(OTHER, poll(&["1", "3"])),
-                returns_for(URL, poll(&["1", "2"])),
+                returns(OTHER, poll(&["1", "3"])),
+                returns(URL, poll(&["1", "2"])),
             ],
         );
 
@@ -744,7 +734,7 @@ mod tests {
             })
             .collect();
         assert_eq!(events, [(OTHER, "3"), (URL, "2")]);
-        assert_eq!(envelope["targets"], json!([summary_of(OTHER), summary()]));
+        assert_eq!(envelope["targets"], json!([summary(OTHER), summary(URL)]));
         let saved = saved(&sandbox.snapshot());
         assert_eq!(
             saved["targets"][OTHER]["snapshot"],
@@ -756,17 +746,17 @@ mod tests {
     #[test]
     fn a_failed_poll_leaves_its_entry_while_another_target_wakes_and_saves() {
         let sandbox = Sandbox::new("partial");
-        seed(&sandbox.snapshot(), &["1"]);
-        seed_entry(&sandbox.snapshot(), OTHER, "PR_2", &["1"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        seed(&sandbox.snapshot(), OTHER, "PR_2", &["1"]);
         let before = saved(&sandbox.snapshot());
 
         let (code, envelope) = watch(
-            &of_targets(&[URL, OTHER], &sandbox.snapshot(), None),
+            &args(&[URL, OTHER], &sandbox.snapshot(), None),
             vec![
-                returns_for(URL, poll(&["1"])),
-                returns_for(OTHER, poll(&["1"])),
-                fails_for(URL, Err(auth_failure())),
-                returns_for(OTHER, poll(&["1", "2"])),
+                returns(URL, poll(&["1"])),
+                returns(OTHER, poll(&["1"])),
+                fails(URL, auth_failure()),
+                returns(OTHER, poll(&["1", "2"])),
             ],
         );
 
@@ -775,7 +765,7 @@ mod tests {
         assert_eq!(envelope["events"].as_array().unwrap().len(), 1);
         assert_eq!(envelope["events"][0]["target"], OTHER);
         assert_eq!(envelope["error"], Value::Null);
-        assert_eq!(envelope["targets"], json!([summary(), summary_of(OTHER)]));
+        assert_eq!(envelope["targets"], json!([summary(URL), summary(OTHER)]));
         let saved = saved(&sandbox.snapshot());
         assert_eq!(saved["targets"][URL], before["targets"][URL]);
         assert_eq!(
@@ -787,19 +777,16 @@ mod tests {
     #[test]
     fn a_failed_poll_without_a_wake_ends_the_run_once_the_round_finishes() {
         let sandbox = Sandbox::new("round");
-        seed(&sandbox.snapshot(), &["1"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
 
         let (code, envelope) = watch(
-            &of_targets(&[URL, OTHER], &sandbox.snapshot(), None),
-            vec![
-                fails_for(URL, Err(auth_failure())),
-                returns_for(OTHER, poll(&["5"])),
-            ],
+            &args(&[URL, OTHER], &sandbox.snapshot(), None),
+            vec![fails(URL, auth_failure()), returns(OTHER, poll(&["5"]))],
         );
 
         assert_eq!(code, 1);
         assert_eq!(envelope["error"]["target"], URL);
-        assert_eq!(envelope["targets"], json!([summary_of(OTHER)]));
+        assert_eq!(envelope["targets"], json!([summary(OTHER)]));
         assert_eq!(
             saved(&sandbox.snapshot())["targets"][OTHER]["snapshot"],
             json!(poll(&["5"]))
@@ -809,15 +796,15 @@ mod tests {
     #[test]
     fn a_reused_path_is_replaced_by_a_fresh_baseline() {
         let sandbox = Sandbox::new("reused");
-        seed_entry(&sandbox.snapshot(), URL, "PR_deleted", &["1"]);
+        seed(&sandbox.snapshot(), URL, "PR_deleted", &["1"]);
 
         let (code, envelope) = watch(
-            &args(&sandbox.snapshot(), Some(0)),
-            vec![returns(poll(&["1", "2"]))],
+            &args(&[URL], &sandbox.snapshot(), Some(0)),
+            vec![returns(URL, poll(&["1", "2"]))],
         );
 
         assert_eq!(code, 3);
-        assert_eq!(envelope, timed_out(&[summary()]));
+        assert_eq!(envelope, timed_out(&[summary(URL)]));
         let saved = saved(&sandbox.snapshot());
         assert_eq!(saved["targets"][URL]["forge_id"], NODE_ID);
         assert_eq!(saved["targets"][URL]["snapshot"], json!(poll(&["1", "2"])));
@@ -827,11 +814,11 @@ mod tests {
     fn a_renamed_target_is_rekeyed_and_diffed() {
         let sandbox = Sandbox::new("renamed");
         let old_url = "https://github.com/o/old/pull/1";
-        seed_entry(&sandbox.snapshot(), old_url, NODE_ID, &["1"]);
+        seed(&sandbox.snapshot(), old_url, NODE_ID, &["1"]);
 
         let (code, envelope) = watch(
-            &args(&sandbox.snapshot(), None),
-            vec![returns(poll(&["1", "2"]))],
+            &args(&[URL], &sandbox.snapshot(), None),
+            vec![returns(URL, poll(&["1", "2"]))],
         );
 
         assert_eq!(code, 0);
@@ -846,15 +833,15 @@ mod tests {
     fn a_new_target_is_baselined_and_entries_outside_the_run_are_untouched() {
         let sandbox = Sandbox::new("new-target");
         let elsewhere = "https://github.com/o/r/pull/9";
-        seed(&sandbox.snapshot(), &["1"]);
-        seed_entry(&sandbox.snapshot(), elsewhere, "PR_9", &["7"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        seed(&sandbox.snapshot(), elsewhere, "PR_9", &["7"]);
         let before = saved(&sandbox.snapshot());
 
         let (code, envelope) = watch(
-            &of_targets(&[URL, OTHER], &sandbox.snapshot(), None),
+            &args(&[URL, OTHER], &sandbox.snapshot(), None),
             vec![
-                returns_for(URL, poll(&["1", "2"])),
-                returns_for(OTHER, poll(&["5"])),
+                returns(URL, poll(&["1", "2"])),
+                returns(OTHER, poll(&["5"])),
             ],
         );
 
