@@ -1,12 +1,41 @@
-/// A target as the caller named it: a GitHub pull request web URL.
+/// A target as the caller named it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Name {
+    /// `#<n>`, meaning the project the current checkout points at.
+    Checkout {
+        given: String,
+        number: u64,
+    },
+    Url(Reference),
+}
+
+impl Name {
+    pub fn given(&self) -> &str {
+        match self {
+            Self::Checkout { given, .. } => given,
+            Self::Url(reference) => &reference.given,
+        }
+    }
+}
+
+/// A GitHub pull request on a known host and project.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reference {
     pub given: String,
-    /// The host, port included.
     pub host: String,
     pub number: u64,
     pub owner: String,
     pub repo: String,
+}
+
+pub fn parse_name(given: &str) -> Result<Name, String> {
+    if let Some(number) = given.strip_prefix('#') {
+        return Ok(Name::Checkout {
+            given: given.to_owned(),
+            number: parse_number(number, given)?,
+        });
+    }
+    parse(given).map(Name::Url)
 }
 
 pub fn parse(given: &str) -> Result<Reference, String> {
@@ -24,23 +53,32 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     if !is_authority(host) || !is_name(owner) || !is_name(repo) {
         return Err(invalid());
     }
-    if number.starts_with('0') || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+    if host.contains(':') {
         return Err(format!(
-            "`{number}` in `{given}` is not a pull request number"
+            "`{given}` names a port, and gh can't reach a GitHub host through one"
         ));
     }
     Ok(Reference {
         given: given.to_owned(),
         host: host.to_owned(),
-        number: number.parse().map_err(|_| invalid())?,
+        number: parse_number(number, given)?,
         owner: owner.to_owned(),
         repo: repo.to_owned(),
     })
 }
 
+/// A decimal number from 1 up, never zero-padded.
+fn parse_number(number: &str, given: &str) -> Result<u64, String> {
+    let invalid = || format!("`{number}` in `{given}` is not a pull request number");
+    if number.starts_with('0') || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    number.parse().map_err(|_| invalid())
+}
+
 /// Dot-separated labels of letters, digits and inner hyphens, then an optional `:` and a decimal
 /// port from 1 to 65535.
-fn is_authority(authority: &str) -> bool {
+pub fn is_authority(authority: &str) -> bool {
     let (host, port) = match authority.split_once(':') {
         Some((host, port)) => (host, Some(port)),
         None => (authority, None),
@@ -61,7 +99,7 @@ fn is_authority(authority: &str) -> bool {
 }
 
 /// An owner or repository name, never `.` or `..`.
-fn is_name(segment: &str) -> bool {
+pub fn is_name(segment: &str) -> bool {
     !segment.is_empty()
         && segment != "."
         && segment != ".."
@@ -77,13 +115,31 @@ mod tests {
     #[test]
     fn parses_a_pull_request_url() {
         assert_eq!(
-            parse("http://ghe.example.com:8443/o/r/pull/12"),
-            Ok(Reference {
-                given: "http://ghe.example.com:8443/o/r/pull/12".to_owned(),
-                host: "ghe.example.com:8443".to_owned(),
+            parse_name("http://ghe.example.com/o/r/pull/12"),
+            Ok(Name::Url(Reference {
+                given: "http://ghe.example.com/o/r/pull/12".to_owned(),
+                host: "ghe.example.com".to_owned(),
                 number: 12,
                 owner: "o".to_owned(),
                 repo: "r".to_owned(),
+            })),
+        );
+    }
+
+    #[test]
+    fn rejects_a_port_on_a_github_url() {
+        let error = parse_name("https://ghe.example.com:8443/o/r/pull/12").unwrap_err();
+
+        assert!(error.contains("names a port"), "{error}");
+    }
+
+    #[test]
+    fn parses_a_checkout_reference() {
+        assert_eq!(
+            parse_name("#12"),
+            Ok(Name::Checkout {
+                given: "#12".to_owned(),
+                number: 12,
             }),
         );
     }
@@ -97,7 +153,13 @@ mod tests {
     fn rejects_anything_but_the_exact_url() {
         for given in [
             "12",
-            "#12",
+            "#",
+            "#0",
+            "#012",
+            "#+12",
+            "#12a",
+            "##12",
+            "!12",
             "o/r#12",
             "ftp://github.com/o/r/pull/12",
             "https://github.com/o/r/pull/12/",
@@ -124,7 +186,7 @@ mod tests {
             "https://github.com/o/../pull/12",
             "https://github.com/o/r%20x/pull/12",
         ] {
-            assert!(parse(given).is_err(), "{given}");
+            assert!(parse_name(given).is_err(), "{given}");
         }
     }
 }
