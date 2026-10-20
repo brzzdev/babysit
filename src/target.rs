@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io;
 use std::time::SystemTime;
@@ -5,7 +6,7 @@ use std::time::SystemTime;
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::{self, CALL_LIMIT, Exec, Limit, Output};
 use crate::forge::{Failure, Snapshot, Target};
-use crate::reference::{self, Name, Reference};
+use crate::reference::{self, Name, Prefix, Reference};
 use crate::snapshot_file::SnapshotFile;
 
 const GITHUB_HOST: &str = "github.com";
@@ -14,8 +15,15 @@ const EXIT_NOT_FOUND: i32 = 127;
 const PASS_THE_URL: &str = "pass the target's URL instead";
 /// The git config key, under a remote, where `gh repo set-default` records its choice.
 const GH_RESOLVED_KEY: &str = "gh-resolved";
-/// The `gh-resolved` value marking the remote `gh repo set-default` chose.
+/// The legacy git config key, under a remote, where glab records its base repository.
+const GLAB_RESOLVED_KEY: &str = "glab-resolved";
+/// The resolution value naming the remote itself as the project, or prefixing another's path.
 const RESOLVED_BASE: &str = "base";
+/// The prefix of a legacy glab resolution naming the push repository instead of the base.
+const RESOLVED_HEAD: &str = "head";
+
+/// Reads the remote and project a CLI recorded as a checkout's default from its git config.
+type RecordedDefault = fn(&str) -> Option<(&str, &str)>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -48,7 +56,8 @@ enum Claim {
 }
 
 struct Remote {
-    host: String,
+    /// The host, with the port of an HTTP(S) URL but not of an SSH one.
+    authority: String,
     name: String,
     path: String,
 }
@@ -81,19 +90,25 @@ impl<'a, E: Exec> Locator<'a, E> {
 
     pub fn locate(&mut self, name: &Name) -> Result<Reference, Error> {
         match name {
-            Name::Checkout { given, number } => self.locate_in_checkout(given, *number),
+            Name::Checkout {
+                given,
+                number,
+                prefix,
+            } => self.locate_in_checkout(given, *number, *prefix),
             Name::Url(reference) => Ok(reference.clone()),
         }
     }
 
-    fn claim(&mut self, host: &str) -> Result<Claim, Error> {
+    /// Which CLIs claim `authority`, asking gh by its bare host and glab by the whole authority.
+    fn claim(&mut self, authority: &str) -> Result<Claim, Error> {
+        let host = without_port(authority);
         if host.eq_ignore_ascii_case(GITHUB_HOST) {
             return Ok(Claim::GitHub);
         }
         if host.eq_ignore_ascii_case(GITLAB_HOST) {
             return Ok(Claim::GitLab);
         }
-        if let Some(claim) = self.claims.get(host) {
+        if let Some(claim) = self.claims.get(authority) {
             return Ok(*claim);
         }
         let holds_token =
@@ -102,7 +117,7 @@ impl<'a, E: Exec> Locator<'a, E> {
             .call("gh", &["auth", "token", "--hostname", host])?
             .is_some_and(holds_token);
         let gitlab = self
-            .call("glab", &["config", "get", "token", "--host", host])?
+            .call("glab", &["config", "get", "token", "--host", authority])?
             .is_some_and(holds_token);
         let claim = match (github, gitlab) {
             (true, true) => Claim::Both,
@@ -110,13 +125,18 @@ impl<'a, E: Exec> Locator<'a, E> {
             (false, true) => Claim::GitLab,
             (false, false) => Claim::Neither,
         };
-        self.claims.insert(host.to_owned(), claim);
+        self.claims.insert(authority.to_owned(), claim);
         Ok(claim)
     }
 
-    /// The project `gh pr view` would use: the default `gh repo set-default` chose, else the only
-    /// GitHub remote.
-    fn locate_in_checkout(&mut self, given: &str, number: u64) -> Result<Reference, Error> {
+    /// The project `gh pr view` or `glab mr view` would use: the default its CLI recorded, else the
+    /// only remote on that forge.
+    fn locate_in_checkout(
+        &mut self,
+        given: &str,
+        number: u64,
+        prefix: Prefix,
+    ) -> Result<Reference, Error> {
         let usage = |reason: &str| Error::Usage(format!("`{given}` {reason}; {PASS_THE_URL}"));
         let Some(remotes) = self.call("git", &["remote", "-v"])? else {
             return Err(Error::Fatal {
@@ -129,10 +149,10 @@ impl<'a, E: Exec> Locator<'a, E> {
             return Err(usage("needs a git checkout"));
         }
         let mut github = Vec::new();
-        let mut gitlab = false;
+        let mut gitlab = Vec::new();
         let mut unclaimed = Vec::new();
         for remote in parse_remotes(&remotes.stdout) {
-            match self.claim(&remote.host)? {
+            match self.claim(&remote.authority)? {
                 Claim::Both => {
                     return Err(Error::Fatal {
                         forge: None,
@@ -140,34 +160,81 @@ impl<'a, E: Exec> Locator<'a, E> {
                         message: format!(
                             "both gh and glab hold a token for {}, so its forge is unknown; \
                              {PASS_THE_URL}",
-                            remote.host,
+                            remote.authority,
                         ),
                     });
                 }
                 Claim::GitHub => github.push(remote),
-                Claim::GitLab => gitlab = true,
-                Claim::Neither if !unclaimed.contains(&remote.host) => {
-                    unclaimed.push(remote.host);
+                Claim::GitLab => gitlab.push(remote),
+                Claim::Neither if !unclaimed.contains(&remote.authority) => {
+                    unclaimed.push(remote.authority);
                 }
                 Claim::Neither => {}
             }
         }
-        if gitlab {
-            return Err(usage(if github.is_empty() {
-                "names a GitLab issue, which babysit can't watch yet"
-            } else {
-                "is ambiguous in a checkout with GitHub and GitLab remotes"
-            }));
+        if !github.is_empty() && !gitlab.is_empty() {
+            return Err(usage(
+                "is ambiguous in a checkout with GitHub and GitLab remotes",
+            ));
         }
-        let pattern = format!(r"^remote\..*\.{GH_RESOLVED_KEY}$");
+        let (forge, remotes) = match prefix {
+            Prefix::Bang if !github.is_empty() => {
+                return Err(usage(
+                    "names a GitLab merge request, in a checkout with only GitHub remotes",
+                ));
+            }
+            Prefix::Bang => (Forge::GitLab, gitlab),
+            Prefix::Hash if !gitlab.is_empty() => {
+                return Err(usage("names a GitLab issue, which babysit can't watch yet"));
+            }
+            Prefix::Hash => (Forge::GitHub, github),
+        };
+        let (host, project) = self.choose_project(given, forge, &remotes, &unclaimed)?;
+        Ok(Reference {
+            forge,
+            given: given.to_owned(),
+            host,
+            number,
+            project,
+        })
+    }
+
+    /// The host and project path of the remote `forge`'s CLI recorded as the default, else of the
+    /// only one of `remotes`.
+    fn choose_project(
+        &self,
+        given: &str,
+        forge: Forge,
+        remotes: &[Remote],
+        unclaimed: &[String],
+    ) -> Result<(String, String), Error> {
+        let usage = |reason: &str| Error::Usage(format!("`{given}` {reason}; {PASS_THE_URL}"));
+        let (forge_name, cli, chosen_by, pattern, recorded): (_, _, _, _, RecordedDefault) =
+            match forge {
+                Forge::GitHub => (
+                    "GitHub",
+                    "gh",
+                    "`gh repo set-default`",
+                    format!(r"^remote\..*\.{GH_RESOLVED_KEY}$"),
+                    gh_default,
+                ),
+                Forge::GitLab => (
+                    "GitLab",
+                    "glab",
+                    "glab's base repository choice",
+                    format!(r"^remote\..*\.{GLAB_RESOLVED_KEY}(-base)?$"),
+                    glab_default,
+                ),
+            };
         let resolved = self
             .call("git", &["config", "--get-regexp", &pattern])?
             .map(|output| output.stdout)
             .unwrap_or_default();
-        let (host, path) = if let Some((name, value)) = default_remote(&resolved) {
-            let Some(remote) = github.iter().find(|remote| remote.name == name) else {
+        let recorded = recorded(&resolved);
+        let (host, path) = if let Some((name, value)) = recorded {
+            let Some(remote) = remotes.iter().find(|remote| remote.name == name) else {
                 return Err(usage(&format!(
-                    "can't use `gh repo set-default` remote `{name}`, which isn't on a GitHub host"
+                    "can't use {chosen_by} remote `{name}`, which isn't on a {forge_name} host"
                 )));
             };
             let path = if value == RESOLVED_BASE {
@@ -175,37 +242,37 @@ impl<'a, E: Exec> Locator<'a, E> {
             } else {
                 value
             };
-            (remote.host.as_str(), path)
+            (remote.authority.as_str(), path)
         } else {
-            match &github[..] {
+            match remotes {
                 [] if unclaimed.is_empty() => {
-                    return Err(usage("needs a checkout with a GitHub remote"));
+                    return Err(usage(&format!(
+                        "needs a checkout with a {forge_name} remote"
+                    )));
                 }
                 [] => {
                     return Err(Error::Usage(format!(
-                        "`{given}` needs a checkout with a GitHub remote, and neither gh nor glab \
-                         holds a token for {}; log in with `gh auth login --hostname <host>`",
+                        "`{given}` needs a checkout with a {forge_name} remote, and neither gh nor \
+                         glab holds a token for {}; log in with `{cli} auth login --hostname <host>`",
                         unclaimed.join(", "),
                     )));
                 }
-                [only] => (only.host.as_str(), only.path.as_str()),
+                [only] => (only.authority.as_str(), only.path.as_str()),
                 _ => {
-                    return Err(usage(
-                        "is ambiguous with several GitHub remotes and no `gh repo set-default`",
-                    ));
+                    return Err(usage(&format!(
+                        "is ambiguous with several {forge_name} remotes and no {chosen_by}"
+                    )));
                 }
             }
         };
-        let Some((owner, repo)) = owner_and_repo(path) else {
+        if !reference::is_project_path(forge, path) {
             return Err(usage(&format!("can't use the remote project `{path}`")));
+        }
+        let host = match forge {
+            Forge::GitHub => without_port(host),
+            Forge::GitLab => host,
         };
-        Ok(Reference {
-            given: given.to_owned(),
-            host: host.to_owned(),
-            number,
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-        })
+        Ok((host.to_owned(), path.to_owned()))
     }
 
     /// Runs a local command; `None` when the program isn't installed.
@@ -253,7 +320,7 @@ pub fn check_host(given: &str, reference: &Reference, target: &Target) -> Result
         target.url,
     );
     Err(Failure::Fatal {
-        forge: Forge::GitHub,
+        forge: reference.forge,
         kind: ErrorKind::TargetNotFound,
         message,
     })
@@ -282,7 +349,7 @@ fn on_host(url: &str, host: &str) -> bool {
 }
 
 /// The remote name and `gh-resolved` value `gh repo set-default` last recorded.
-fn default_remote(resolved: &str) -> Option<(&str, &str)> {
+fn gh_default(resolved: &str) -> Option<(&str, &str)> {
     resolved.lines().rev().find_map(|line| {
         let (key, value) = line.split_once(' ')?;
         let name = key
@@ -305,14 +372,15 @@ fn parse_remotes(listing: &str) -> impl Iterator<Item = Remote> {
             .filter_map(|line| remote_url(line, " (push)"))
             .find(|(pushed, _)| *pushed == name)
             .and_then(|(_, push)| split_remote_url(push));
-        let names_project = |(_, path): &(String, String)| owner_and_repo(path).is_some();
-        let (host, path) = match (fetched, pushed) {
+        let names_project =
+            |(_, path): &(String, String)| reference::is_project_path(Forge::GitHub, path);
+        let (authority, path) = match (fetched, pushed) {
             (Some(fetched), _) if names_project(&fetched) => fetched,
             (_, Some(pushed)) if names_project(&pushed) => pushed,
             (fetched, pushed) => fetched.or(pushed)?,
         };
         Some(Remote {
-            host,
+            authority,
             name: name.to_owned(),
             path,
         })
@@ -325,35 +393,94 @@ fn remote_url<'a>(line: &'a str, direction: &str) -> Option<(&'a str, &'a str)> 
     Some((name, rest.strip_suffix(direction)?))
 }
 
-fn owner_and_repo(path: &str) -> Option<(&str, &str)> {
-    path.split_once('/')
-        .filter(|(owner, repo)| reference::is_name(owner) && reference::is_name(repo))
+/// The remote name and project glab resolved the base repository to: the first remote in glab's
+/// order with a resolution, its `-base` key before the legacy one.
+fn glab_default(resolved: &str) -> Option<(&str, &str)> {
+    let entries: Vec<_> = resolved
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once(' ')?;
+            let (name, key) = key.strip_prefix("remote.")?.rsplit_once('.')?;
+            Some((name, key, value))
+        })
+        .collect();
+    let mut names: Vec<_> = Vec::new();
+    for (name, ..) in &entries {
+        if !names.contains(name) {
+            names.push(*name);
+        }
+    }
+    names.sort_by_key(|name| Reverse(glab_remote_rank(name)));
+    let base_key = format!("{GLAB_RESOLVED_KEY}-base");
+    names.into_iter().find_map(|name| {
+        let value = |wanted: &str| {
+            entries
+                .iter()
+                .find(|(remote, key, _)| *remote == name && *key == wanted)
+                .map(|(.., value)| *value)
+        };
+        let legacy = value(GLAB_RESOLVED_KEY).and_then(|value| {
+            based(value).or((!value.starts_with(RESOLVED_HEAD)).then_some(value))
+        });
+        let project = value(&base_key).and_then(based).or(legacy)?;
+        Some((name, project))
+    })
 }
 
-/// Splits a remote URL, in URL or scp-like form, into its host and project path. The port is
-/// dropped, as `gh` drops it, since `gh` can't reach a host on one.
+/// `base`, or the project path after `base:`.
+fn based(value: &str) -> Option<&str> {
+    if value == RESOLVED_BASE {
+        return Some(value);
+    }
+    value.strip_prefix(RESOLVED_BASE)?.strip_prefix(':')
+}
+
+/// Where glab sorts a remote when it looks for a resolution: higher first.
+fn glab_remote_rank(name: &str) -> u8 {
+    match name.to_ascii_lowercase().as_str() {
+        "upstream" => 3,
+        "gitlab" => 2,
+        "origin" => 1,
+        _ => 0,
+    }
+}
+
+/// Splits a remote URL, in URL or scp-like form, into its authority and project path. Only an
+/// HTTP(S) URL keeps its port, since an SSH port is the transport's, not the forge's.
 fn split_remote_url(url: &str) -> Option<(String, String)> {
-    let (authority, path) = if let Some((_, rest)) = url.split_once("://") {
-        rest.split_once('/')?
+    let (scheme, authority, path) = if let Some((scheme, rest)) = url.split_once("://") {
+        let (authority, path) = rest.split_once('/')?;
+        (Some(scheme), authority, path)
     } else {
         let (authority, path) = url.split_once(':')?;
         if authority.contains('/') {
             return None;
         }
-        (authority, path)
+        (None, authority, path)
     };
-    let host_and_port = authority
+    let authority = authority
         .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    let host = host_and_port
-        .split_once(':')
-        .map_or(host_and_port, |(host, _)| host);
+        .map_or(authority, |(_, authority)| authority);
+    let is_http = scheme.is_some_and(|scheme| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    });
+    let authority = if is_http {
+        authority
+    } else {
+        without_port(authority)
+    };
     let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
-    if !reference::is_authority(host) || path.is_empty() {
+    if !reference::is_authority(authority) || path.is_empty() {
         return None;
     }
-    Some((host.to_owned(), path.to_owned()))
+    Some((authority.to_owned(), path.to_owned()))
+}
+
+fn without_port(authority: &str) -> &str {
+    authority
+        .split_once(':')
+        .map_or(authority, |(host, _)| host)
 }
 
 #[cfg(test)]
@@ -362,6 +489,7 @@ mod tests {
     use crate::exec::Script;
 
     const GH_RESOLVED: &str = r"git config --get-regexp ^remote\..*\.gh-resolved$";
+    const GLAB_RESOLVED: &str = r"git config --get-regexp ^remote\..*\.glab-resolved(-base)?$";
 
     fn missing() -> Result<Output, exec::Error> {
         Err(exec::Error::Io(io::ErrorKind::NotFound.into()))
@@ -377,19 +505,19 @@ mod tests {
         )
     }
 
-    fn tokens(host: &str, claim: Claim) -> [(String, Result<Output, exec::Error>); 2] {
+    fn tokens(authority: &str, claim: Claim) -> [(String, Result<Output, exec::Error>); 2] {
         let gh = matches!(claim, Claim::Both | Claim::GitHub);
         let glab = matches!(claim, Claim::Both | Claim::GitLab);
         [
             (
-                format!("gh auth token --hostname {host}"),
+                format!("gh auth token --hostname {}", without_port(authority)),
                 Ok(Output::exited(
                     i32::from(!gh),
                     if gh { "gho_x\n" } else { "" },
                 )),
             ),
             (
-                format!("glab config get token --host {host}"),
+                format!("glab config get token --host {authority}"),
                 Ok(Output::exited(0, if glab { "glpat-x\n" } else { "" })),
             ),
         ]
@@ -405,11 +533,141 @@ mod tests {
 
     fn located(host: &str, owner: &str, repo: &str) -> Reference {
         Reference {
+            forge: Forge::GitHub,
             given: "#12".to_owned(),
             host: host.to_owned(),
             number: 12,
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
+            project: format!("{owner}/{repo}"),
+        }
+    }
+
+    fn merge_request() -> Name {
+        reference::parse_name("!12").unwrap()
+    }
+
+    fn located_on_gitlab(host: &str, project: &str) -> Reference {
+        Reference {
+            forge: Forge::GitLab,
+            given: "!12".to_owned(),
+            host: host.to_owned(),
+            number: 12,
+            project: project.to_owned(),
+        }
+    }
+
+    #[test]
+    fn locates_the_only_gitlab_remote_with_its_nested_groups() {
+        let script = Script::new([
+            remotes(&[("origin", "git@gitlab.com:g/sub/p.git")]),
+            (GLAB_RESOLVED.to_owned(), Ok(Output::exited(1, ""))),
+        ]);
+
+        assert_eq!(
+            locate(&script, &merge_request()),
+            Ok(located_on_gitlab("gitlab.com", "g/sub/p")),
+        );
+    }
+
+    #[test]
+    fn locates_the_base_repository_glab_recorded() {
+        let resolved = "remote.origin.glab-resolved head\n\
+                        remote.upstream.glab-resolved-base base:g/parent\n";
+        let script = Script::new(
+            [remotes(&[
+                ("origin", "https://gitlab.example.com/me/p.git"),
+                ("upstream", "https://gitlab.example.com/g/p.git"),
+            ])]
+            .into_iter()
+            .chain(tokens("gitlab.example.com", Claim::GitLab))
+            .chain([(GLAB_RESOLVED.to_owned(), Ok(Output::exited(0, resolved)))]),
+        );
+
+        assert_eq!(
+            locate(&script, &merge_request()),
+            Ok(located_on_gitlab("gitlab.example.com", "g/parent")),
+        );
+    }
+
+    #[test]
+    fn takes_the_first_resolved_remote_in_glabs_order_as_glab_does() {
+        let resolved = "remote.origin.glab-resolved-base base\n\
+                        remote.upstream.glab-resolved base:headquarters/app\n";
+        let script = Script::new([
+            remotes(&[
+                ("origin", "git@gitlab.com:me/app.git"),
+                ("upstream", "git@gitlab.com:headquarters/app.git"),
+            ]),
+            (GLAB_RESOLVED.to_owned(), Ok(Output::exited(0, resolved))),
+        ]);
+
+        assert_eq!(
+            locate(&script, &merge_request()),
+            Ok(located_on_gitlab("gitlab.com", "headquarters/app")),
+        );
+    }
+
+    #[test]
+    fn keeps_the_port_of_an_https_gitlab_remote_but_not_of_an_ssh_one() {
+        for (url, authority) in [
+            (
+                "https://gitlab.example.com:8443/g/p.git",
+                "gitlab.example.com:8443",
+            ),
+            (
+                "HTTPS://gitlab.example.com:8443/g/p.git",
+                "gitlab.example.com:8443",
+            ),
+            (
+                "ssh://git@gitlab.example.com:2222/g/p.git",
+                "gitlab.example.com",
+            ),
+        ] {
+            let script = Script::new(
+                [remotes(&[("origin", url)])]
+                    .into_iter()
+                    .chain(tokens(authority, Claim::GitLab))
+                    .chain([(GLAB_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
+            );
+
+            assert_eq!(
+                locate(&script, &merge_request()),
+                Ok(located_on_gitlab(authority, "g/p")),
+                "{url}",
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_several_gitlab_remotes_without_a_recorded_base() {
+        let script = Script::new([
+            remotes(&[
+                ("origin", "git@gitlab.com:me/p.git"),
+                ("upstream", "git@gitlab.com:g/p.git"),
+            ]),
+            (
+                GLAB_RESOLVED.to_owned(),
+                Ok(Output::exited(0, "remote.origin.glab-resolved head\n")),
+            ),
+        ]);
+
+        assert!(matches!(
+            locate(&script, &merge_request()),
+            Err(Error::Usage(_)),
+        ));
+    }
+
+    #[test]
+    fn rejects_a_reference_naming_the_other_forge() {
+        for (name, url) in [
+            (merge_request(), "git@github.com:o/r.git"),
+            (checkout(), "git@gitlab.com:g/p.git"),
+        ] {
+            let script = Script::new([remotes(&[("origin", url)])]);
+
+            assert!(
+                matches!(locate(&script, &name), Err(Error::Usage(_))),
+                "{url}",
+            );
         }
     }
 
@@ -503,7 +761,7 @@ mod tests {
             ])]
             .into_iter()
             .chain(tokens("git.example.org", Claim::Neither))
-            .chain(tokens("ghe.example.com", Claim::GitHub))
+            .chain(tokens("ghe.example.com:8443", Claim::GitHub))
             .chain([(GH_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
         );
 
@@ -631,6 +889,7 @@ mod tests {
     fn a_redirect_to_another_host_is_not_followed() {
         let given = "https://ghe.example.com/o/r/pull/1";
         let redirected = Target {
+            forge: Forge::GitHub,
             forge_id: "PR_1".to_owned(),
             host: "ghe.example.com".to_owned(),
             url: "https://github.com/o/r/pull/1".to_owned(),

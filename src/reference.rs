@@ -1,12 +1,24 @@
+use crate::envelope::Forge;
+
 /// A target as the caller named it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Name {
-    /// `#<n>`, meaning the project the current checkout points at.
+    /// `#<n>` or `!<n>`, meaning the project the current checkout points at.
     Checkout {
         given: String,
         number: u64,
+        prefix: Prefix,
     },
     Url(Reference),
+}
+
+/// What a checkout reference's prefix says the number names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prefix {
+    /// `!`: a GitLab merge request.
+    Bang,
+    /// `#`: a GitHub pull request or issue, or a GitLab issue.
+    Hash,
 }
 
 impl Name {
@@ -18,28 +30,37 @@ impl Name {
     }
 }
 
-/// A GitHub pull request on a known host and project.
+/// A GitHub pull request or GitLab merge request on a known host and project.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reference {
+    pub forge: Forge,
     pub given: String,
+    /// The host, with its port where a GitLab URL names one.
     pub host: String,
     pub number: u64,
-    pub owner: String,
-    pub repo: String,
+    /// The project's full path: `owner/repo` on GitHub, every group then the project on GitLab.
+    pub project: String,
 }
 
 pub fn parse_name(given: &str) -> Result<Name, String> {
-    if let Some(number) = given.strip_prefix('#') {
-        return Ok(Name::Checkout {
+    let checkout = |prefix, number| {
+        Ok(Name::Checkout {
             given: given.to_owned(),
             number: parse_number(number, given)?,
-        });
+            prefix,
+        })
+    };
+    if let Some(number) = given.strip_prefix('#') {
+        return checkout(Prefix::Hash, number);
+    }
+    if let Some(number) = given.strip_prefix('!') {
+        return checkout(Prefix::Bang, number);
     }
     parse(given).map(Name::Url)
 }
 
 pub fn parse(given: &str) -> Result<Reference, String> {
-    let invalid = || format!("`{given}` is not a GitHub pull request URL");
+    let invalid = || format!("`{given}` is not a GitHub pull request or GitLab merge request URL");
     let rest = given
         .strip_prefix("https://")
         .or_else(|| given.strip_prefix("http://"))
@@ -47,29 +68,37 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     if rest.contains(['?', '#']) {
         return Err(format!("`{given}` must not carry a query or fragment"));
     }
-    let [host, owner, repo, "pull", number] = rest.split('/').collect::<Vec<_>>()[..] else {
-        return Err(invalid());
+    let segments: Vec<_> = rest.split('/').collect();
+    let (forge, host, project, number) = match &segments[..] {
+        [host, project @ .., "-", "merge_requests", number] if project.len() >= 2 => {
+            (Forge::GitLab, *host, project, *number)
+        }
+        [host, project @ .., "pull", number] if project.len() == 2 => {
+            (Forge::GitHub, *host, project, *number)
+        }
+        _ => return Err(invalid()),
     };
-    if !is_authority(host) || !is_name(owner) || !is_name(repo) {
+    let project = project.join("/");
+    if !is_authority(host) || !is_project_path(forge, &project) {
         return Err(invalid());
     }
-    if host.contains(':') {
+    if forge == Forge::GitHub && host.contains(':') {
         return Err(format!(
             "`{given}` names a port, and gh can't reach a GitHub host through one"
         ));
     }
     Ok(Reference {
+        forge,
         given: given.to_owned(),
         host: host.to_owned(),
         number: parse_number(number, given)?,
-        owner: owner.to_owned(),
-        repo: repo.to_owned(),
+        project,
     })
 }
 
 /// A decimal number from 1 up, never zero-padded.
 fn parse_number(number: &str, given: &str) -> Result<u64, String> {
-    let invalid = || format!("`{number}` in `{given}` is not a pull request number");
+    let invalid = || format!("`{number}` in `{given}` is not a pull or merge request number");
     if number.starts_with('0') || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid());
     }
@@ -98,6 +127,17 @@ pub fn is_authority(authority: &str) -> bool {
     host.split('.').all(label_is_valid) && port.is_none_or(port_is_valid)
 }
 
+/// A project's full path on `forge`: `owner/repo` on GitHub, one or more groups then the project
+/// on GitLab.
+pub fn is_project_path(forge: Forge, path: &str) -> bool {
+    let segments = path.split('/').count();
+    let counted = match forge {
+        Forge::GitHub => segments == 2,
+        Forge::GitLab => segments >= 2,
+    };
+    counted && path.split('/').all(is_name)
+}
+
 /// An owner or repository name, never `.` or `..`.
 pub fn is_name(segment: &str) -> bool {
     !segment.is_empty()
@@ -117,11 +157,25 @@ mod tests {
         assert_eq!(
             parse_name("http://ghe.example.com/o/r/pull/12"),
             Ok(Name::Url(Reference {
+                forge: Forge::GitHub,
                 given: "http://ghe.example.com/o/r/pull/12".to_owned(),
                 host: "ghe.example.com".to_owned(),
                 number: 12,
-                owner: "o".to_owned(),
-                repo: "r".to_owned(),
+                project: "o/r".to_owned(),
+            })),
+        );
+    }
+
+    #[test]
+    fn parses_a_merge_request_url_keeping_nested_groups_and_the_port() {
+        assert_eq!(
+            parse_name("https://gitlab.example.com:8443/g/sub/p/-/merge_requests/12"),
+            Ok(Name::Url(Reference {
+                forge: Forge::GitLab,
+                given: "https://gitlab.example.com:8443/g/sub/p/-/merge_requests/12".to_owned(),
+                host: "gitlab.example.com:8443".to_owned(),
+                number: 12,
+                project: "g/sub/p".to_owned(),
             })),
         );
     }
@@ -134,12 +188,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_checkout_reference() {
+    fn parses_checkout_references() {
         assert_eq!(
             parse_name("#12"),
             Ok(Name::Checkout {
                 given: "#12".to_owned(),
                 number: 12,
+                prefix: Prefix::Hash,
+            }),
+        );
+        assert_eq!(
+            parse_name("!12"),
+            Ok(Name::Checkout {
+                given: "!12".to_owned(),
+                number: 12,
+                prefix: Prefix::Bang,
             }),
         );
     }
@@ -159,8 +222,10 @@ mod tests {
             "#+12",
             "#12a",
             "##12",
-            "!12",
+            "!012",
+            "!",
             "o/r#12",
+            "g/p!12",
             "ftp://github.com/o/r/pull/12",
             "https://github.com/o/r/pull/12/",
             "https://github.com/o/r/pull/12/files",
@@ -185,6 +250,13 @@ mod tests {
             "https://github.com/../r/pull/12",
             "https://github.com/o/../pull/12",
             "https://github.com/o/r%20x/pull/12",
+            "https://github.com/o/r/s/pull/12",
+            "https://gitlab.com/p/-/merge_requests/12",
+            "https://gitlab.com/g/p/merge_requests/12",
+            "https://gitlab.com/g/p/-/merge_requests/12/diffs",
+            "https://gitlab.com/g/p/-/merge_requests/012",
+            "https://gitlab.com/g//p/-/merge_requests/12",
+            "https://gitlab.com/g/p/-/merge_requests/12#note_1",
         ] {
             assert!(parse_name(given).is_err(), "{given}");
         }

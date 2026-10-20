@@ -1,0 +1,73 @@
+query (
+  $id: MergeRequestID!
+  $approvers: Boolean = true
+  $approversAfter: String
+  $notes: Boolean = true
+  $notesAfter: String
+  $reviewers: Boolean = true
+  $reviewersAfter: String
+) {
+  mergeRequest(id: $id) {
+    diffHeadSha
+    state
+    approvedBy(first: 100, after: $approversAfter) @include(if: $approvers) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        ...user
+      }
+    }
+    notes(first: 100, after: $notesAfter, filter: ONLY_COMMENTS) @include(if: $notes) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        author {
+          ...user
+        }
+        body
+        createdAt
+        discussion {
+          id
+          resolvable
+          resolved
+          resolvedBy {
+            ...user
+          }
+        }
+        id
+        lastEditedAt
+        lastEditedBy {
+          ...user
+        }
+        position {
+          filePath
+          newLine
+          oldLine
+        }
+        url
+      }
+    }
+    reviewers(first: 100, after: $reviewersAfter) @include(if: $reviewers) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        ...user
+        mergeRequestInteraction {
+          reviewState
+        }
+      }
+    }
+  }
+}
+
+fragment user on User {
+  bot
+  id
+  username
+}

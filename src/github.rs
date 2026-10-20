@@ -1,22 +1,21 @@
-use std::io;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::envelope::{ErrorKind, Forge};
-use crate::exec::{self, CALL_LIMIT, Exec, Limit};
+use crate::exec::Exec;
 use crate::forge::{
-    Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Merge, Poll, Review,
-    ReviewState, Target, TargetState, Thread,
+    Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Merge, Poll, Position,
+    Review, ReviewState, Target, TargetState, Thread, run_cli,
 };
+use crate::graphql::{Connection, Paged, same_head};
 use crate::reference::Reference;
 use crate::response::{self, Response};
 
 const BOT_SUFFIX: &str = "[bot]";
 const CLI: &str = "gh";
 const EXIT_AUTH: i32 = 4;
-const EXIT_NOT_FOUND: i32 = 127;
 /// The rollup and status-context state of a required check that has not reported.
 const EXPECTED: &str = "EXPECTED";
 const GRAPHQL_NOT_FOUND: &str = "NOT_FOUND";
@@ -56,28 +55,10 @@ impl<'a, E: Exec> GitHub<'a, E> {
         args: &[&str],
         deadline: Option<SystemTime>,
     ) -> Result<(Response, Hints), Failure> {
-        let output = match self.exec.run(CLI, args, deadline) {
-            Ok(output) => output,
-            Err(exec::Error::TimedOut(Limit::Deadline)) => return Err(Failure::TimedOut),
-            Err(exec::Error::TimedOut(Limit::CallLimit)) => {
-                let message = format!("gh did not answer within {}s", CALL_LIMIT.as_secs());
-                return Err(transient(&message));
-            }
-            Err(exec::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-                return Err(fatal(
-                    ErrorKind::CliMissing,
-                    "gh is not installed or not on PATH",
-                ));
-            }
-            Err(exec::Error::Io(error)) => {
-                return Err(transient(&format!("could not run gh: {error}")));
-            }
-        };
+        let output = run_cli(self.exec, Forge::GitHub, CLI, args, deadline)?;
         let reason = output.stderr.trim();
-        match output.code {
-            Some(EXIT_NOT_FOUND) => return Err(fatal(ErrorKind::CliMissing, reason)),
-            Some(EXIT_AUTH) => return Err(fatal(ErrorKind::Auth, reason)),
-            _ => {}
+        if output.code == Some(EXIT_AUTH) {
+            return Err(fatal(ErrorKind::Auth, reason));
         }
         let Some(response) = response::parse(&output.stdout) else {
             return Err(transient(&format!("gh printed no HTTP reply: {reason}")));
@@ -110,10 +91,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         reference: &Reference,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
-        let path = format!(
-            "repos/{}/{}/pulls/{}",
-            reference.owner, reference.repo, reference.number,
-        );
+        let path = format!("repos/{}/pulls/{}", reference.project, reference.number);
         let (response, hints) = self.call(
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
@@ -121,8 +99,9 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         if rest_names_secondary_limit(&response.body) {
             return Err(rate_limit(hints));
         }
-        let pull: PullRequest = decode(&response.body).map_err(|failure| paced(failure, hints))?;
+        let pull: PullRequest = decode(&response.body).map_err(|failure| failure.paced(hints))?;
         let target = Target {
+            forge: Forge::GitHub,
             forge_id: pull.node_id,
             host: reference.host.clone(),
             url: pull.html_url,
@@ -138,7 +117,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         let mut hints = Hints::default();
         match self.poll_pages(target, deadline, &mut hints) {
             Ok(poll) => Ok((poll, hints)),
-            Err(failure) => Err(paced(failure, hints)),
+            Err(failure) => Err(failure.paced(hints)),
         }
     }
 
@@ -146,10 +125,10 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         let mut hints = Hints::default();
         let reply: Reply<ViewerData> = self
             .graphql(host, VIEWER_QUERY, &[], deadline, &mut hints)
-            .map_err(|failure| paced(failure, hints))?;
+            .map_err(|failure| failure.paced(hints))?;
         let viewer = reply
             .data
-            .ok_or_else(|| paced(transient("gh returned no viewer"), hints))?;
+            .ok_or_else(|| transient("gh returned no viewer").paced(hints))?;
         Ok((viewer.viewer.id, hints))
     }
 }
@@ -162,11 +141,11 @@ impl<E: Exec> GitHub<'_, E> {
         deadline: Option<SystemTime>,
         hints: &mut Hints,
     ) -> Result<Poll, Failure> {
-        let mut checks = Paged::new("checks");
-        let mut comments = Paged::new("comments");
-        let mut dismissals = Paged::new("dismissals");
-        let mut reviews = Paged::new("reviews");
-        let mut threads = Paged::new("threads");
+        let mut checks = Paged::new(Forge::GitHub, "checks");
+        let mut comments = Paged::new(Forge::GitHub, "comments");
+        let mut dismissals = Paged::new(Forge::GitHub, "dismissals");
+        let mut reviews = Paged::new(Forge::GitHub, "reviews");
+        let mut threads = Paged::new(Forge::GitHub, "threads");
         let mut first: Option<(String, Standing)> = None;
         let mut rollup_state = None;
         while !(checks.done()
@@ -196,12 +175,12 @@ impl<E: Exec> GitHub<'_, E> {
                 None => {
                     // A head with no CI has no rollup, so there are no checks to page.
                     if rollup.is_none() {
-                        checks.page = Page::Done;
+                        checks.finish();
                     }
                     rollup_state = rollup.as_ref().map(|rollup| rollup.state.clone());
                     first = Some((page.head_ref_oid, page.standing));
                 }
-                Some((head, _)) => same_head(head, &page.head_ref_oid)?,
+                Some((head, _)) => same_head(Forge::GitHub, head, &page.head_ref_oid)?,
             }
             checks.take(rollup.and_then(|rollup| rollup.contexts))?;
             comments.take(page.comments)?;
@@ -253,7 +232,7 @@ impl<E: Exec> GitHub<'_, E> {
         deadline: Option<SystemTime>,
         hints: &mut Hints,
     ) -> Result<Vec<CommentNode>, Failure> {
-        let mut comments = Paged::new("comments");
+        let mut comments = Paged::new(Forge::GitHub, "comments");
         comments.take(Some(first))?;
         while !comments.done() {
             let mut variables = vec![("-f", format!("id={thread_id}"))];
@@ -261,7 +240,7 @@ impl<E: Exec> GitHub<'_, E> {
             let page: ThreadPage = self
                 .query(target, THREAD_COMMENTS_QUERY, &variables, deadline, hints)?
                 .ok_or_else(|| transient(&format!("review thread {thread_id} vanished")))?;
-            same_head(head, &page.pull_request.head_ref_oid)?;
+            same_head(Forge::GitHub, head, &page.pull_request.head_ref_oid)?;
             comments.take(Some(page.comments))?;
         }
         Ok(comments.nodes)
@@ -317,89 +296,14 @@ impl<E: Exec> GitHub<'_, E> {
     }
 }
 
-struct Paged<T> {
-    name: &'static str,
-    nodes: Vec<T>,
-    page: Page,
-}
-
-enum Page {
-    First,
-    After(String),
-    Done,
-}
-
-impl<T> Paged<T> {
-    fn new(name: &'static str) -> Self {
-        Self {
-            name,
-            nodes: Vec::new(),
-            page: Page::First,
-        }
-    }
-
-    fn done(&self) -> bool {
-        matches!(self.page, Page::Done)
-    }
-
-    /// The query variable that asks for the next page, or that skips a finished connection.
-    fn variable(&self) -> Option<(&'static str, String)> {
-        match &self.page {
-            Page::First => None,
-            Page::After(cursor) => Some(("-f", format!("{}After={cursor}", self.name))),
-            Page::Done => Some(("-F", format!("{}=false", self.name))),
-        }
-    }
-
-    fn take(&mut self, connection: Option<Connection<T>>) -> Result<(), Failure> {
-        if self.done() {
-            return Ok(());
-        }
-        let Some(connection) = connection else {
-            let message = format!("the {} connection came back null", self.name);
-            return Err(transient(&message));
-        };
-        self.nodes.extend(connection.nodes);
-        self.page = match connection.page_info {
-            PageInfo {
-                has_next_page: false,
-                ..
-            } => Page::Done,
-            PageInfo {
-                end_cursor: Some(cursor),
-                ..
-            } => Page::After(cursor),
-            PageInfo {
-                end_cursor: None, ..
-            } => {
-                let message = format!("the {} connection has a next page but no cursor", self.name);
-                return Err(transient(&message));
-            }
-        };
-        Ok(())
-    }
-}
-
-fn same_head(first: &str, page: &str) -> Result<(), Failure> {
-    if first == page {
-        return Ok(());
-    }
-    let message = format!("the head moved from {first} to {page} between pages");
-    Err(transient(&message))
-}
-
-/// Header values parse as `u32` seconds, so adding one to the clock can never overflow.
 fn pacing(response: &Response) -> Hints {
-    let seconds = |name| {
-        let seconds: u32 = response.header(name)?.parse().ok()?;
-        Some(Duration::from_secs(seconds.into()))
-    };
     Hints {
-        poll_interval: seconds(HEADER_POLL_INTERVAL),
-        reset: seconds(HEADER_RESET)
+        poll_interval: response.seconds(HEADER_POLL_INTERVAL),
+        reset: response
+            .seconds(HEADER_RESET)
             .filter(|_| quota_spent(response))
             .map(|since_epoch| UNIX_EPOCH + since_epoch),
-        retry_after: seconds(HEADER_RETRY_AFTER),
+        retry_after: response.seconds(HEADER_RETRY_AFTER),
     }
 }
 
@@ -538,20 +442,6 @@ struct ThreadPage {
 #[serde(rename_all = "camelCase")]
 struct PullRequestHead {
     head_ref_oid: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Connection<T> {
-    nodes: Vec<T>,
-    page_info: PageInfo,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PageInfo {
-    end_cursor: Option<String>,
-    has_next_page: bool,
 }
 
 #[derive(Deserialize)]
@@ -748,6 +638,7 @@ impl From<CommentNode> for Comment {
             edited_at: node.last_edited_at,
             editor: node.editor.map(Account::from),
             id: node.database_id.to_string(),
+            reply_to: None,
             review_id: node
                 .pull_request_review
                 .map(|review| review.database_id.to_string()),
@@ -773,9 +664,11 @@ fn review(node: ReviewNode, dismissals: &[DismissalNode]) -> Option<Review> {
     });
     Some(Review {
         actor: node.author.map(Account::from),
-        at: node.submitted_at?,
+        at: Some(node.submitted_at?),
         body: node.body,
+        forge_id: Some(node.database_id.to_string()),
         id: node.database_id.to_string(),
+        lapses: false,
         state,
         url: node.url,
         withdrawn_at: dismissal.map(|dismissal| dismissal.created_at.clone()),
@@ -800,8 +693,10 @@ fn thread(node: ThreadFields, comments: Vec<CommentNode>) -> Option<Thread> {
     let first = comments.first()?;
     Some(Thread {
         id: node.id,
-        line: node.line,
-        path: node.path,
+        position: Some(Position {
+            line: node.line,
+            path: node.path,
+        }),
         reply_to: first.id.clone(),
         resolved: node.is_resolved,
         resolved_by: node.resolved_by.map(Account::from),
@@ -945,22 +840,6 @@ fn decode<T: DeserializeOwned>(body: &str) -> Result<T, Failure> {
         .map_err(|error| transient(&format!("unreadable reply from gh: {error}")))
 }
 
-/// `failure` with `hints` folded in, where it is to be retried.
-fn paced(failure: Failure, hints: Hints) -> Failure {
-    match failure {
-        Failure::Transient {
-            forge,
-            hints: own,
-            message,
-        } => Failure::Transient {
-            forge,
-            hints: own.merge(hints),
-            message,
-        },
-        other => other,
-    }
-}
-
 fn rate_limit(hints: Hints) -> Failure {
     Failure::RateLimited {
         forge: Forge::GitHub,
@@ -969,27 +848,22 @@ fn rate_limit(hints: Hints) -> Failure {
 }
 
 fn transient(message: &str) -> Failure {
-    Failure::Transient {
-        forge: Forge::GitHub,
-        hints: Hints::default(),
-        message: message.to_owned(),
-    }
+    Failure::transient(Forge::GitHub, message)
 }
 
 fn fatal(kind: ErrorKind, message: &str) -> Failure {
-    Failure::Fatal {
-        forge: Forge::GitHub,
-        kind,
-        message: message.to_owned(),
-    }
+    Failure::fatal(Forge::GitHub, kind, message)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+    use std::time::Duration;
+
     use super::*;
     use serde_json::{Value, json};
 
-    use crate::exec::{Output, Script};
+    use crate::exec::{self, Limit, Output, Script};
     use crate::forge::Colour;
     use crate::reference;
 
@@ -1002,6 +876,7 @@ mod tests {
 
     fn target() -> Target {
         Target {
+            forge: Forge::GitHub,
             forge_id: NODE_ID.to_owned(),
             host: "github.com".to_owned(),
             url: "https://github.com/brzzdev/babysit/pull/15".to_owned(),
@@ -1070,6 +945,7 @@ mod tests {
 
     fn polled() -> Target {
         Target {
+            forge: Forge::GitHub,
             forge_id: POLLED_ID.to_owned(),
             host: "github.com".to_owned(),
             url: "https://github.com/brzzdev/babysit/pull/30".to_owned(),
@@ -1192,14 +1068,17 @@ mod tests {
             edited_at: None,
             editor: None,
             id: id.to_owned(),
+            reply_to: None,
             review_id: Some(review.to_owned()),
             url: format!("https://github.com/brzzdev/babysit/pull/30#discussion_r{id}"),
         };
         let review = |id: &str, at: &str, actor| Review {
             actor,
-            at: at.to_owned(),
+            at: Some(at.to_owned()),
             body: String::new(),
+            forge_id: Some(id.to_owned()),
             id: id.to_owned(),
+            lapses: false,
             state: ReviewState::Commented,
             url: format!("https://github.com/brzzdev/babysit/pull/30#pullrequestreview-{id}"),
             withdrawn_at: None,
@@ -1226,6 +1105,7 @@ mod tests {
                 edited_at: Some("2026-10-20T19:20:00Z".to_owned()),
                 editor: Some(brzzdev()),
                 id: "6298972911".to_owned(),
+                reply_to: None,
                 review_id: None,
                 url: "https://github.com/brzzdev/babysit/pull/30#issuecomment-6298972911"
                     .to_owned(),
@@ -1257,8 +1137,10 @@ mod tests {
                     ),
                 ],
                 id: THREAD_ID.to_owned(),
-                line: Some(84),
-                path: "src/run.rs".to_owned(),
+                position: Some(Position {
+                    line: Some(84),
+                    path: "src/run.rs".to_owned(),
+                }),
                 reply_to: "4328942196".to_owned(),
                 resolved: true,
                 resolved_by: Some(brzzdev()),

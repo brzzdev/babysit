@@ -247,7 +247,7 @@ fn word(detail: &Detail, field: Field) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::{Colour, ReviewState};
+    use crate::forge::{Colour, Position, ReviewState};
 
     fn event(detail: Detail) -> Event {
         Event {
@@ -263,6 +263,7 @@ mod tests {
         event(Detail::CommentCreated {
             comment_id: "1".to_owned(),
             body: "hi".to_owned(),
+            reply_to: None,
         })
     }
 
@@ -311,7 +312,7 @@ mod tests {
             Detail::MergeConflicted,
             submitted(ReviewState::Approved).detail,
             Detail::ReviewWithdrawn {
-                review_id: "500".to_owned(),
+                review_id: Some("500".to_owned()),
             },
             Detail::StateClosed,
             Detail::StateMerged,
@@ -321,8 +322,10 @@ mod tests {
                 comment_id: "10".to_owned(),
                 reply_to: reply_to(),
                 body: String::new(),
-                path: "src/run.rs".to_owned(),
-                line: None,
+                position: Some(Position {
+                    line: None,
+                    path: "src/run.rs".to_owned(),
+                }),
                 review_id: None,
             },
             Detail::ThreadReplied {
@@ -378,7 +381,7 @@ mod tests {
 
     fn submitted(state: ReviewState) -> Event {
         event(Detail::ReviewSubmitted {
-            review_id: "500".to_owned(),
+            review_id: Some("500".to_owned()),
             state,
             body: String::new(),
         })
@@ -447,7 +450,7 @@ mod tests {
             ..by(
                 account("hubot", Some(true)),
                 event(Detail::ReviewWithdrawn {
-                    review_id: "500".to_owned(),
+                    review_id: Some("500".to_owned()),
                 }),
             )
         };

@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 use crate::cli::Args;
 use crate::clock::{Clock, rfc3339};
 use crate::diff::diff;
-use crate::envelope::{self, EXIT_ERROR, Envelope, ErrorKind, Outcome, Summary};
+use crate::envelope::{self, EXIT_ERROR, Envelope, ErrorKind, Forge, Outcome, Summary};
 use crate::exec::Exec;
 use crate::forge::{Backend, Failure, Hints, Snapshot, Target};
 use crate::reference::Reference;
@@ -19,6 +19,20 @@ const GIVE_UP_AFTER: u32 = 10;
 const RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
 const RATE_LIMIT_WAIT_MAX: Duration = Duration::from_mins(15);
 
+pub struct Backends<'a> {
+    pub github: &'a dyn Backend,
+    pub gitlab: &'a dyn Backend,
+}
+
+impl<'a> Backends<'a> {
+    fn of(&self, forge: Forge) -> &'a dyn Backend {
+        match forge {
+            Forge::GitHub => self.github,
+            Forge::GitLab => self.gitlab,
+        }
+    }
+}
+
 /// A usage error found after argument parsing, such as an unreadable snapshot file.
 #[derive(Debug)]
 pub struct UsageError(pub String);
@@ -26,7 +40,7 @@ pub struct UsageError(pub String);
 /// Watches the targets until one wakes, times out or fails; prints, saves and returns the exit code.
 pub fn run(
     args: &Args,
-    backend: &impl Backend,
+    backends: &Backends,
     exec: &impl Exec,
     clock: &impl Clock,
     stdout: &mut impl Write,
@@ -66,7 +80,7 @@ pub fn run(
         Err((given, error)) => return report_unresolved(stdout, given, error),
     };
     let mut watch = Watch::new(args, references, schedule, now);
-    let watched = watch.run(args, backend, clock, &mut file, stderr);
+    let watched = watch.run(args, backends, clock, &mut file, stderr);
     let (mut envelope, write_failed) = match watched {
         Ok(envelope) => (envelope, false),
         Err(error) => {
@@ -154,6 +168,8 @@ struct Tracked {
 /// The viewer's account id on a host, looked up once.
 struct Viewer {
     attempts: Attempts,
+    /// The forge of the first name given on the host.
+    forge: Forge,
     host: String,
     id: Option<String>,
     /// The first name given on the host.
@@ -188,6 +204,7 @@ impl<'a> Watch<'a> {
                 if viewers.iter().all(|viewer| viewer.host != reference.host) {
                     viewers.push(Viewer {
                         attempts: Attempts::new(now),
+                        forge: reference.forge,
                         host: reference.host.clone(),
                         id: None,
                         name: (*given).to_owned(),
@@ -217,13 +234,13 @@ impl<'a> Watch<'a> {
     fn run(
         &mut self,
         args: &Args,
-        backend: &impl Backend,
+        backends: &Backends,
         clock: &impl Clock,
         file: &mut SnapshotFile,
         stderr: &mut impl Write,
     ) -> io::Result<Envelope> {
         loop {
-            if let Some(ended) = self.round(args, backend, clock, file, stderr)? {
+            if let Some(ended) = self.round(args, backends, clock, file, stderr)? {
                 return Ok(ended);
             }
             let next = self.next_call();
@@ -266,17 +283,17 @@ impl<'a> Watch<'a> {
     fn round(
         &mut self,
         args: &Args,
-        backend: &impl Backend,
+        backends: &Backends,
         clock: &impl Clock,
         file: &mut SnapshotFile,
         stderr: &mut impl Write,
     ) -> io::Result<Option<Envelope>> {
         let mut failed = None;
         if self
-            .resolve_due(backend, clock, file, stderr, &mut failed)
+            .resolve_due(backends, clock, file, stderr, &mut failed)
             .is_break()
             || self
-                .look_up_due(backend, clock, stderr, &mut failed)
+                .look_up_due(backends, clock, stderr, &mut failed)
                 .is_break()
         {
             return Ok(Some(Envelope::ended(Outcome::TimedOut)));
@@ -296,7 +313,9 @@ impl<'a> Watch<'a> {
             if !pollable(viewers, host) || schedule.due(host, tracked.attempts.next) > clock.now() {
                 continue;
             }
-            let polled = backend.poll(&tracked.target, schedule.call_deadline);
+            let polled = backends
+                .of(tracked.target.forge)
+                .poll(&tracked.target, schedule.call_deadline);
             let now = clock.now();
             let poll = match polled {
                 Ok((poll, hints)) => {
@@ -358,7 +377,7 @@ impl<'a> Watch<'a> {
     /// breaks when the deadline killed a call.
     fn resolve_due(
         &mut self,
-        backend: &impl Backend,
+        backends: &Backends,
         clock: &impl Clock,
         file: &mut SnapshotFile,
         stderr: &mut impl Write,
@@ -371,7 +390,9 @@ impl<'a> Watch<'a> {
                 index += 1;
                 continue;
             }
-            let resolved = backend.resolve(&pending.reference, self.schedule.call_deadline);
+            let resolved = backends
+                .of(pending.reference.forge)
+                .resolve(&pending.reference, self.schedule.call_deadline);
             let now = clock.now();
             let target = match resolved {
                 Ok((target, hints)) => {
@@ -408,7 +429,7 @@ impl<'a> Watch<'a> {
     /// Looks up each host's viewer that is due; breaks when the deadline killed a call.
     fn look_up_due(
         &mut self,
-        backend: &impl Backend,
+        backends: &Backends,
         clock: &impl Clock,
         stderr: &mut impl Write,
         failed: &mut Option<Envelope>,
@@ -417,7 +438,9 @@ impl<'a> Watch<'a> {
             if self.schedule.due(&viewer.host, viewer.attempts.next) > clock.now() {
                 continue;
             }
-            let looked_up = backend.viewer(&viewer.host, self.schedule.call_deadline);
+            let looked_up = backends
+                .of(viewer.forge)
+                .viewer(&viewer.host, self.schedule.call_deadline);
             let now = clock.now();
             match looked_up {
                 Ok((id, hints)) => {
@@ -752,16 +775,21 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(Hints::default()))?;
             let Reference {
+                forge,
                 host,
                 number,
-                owner,
-                repo,
+                project,
                 ..
             } = reference;
+            let (id, path) = match forge {
+                Forge::GitHub => ("PR", "pull"),
+                Forge::GitLab => ("MR", "-/merge_requests"),
+            };
             let target = Target {
-                forge_id: format!("PR_{number}"),
+                forge: *forge,
+                forge_id: format!("{id}_{number}"),
                 host: host.clone(),
-                url: format!("https://{host}/{owner}/{repo}/pull/{number}"),
+                url: format!("https://{host}/{project}/{path}/{number}"),
             };
             Ok((target, hints))
         }
@@ -949,7 +977,10 @@ mod tests {
         let mut stderr = Vec::new();
         let code = run(
             args,
-            &backend,
+            &Backends {
+                github: &backend,
+                gitlab: &backend,
+            },
             &Script::new([]),
             &clock,
             stdout,
@@ -1023,6 +1054,39 @@ mod tests {
     }
 
     #[test]
+    fn each_target_is_resolved_and_polled_by_its_forges_backend() {
+        let sandbox = Sandbox::new("routing");
+        let merge_request = "https://gitlab.com/g/sub/p/-/merge_requests/4";
+        let clock = FakeClock(Cell::new(start()));
+        let backend = |polls: Vec<Step>| FakeBackend {
+            clock: &clock,
+            log: RefCell::default(),
+            polls: RefCell::new(polls.into()),
+            resolves: RefCell::default(),
+            viewers: RefCell::default(),
+        };
+        let github = backend(vec![returns(URL, poll(&[]))]);
+        let gitlab = backend(vec![returns(merge_request, poll(&[]))]);
+        let backends = Backends {
+            github: &github,
+            gitlab: &gitlab,
+        };
+
+        let code = run(
+            &args(&[merge_request, URL], &sandbox.snapshot(), Some(0)),
+            &backends,
+            &Script::new([]),
+            &clock,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+
+        assert_eq!(code.unwrap(), 3);
+        assert_eq!(github.log.take(), [(URL.to_owned(), 0)]);
+        assert_eq!(gitlab.log.take(), [(merge_request.to_owned(), 0)]);
+    }
+
+    #[test]
     fn a_first_run_with_timeout_zero_saves_the_baseline_and_times_out() {
         let sandbox = Sandbox::new("first-run");
 
@@ -1049,6 +1113,7 @@ mod tests {
                                 "edited_at": null,
                                 "editor": null,
                                 "id": "1",
+                                "reply_to": null,
                                 "review_id": null,
                                 "url": format!("{URL}#issuecomment-1"),
                             }],
@@ -1296,7 +1361,17 @@ mod tests {
         };
         let mut stdout = Vec::new();
 
-        let code = run(&args, &backend, &exec, &clock, &mut stdout, &mut Vec::new());
+        let code = run(
+            &args,
+            &Backends {
+                github: &backend,
+                gitlab: &backend,
+            },
+            &exec,
+            &clock,
+            &mut stdout,
+            &mut Vec::new(),
+        );
 
         let envelope: Value = serde_json::from_slice(&stdout).unwrap();
         assert_eq!(code.unwrap(), 1);

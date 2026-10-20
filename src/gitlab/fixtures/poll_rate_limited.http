@@ -1,0 +1,28 @@
+HTTP/2.0 429 Too Many Requests
+Cache-Control: max-age=0, private, must-revalidate
+Cf-Cache-Status: DYNAMIC
+Cf-Ray: a4db4cb4aa09b339-MAN
+Content-Type: application/json; charset=utf-8
+Date: Tue, 20 Oct 2026 22:01:11 GMT
+Gitlab-Lb: haproxy-main-44-lb-gprd
+Gitlab-Sv: api-gke-us-east1-c
+Nel: {"max_age": 0}
+Ratelimit-Limit: 2000
+Ratelimit-Name: throttle_authenticated_api
+Ratelimit-Observed: 2000
+Ratelimit-Remaining: 0
+Ratelimit-Reset: 1792533720
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a4db4cb4aa09b339-MAN","version":"1"}
+X-Permitted-Cross-Domain-Policies: none
+X-Request-Id: a4db4cb4aa09b339-MAN
+X-Runtime: 0.439439
+Retry-After: 60
+X-Xss-Protection: 1; mode=block
+
+Retry later
