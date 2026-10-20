@@ -18,7 +18,8 @@ pub struct Args {
     #[arg(long, value_name = "RULE", value_parser = rule::parse)]
     pub ignore: Vec<Rule>,
 
-    /// The pull requests to watch, each as its GitHub web URL or `#<number>` inside a checkout
+    /// The pull or merge requests to watch, each as its web URL, or as `#<number>` (GitHub) or
+    /// `!<number>` (GitLab) inside a checkout
     #[arg(value_name = "TARGET", required = true, value_parser = reference::parse_name)]
     pub targets: Vec<Name>,
 

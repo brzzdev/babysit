@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 /// One HTTP reply as `gh api -i` prints it: a status line, headers, a blank line, then the body.
 pub struct Response {
     pub body: String,
@@ -8,6 +10,12 @@ pub struct Response {
 impl Response {
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
+    }
+
+    /// The header `name` as whole seconds; `u32` seconds can never overflow the clock.
+    pub fn seconds(&self, name: &str) -> Option<Duration> {
+        let seconds: u32 = self.header(name)?.parse().ok()?;
+        Some(Duration::from_secs(seconds.into()))
     }
 
     /// The first value of the header `name`, matched case-insensitively.

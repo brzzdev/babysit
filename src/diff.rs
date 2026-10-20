@@ -1,8 +1,8 @@
 use serde::Serialize;
 
 use crate::forge::{
-    Account, Assessment, Check, Ci, Colour, Comment, Merge, Poll, Reported, Review, ReviewState,
-    Snapshot, TargetState, Thread,
+    Account, Assessment, Check, Ci, Colour, Comment, Merge, Poll, Position, Reported, Review,
+    ReviewState, Snapshot, TargetState, Thread,
 };
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -30,7 +30,12 @@ pub enum Detail {
         warnings: Vec<CheckReport>,
     },
     #[serde(rename = "comment.created")]
-    CommentCreated { comment_id: String, body: String },
+    CommentCreated {
+        comment_id: String,
+        body: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+    },
     #[serde(rename = "comment.edited")]
     CommentEdited {
         comment_id: String,
@@ -48,12 +53,16 @@ pub enum Detail {
     MergeConflicted,
     #[serde(rename = "review.submitted")]
     ReviewSubmitted {
-        review_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        review_id: Option<String>,
         state: ReviewState,
         body: String,
     },
     #[serde(rename = "review.withdrawn")]
-    ReviewWithdrawn { review_id: String },
+    ReviewWithdrawn {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        review_id: Option<String>,
+    },
     #[serde(rename = "state.closed")]
     StateClosed,
     #[serde(rename = "state.merged")]
@@ -66,8 +75,8 @@ pub enum Detail {
         comment_id: String,
         reply_to: String,
         body: String,
-        path: String,
-        line: Option<u64>,
+        #[serde(flatten)]
+        position: Option<Position>,
         #[serde(skip_serializing_if = "Option::is_none")]
         review_id: Option<String>,
     },
@@ -166,13 +175,20 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         .map(|comment| (None, comment))
         .chain(threaded)
     {
-        // Top-level and thread comment ids are separate namespaces.
+        // Top-level and thread comment ids are separate namespaces, but a reply turns a GitLab
+        // comment into its discussion's thread, keeping its id.
         let seen = match thread {
             None => baseline.comments.iter().find(|seen| seen.id == comment.id),
-            Some(_) => baseline
+            Some(thread) => baseline
                 .threads
                 .iter()
                 .flat_map(|seen_thread| &seen_thread.comments)
+                .chain(
+                    baseline
+                        .comments
+                        .iter()
+                        .filter(|seen| seen.reply_to.as_deref() == Some(thread.reply_to.as_str())),
+                )
                 .find(|seen| seen.id == comment.id),
         };
         match (seen, thread) {
@@ -187,6 +203,11 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
     for review in &poll.reviews {
         let seen = baseline.reviews.iter().find(|seen| seen.id == review.id);
         events.extend(review_change(seen, review));
+    }
+    for seen in &baseline.reviews {
+        if seen.lapses && poll.reviews.iter().all(|review| review.id != seen.id) {
+            events.push(review_lapsed(seen));
+        }
     }
     for thread in &poll.threads {
         let was_resolved = baseline
@@ -316,6 +337,7 @@ fn comment_created(comment: &Comment) -> Event {
         detail: Detail::CommentCreated {
             comment_id: comment.id.clone(),
             body: comment.body.clone(),
+            reply_to: comment.reply_to.clone(),
         },
         url: comment.url.clone(),
         at: Some(comment.at.clone()),
@@ -330,7 +352,9 @@ fn comment_edited(comment: &Comment, thread: Option<&Thread>) -> Event {
             comment_id: comment.id.clone(),
             body: comment.body.clone(),
             thread_id: thread.map(|thread| thread.id.clone()),
-            reply_to: thread.map(|thread| thread.reply_to.clone()),
+            reply_to: thread.map_or(comment.reply_to.clone(), |thread| {
+                Some(thread.reply_to.clone())
+            }),
         },
         url: comment.url.clone(),
         at: comment.edited_at.clone(),
@@ -345,18 +369,18 @@ fn review_change(seen: Option<&Review>, review: &Review) -> Option<Event> {
     match seen {
         None if !withdrawn => Some(Event {
             detail: Detail::ReviewSubmitted {
-                review_id: review.id.clone(),
+                review_id: review.forge_id.clone(),
                 state: review.state,
                 body: review.body.clone(),
             },
             url: review.url.clone(),
-            at: Some(review.at.clone()),
+            at: review.at.clone(),
             actor: review.actor.clone(),
             subject: None,
         }),
         Some(seen) if withdrawn && seen.state != ReviewState::Dismissed => Some(Event {
             detail: Detail::ReviewWithdrawn {
-                review_id: review.id.clone(),
+                review_id: review.forge_id.clone(),
             },
             url: review.url.clone(),
             at: review.withdrawn_at.clone(),
@@ -364,6 +388,19 @@ fn review_change(seen: Option<&Review>, review: &Review) -> Option<Event> {
             subject: review.actor.clone(),
         }),
         _ => None,
+    }
+}
+
+/// A lapsed review's forge records neither when it lapsed nor who made it.
+fn review_lapsed(seen: &Review) -> Event {
+    Event {
+        detail: Detail::ReviewWithdrawn {
+            review_id: seen.forge_id.clone(),
+        },
+        url: seen.url.clone(),
+        at: None,
+        actor: None,
+        subject: seen.actor.clone(),
     }
 }
 
@@ -375,8 +412,7 @@ fn thread_comment(thread: &Thread, comment: &Comment) -> Event {
             comment_id: comment.id.clone(),
             reply_to: thread.reply_to.clone(),
             body: comment.body.clone(),
-            path: thread.path.clone(),
-            line: thread.line,
+            position: thread.position.clone(),
             review_id: comment.review_id.clone(),
         }
     } else {
@@ -433,6 +469,7 @@ mod tests {
     use super::*;
     use crate::forge::{comment, octocat, poll};
 
+    const MERGE_REQUEST: &str = "https://gitlab.com/g/p/-/merge_requests/1";
     const THREAD: &str = "PRRT_1";
     const THREAD_URL: &str = "https://github.com/o/r/pull/1#discussion_r10";
 
@@ -449,8 +486,10 @@ mod tests {
         Thread {
             comments,
             id: THREAD.to_owned(),
-            line: Some(84),
-            path: "src/run.rs".to_owned(),
+            position: Some(Position {
+                line: Some(84),
+                path: "src/run.rs".to_owned(),
+            }),
             reply_to: "10".to_owned(),
             resolved,
             resolved_by: resolved.then(octocat),
@@ -461,9 +500,11 @@ mod tests {
     fn review(state: ReviewState) -> Review {
         Review {
             actor: Some(octocat()),
-            at: "2026-10-20T19:05:00Z".to_owned(),
+            at: Some("2026-10-20T19:05:00Z".to_owned()),
             body: "Looks good".to_owned(),
+            forge_id: Some("500".to_owned()),
             id: "500".to_owned(),
+            lapses: false,
             state,
             url: "https://github.com/o/r/pull/1#pullrequestreview-500".to_owned(),
             withdrawn_at: None,
@@ -505,6 +546,7 @@ mod tests {
                 detail: Detail::CommentCreated {
                     comment_id: "2".to_owned(),
                     body: "comment 2".to_owned(),
+                    reply_to: None,
                 },
                 url: "https://github.com/o/r/pull/1#issuecomment-2".to_owned(),
                 at: Some("2026-10-20T19:00:00Z".to_owned()),
@@ -611,7 +653,10 @@ mod tests {
             thread(vec![comment("10"), reviewed("11", "500")], false),
             Thread {
                 id: "PRRT_2".to_owned(),
-                line: None,
+                position: Some(Position {
+                    line: None,
+                    path: "src/run.rs".to_owned(),
+                }),
                 reply_to: "20".to_owned(),
                 url: "https://github.com/o/r/pull/1#discussion_r20".to_owned(),
                 ..thread(vec![reviewed("20", "500")], false)
@@ -626,7 +671,7 @@ mod tests {
             [
                 Event {
                     detail: Detail::ReviewSubmitted {
-                        review_id: "500".to_owned(),
+                        review_id: Some("500".to_owned()),
                         state: ReviewState::ChangesRequested,
                         body: "Looks good".to_owned(),
                     },
@@ -641,8 +686,10 @@ mod tests {
                         comment_id: "20".to_owned(),
                         reply_to: "20".to_owned(),
                         body: "comment 20".to_owned(),
-                        path: "src/run.rs".to_owned(),
-                        line: None,
+                        position: Some(Position {
+                            line: None,
+                            path: "src/run.rs".to_owned(),
+                        }),
                         review_id: Some("500".to_owned()),
                     },
                     url: "https://github.com/o/r/pull/1#discussion_r20".to_owned(),
@@ -688,7 +735,7 @@ mod tests {
             events,
             [Event {
                 detail: Detail::ReviewWithdrawn {
-                    review_id: "500".to_owned(),
+                    review_id: Some("500".to_owned()),
                 },
                 url: "https://github.com/o/r/pull/1#pullrequestreview-500".to_owned(),
                 at: Some("2026-10-20T19:40:00Z".to_owned()),
@@ -696,6 +743,123 @@ mod tests {
                 subject: Some(octocat()),
             }],
         );
+    }
+
+    /// A GitLab reviewer standing, which has neither a time nor an id of its own.
+    fn reviewer_standing(state: ReviewState, lapses: bool) -> Review {
+        Review {
+            at: None,
+            forge_id: None,
+            id: format!("{state:?}:gid://gitlab/User/1"),
+            lapses,
+            url: MERGE_REQUEST.to_owned(),
+            ..review(state)
+        }
+    }
+
+    #[test]
+    fn a_lapsed_approval_withdraws_it_with_only_the_reviewer_known() {
+        let baseline = with_reviews(vec![reviewer_standing(ReviewState::Approved, true)]);
+
+        let (events, _) = diff(&baseline.into(), poll(&[]));
+
+        assert_eq!(
+            events,
+            [Event {
+                detail: Detail::ReviewWithdrawn { review_id: None },
+                url: MERGE_REQUEST.to_owned(),
+                at: None,
+                actor: None,
+                subject: Some(octocat()),
+            }],
+        );
+    }
+
+    #[test]
+    fn a_standing_that_does_not_lapse_leaves_quietly() {
+        let baseline = with_reviews(vec![reviewer_standing(
+            ReviewState::ChangesRequested,
+            false,
+        )]);
+
+        assert_eq!(details(&baseline, poll(&[])), []);
+    }
+
+    #[test]
+    fn a_gitlab_comment_and_positionless_thread_print_their_reply_targets_only() {
+        let mut next = with_threads(vec![Thread {
+            position: None,
+            ..thread(vec![comment("10")], false)
+        }]);
+        next.comments = vec![Comment {
+            reply_to: Some("d1".to_owned()),
+            ..comment("1")
+        }];
+
+        let (events, _) = diff(&poll(&[]).into(), next);
+
+        let printed: Vec<_> = events
+            .iter()
+            .map(|event| serde_json::to_value(&event.detail).unwrap())
+            .collect();
+        assert_eq!(
+            printed,
+            [
+                json!({
+                    "kind": "comment.created",
+                    "comment_id": "1",
+                    "body": "comment 1",
+                    "reply_to": "d1",
+                }),
+                json!({
+                    "kind": "thread.opened",
+                    "thread_id": THREAD,
+                    "comment_id": "10",
+                    "reply_to": "10",
+                    "body": "comment 10",
+                }),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_reply_turning_a_gitlab_comment_into_a_thread_reports_only_the_reply() {
+        let discussion = |comments| Thread {
+            position: None,
+            reply_to: "d1".to_owned(),
+            ..thread(comments, false)
+        };
+        let mut baseline = poll(&[]);
+        baseline.comments = vec![Comment {
+            reply_to: Some("d1".to_owned()),
+            ..comment("10")
+        }];
+
+        let next = with_threads(vec![discussion(vec![comment("10"), comment("11")])]);
+
+        assert_eq!(
+            details(&baseline, next),
+            [Detail::ThreadReplied {
+                thread_id: THREAD.to_owned(),
+                comment_id: "11".to_owned(),
+                reply_to: "d1".to_owned(),
+                body: "comment 11".to_owned(),
+                review_id: None,
+            }],
+        );
+    }
+
+    #[test]
+    fn a_positionless_thread_survives_the_snapshot_file() {
+        let snapshot = Snapshot::from(with_threads(vec![Thread {
+            position: None,
+            ..thread(vec![comment("10")], false)
+        }]));
+
+        let saved = serde_json::to_string(&snapshot).unwrap();
+
+        let restored: Snapshot = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.poll.threads, snapshot.poll.threads);
     }
 
     #[test]
@@ -721,6 +885,7 @@ mod tests {
                 &Detail::CommentCreated {
                     comment_id: "1".to_owned(),
                     body: "comment 1".to_owned(),
+                    reply_to: None,
                 },
                 &Detail::ThreadResolved {
                     thread_id: THREAD.to_owned(),

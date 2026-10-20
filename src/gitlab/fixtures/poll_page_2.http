@@ -1,0 +1,31 @@
+HTTP/2.0 200 OK
+Cache-Control: max-age=0, private, must-revalidate
+Cf-Cache-Status: DYNAMIC
+Cf-Ray: a4db5ccc5b51a62f-MAN
+Content-Security-Policy: base-uri 'self'; child-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ 'self' https://gitlab.com/assets/ blob: data:; connect-src 'self' https://gitlab.com wss://gitlab.com https://sentry.gitlab.net https://new-sentry.gitlab.net https://customers.gitlab.com https://snowplow.trx.gitlab.net https://sourcegraph.com https://collector.prd-278964.gl-product-analytics.com https://analytics.gitlab.com snowplowprd.trx.gitlab.net; default-src 'self'; font-src 'self'; form-action 'self' https: http:; frame-ancestors 'self'; frame-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/; img-src 'self' data: blob: http: https:; manifest-src 'self'; media-src 'self' data: blob: http: https:; object-src 'none'; report-uri https://new-sentry.gitlab.net/api/4/security/?sentry_key=f5573e26de8f4293b285e556c35dfd6e&sentry_environment=gprd; script-src 'strict-dynamic' 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://www.recaptcha.net/ https://apis.google.com https://*.zuora.com/apps/PublicHostedPageLite.do 'nonce-B58Lq+TUDSrwiw0hPVFj8g=='; style-src 'self' 'unsafe-inline'; worker-src 'self' https://gitlab.com/assets/ blob: data:
+Content-Type: application/json; charset=utf-8
+Date: Tue, 20 Oct 2026 22:12:11 GMT
+Etag: W/"b3f876fb17e370cf7fafea138aa08d16"
+Gitlab-Lb: haproxy-main-05-lb-gprd
+Gitlab-Sv: api-gke-us-east1-c
+Nel: {"max_age": 0}
+Permissions-Policy: interest-cohort=()
+Ratelimit-Limit: 2000
+Ratelimit-Name: throttle_authenticated_api
+Ratelimit-Observed: 5
+Ratelimit-Remaining: 1995
+Ratelimit-Reset: 1792534380
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a4db5ccc5b51a62f-MAN","version":"1"}
+X-Permitted-Cross-Domain-Policies: none
+X-Request-Id: a4db5ccc5b51a62f-MAN
+X-Runtime: 1.497824
+X-Ua-Compatible: IE=edge
+X-Xss-Protection: 1; mode=block
+
+{"data":{"mergeRequest":{"diffHeadSha":"25892092f1db0711fcea689c27db39f6d928d2eb","state":"opened","notes":{"pageInfo":{"hasNextPage":false,"endCursor":"NOTES_2"},"nodes":[{"author":{"bot":false,"id":"gid://gitlab/User/27667902","username":"sylviashen"},"body":"Moved `TestLogin_Sbt_SuccessMessageNamesEachFileAndItsVersion` above the Yarn test's doc comment and gave it a doc comment of its own in 25892092f.","createdAt":"2026-10-20T12:56:40Z","discussion":{"id":"gid://gitlab/Discussion/ddfe22cff03efeaa98ea8474688a16904ae0e973","resolvable":true,"resolved":true,"resolvedBy":{"bot":false,"id":"gid://gitlab/User/27667902","username":"sylviashen"}},"id":"gid://gitlab/DiffNote/4050140331","lastEditedAt":"2026-10-20T12:56:48Z","lastEditedBy":null,"position":{"filePath":"internal/commands/artifactregistry/login/login_test.go","newLine":321,"oldLine":null},"url":"https://gitlab.com/gitlab-org/cli/-/merge_requests/4157#note_4050140331"},{"author":{"bot":false,"id":"gid://gitlab/User/27667902","username":"sylviashen"},"body":"@jdrpereira @arpitgogia \n\n**Can you please review this MR?** :thankyou:","createdAt":"2026-10-20T14:21:17Z","discussion":{"id":"gid://gitlab/Discussion/f929b9bfaf8a77f42b116e18da646ab6e264d7bc","resolvable":true,"resolved":false,"resolvedBy":null},"id":"gid://gitlab/DiscussionNote/4050919082","lastEditedAt":"2026-10-20T14:21:17Z","lastEditedBy":null,"position":null,"url":"https://gitlab.com/gitlab-org/cli/-/merge_requests/4157#note_4050919082"},{"author":{"bot":false,"id":"gid://gitlab/User/5054840","username":"jdrpereira"},"body":"On Windows I think this misses the path most users get. The `sbt.bat` that ships with sbt 2.x (v2.0.8, lines 727-731) passes `-Dsbt.global.base=%LOCALAPPDATA%\\sbt` whenever `LOCALAPPDATA` is set, and `BuildPaths.getGlobalBase` uses that property as is, without the `\\2`. So with the stock 2.x launcher, both 1.x and 2.x builds read `%LOCALAPPDATA%\\sbt\\credentials.sbt`, and we write neither of the files they read but still print the green check. The 1.x launchers don't have this line, so it only shows up once someone installs sbt 2 (scoop already ships 2.0.11).\n\nCould we also write `%LOCALAPPDATA%\\sbt\\credentials.sbt` on Windows? With a 1.x launcher nothing reads it, so it does no harm. The help text and docs would need the same update.","createdAt":"2026-10-20T16:22:47Z","discussion":{"id":"gid://gitlab/Discussion/55bb7312299fb319489710a0e78b15aba5ed3d83","resolvable":true,"resolved":false,"resolvedBy":null},"id":"gid://gitlab/DiffNote/4052025509","lastEditedAt":"2026-10-20T16:22:47Z","lastEditedBy":null,"position":{"filePath":"internal/commands/artifactregistry/login/sbt.go","newLine":138,"oldLine":null},"url":"https://gitlab.com/gitlab-org/cli/-/merge_requests/4157#note_4052025509"},{"author":{"bot":false,"id":"gid://gitlab/User/5054840","username":"jdrpereira"},"body":"\"~/.config/sbt/2 by default\" is not true on Windows, where `LOCALAPPDATA` is basically always set. Maybe keep the flag usage short, like \"Writes credentials.sbt to the sbt 1.x and 2.x global bases.\", and leave the paths to the long help?","createdAt":"2026-10-20T16:22:48Z","discussion":{"id":"gid://gitlab/Discussion/8afff014b3db3f6d57def1974433775f42203479","resolvable":true,"resolved":false,"resolvedBy":null},"id":"gid://gitlab/DiffNote/4052025569","lastEditedAt":"2026-10-20T16:22:48Z","lastEditedBy":null,"position":{"filePath":"internal/commands/artifactregistry/login/login.go","newLine":113,"oldLine":null},"url":"https://gitlab.com/gitlab-org/cli/-/merge_requests/4157#note_4052025569"}]}}}}

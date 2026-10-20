@@ -5,6 +5,8 @@ mod envelope;
 mod exec;
 mod forge;
 mod github;
+mod gitlab;
+mod graphql;
 mod reference;
 mod response;
 mod rule;
@@ -22,14 +24,19 @@ use crate::cli::Args;
 use crate::clock::SystemClock;
 use crate::exec::SystemExec;
 use crate::github::GitHub;
-use crate::run::UsageError;
+use crate::gitlab::GitLab;
+use crate::run::{Backends, UsageError};
 
 fn main() -> ExitCode {
     let args = Args::parse();
     let exec = SystemExec::default();
+    let backends = Backends {
+        github: &GitHub::new(&exec),
+        gitlab: &GitLab::new(&exec),
+    };
     let code = run::run(
         &args,
-        &GitHub::new(&exec),
+        &backends,
         &exec,
         &SystemClock,
         &mut io::stdout().lock(),

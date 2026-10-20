@@ -68,6 +68,8 @@ pub enum ErrorKind {
 pub enum Forge {
     #[serde(rename = "github")]
     GitHub,
+    #[serde(rename = "gitlab")]
+    GitLab,
 }
 
 impl Envelope {

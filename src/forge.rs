@@ -1,9 +1,13 @@
+use std::io;
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
 use crate::envelope::{ErrorKind, Forge};
+use crate::exec::{self, CALL_LIMIT, Exec, Limit, Output};
 use crate::reference::Reference;
+
+const EXIT_NOT_FOUND: i32 = 127;
 
 /// A forge's view of targets. Every call ends by the run's wall-clock `deadline`, if any.
 pub trait Backend {
@@ -20,6 +24,7 @@ pub trait Backend {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
+    pub forge: Forge,
     pub forge_id: String,
     pub host: String,
     /// The forge-reported web URL: the target's identity for the run.
@@ -53,6 +58,71 @@ pub struct Hints {
     /// When the host's spent quota refills.
     pub reset: Option<SystemTime>,
     pub retry_after: Option<Duration>,
+}
+
+/// Runs a forge's CLI, failing where it is missing, can't start, or was killed at a limit.
+pub fn run_cli(
+    exec: &impl Exec,
+    forge: Forge,
+    cli: &str,
+    args: &[&str],
+    deadline: Option<SystemTime>,
+) -> Result<Output, Failure> {
+    let output = match exec.run(cli, args, deadline) {
+        Ok(output) => output,
+        Err(exec::Error::TimedOut(Limit::Deadline)) => return Err(Failure::TimedOut),
+        Err(exec::Error::TimedOut(Limit::CallLimit)) => {
+            let message = format!("{cli} did not answer within {}s", CALL_LIMIT.as_secs());
+            return Err(Failure::transient(forge, &message));
+        }
+        Err(exec::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            let message = format!("{cli} is not installed or not on PATH");
+            return Err(Failure::fatal(forge, ErrorKind::CliMissing, &message));
+        }
+        Err(exec::Error::Io(error)) => {
+            let message = format!("could not run {cli}: {error}");
+            return Err(Failure::transient(forge, &message));
+        }
+    };
+    if output.code == Some(EXIT_NOT_FOUND) {
+        let reason = output.stderr.trim();
+        return Err(Failure::fatal(forge, ErrorKind::CliMissing, reason));
+    }
+    Ok(output)
+}
+
+impl Failure {
+    pub fn fatal(forge: Forge, kind: ErrorKind, message: &str) -> Self {
+        Self::Fatal {
+            forge,
+            kind,
+            message: message.to_owned(),
+        }
+    }
+
+    pub fn transient(forge: Forge, message: &str) -> Self {
+        Self::Transient {
+            forge,
+            hints: Hints::default(),
+            message: message.to_owned(),
+        }
+    }
+
+    /// The failure with `hints` folded in, where it is to be retried.
+    pub fn paced(self, hints: Hints) -> Self {
+        match self {
+            Self::Transient {
+                forge,
+                hints: own,
+                message,
+            } => Self::Transient {
+                forge,
+                hints: own.merge(hints),
+                message,
+            },
+            other => other,
+        }
+    }
 }
 
 impl Hints {
@@ -174,6 +244,9 @@ pub struct Comment {
     pub edited_at: Option<String>,
     pub editor: Option<Account>,
     pub id: String,
+    /// Where a reply goes, for a comment outside any thread the forge still takes replies to.
+    #[serde(default)]
+    pub reply_to: Option<String>,
     pub review_id: Option<String>,
     pub url: String,
 }
@@ -181,9 +254,17 @@ pub struct Comment {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Review {
     pub actor: Option<Account>,
-    pub at: String,
+    /// `None` where the forge doesn't record when the review was given.
+    pub at: Option<String>,
     pub body: String,
+    /// The forge's own id for the review, where it has one.
+    #[serde(default)]
+    pub forge_id: Option<String>,
+    /// Identifies the review across polls.
     pub id: String,
+    /// Whether the review is withdrawn by the forge no longer listing it.
+    #[serde(default)]
+    pub lapses: bool,
     pub state: ReviewState,
     pub url: String,
     pub withdrawn_at: Option<String>,
@@ -203,13 +284,20 @@ pub enum ReviewState {
 pub struct Thread {
     pub comments: Vec<Comment>,
     pub id: String,
-    pub line: Option<u64>,
-    pub path: String,
+    /// `None` for a thread on the target as a whole rather than on a diff.
+    #[serde(flatten)]
+    pub position: Option<Position>,
     /// Where a reply goes, in the form the forge's reply call takes.
     pub reply_to: String,
     pub resolved: bool,
     pub resolved_by: Option<Account>,
     pub url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Position {
+    pub line: Option<u64>,
+    pub path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +329,7 @@ pub fn comment(id: &str) -> Comment {
         edited_at: None,
         editor: None,
         id: id.to_owned(),
+        reply_to: None,
         review_id: None,
         url: format!("https://github.com/o/r/pull/1#issuecomment-{id}"),
     }
