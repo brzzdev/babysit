@@ -1,0 +1,27 @@
+HTTP/2.0 200 OK
+Cache-Control: max-age=0, private, must-revalidate
+Cf-Cache-Status: BYPASS
+Cf-Ray: a4dbb45fee66b0dd-MAN
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json
+Date: Tue, 20 Oct 2026 23:11:57 GMT
+Etag: W/"2a46890acd60360880bf0e3d8b285d97"
+Gitlab-Lb: haproxy-main-17-lb-gprd
+Gitlab-Sv: api-gke-us-east1-c
+Nel: {"max_age": 0}
+Ratelimit-Limit: 2000
+Ratelimit-Name: throttle_authenticated_api
+Ratelimit-Observed: 26
+Ratelimit-Remaining: 1974
+Ratelimit-Reset: 1792537920
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a4dbb45fee66b0dd-MAN","version":"1"}
+X-Request-Id: a4dbb45fee66b0dd-MAN
+X-Runtime: 0.190344
+
+{"id":"ec1adbb9c1edbf4afe2d3ef394ac1b5855a3d0fa","short_id":"ec1adbb9","created_at":"2026-10-19T17:43:35.000-05:00","parent_ids":["e6abf07bec17fe7d42b662d5d868da2b016e6338","5bd495b0c2ff8356f7ff3fc860814ea8b6793ce8"],"title":"Merge branch 'jmc-issue-note-internal' into 'main'","message":"Merge branch 'jmc-issue-note-internal' into 'main'\n\nfeat(issue): add --internal flag to issue and incident note commands\n\nCloses #8584\n\nSee merge request https://gitlab.com/gitlab-org/cli/-/merge_requests/4149\n\nMerged-by: Kai Armstrong \u003ckarmstrong@gitlab.com\u003e\nApproved-by: GitLab Duo \u003cgitlab-duo@gitlab.com\u003e\nApproved-by: Kai Armstrong \u003ckarmstrong@gitlab.com\u003e\nCo-authored-by: Jay McCure \u003cjmccure@gitlab.com\u003e","author_name":"Kai Armstrong","author_email":"karmstrong@gitlab.com","authored_date":"2026-10-19T17:43:35.000-05:00","committer_name":"GitLab","committer_email":"noreply@gitlab.com","committed_date":"2026-10-19T17:43:35.000-05:00","trailers":{},"extended_trailers":{},"web_url":"https://gitlab.com/gitlab-org/cli/-/commit/ec1adbb9c1edbf4afe2d3ef394ac1b5855a3d0fa","status":"success","project_id":34675721,"last_pipeline":{"id":2965322761,"iid":15580,"project_id":34675721,"sha":"ec1adbb9c1edbf4afe2d3ef394ac1b5855a3d0fa","ref":"refs/merge-requests/4149/train","status":"success","source":"merge_request_event","created_at":"2026-10-19T22:43:37.046Z","updated_at":"2026-10-19T23:03:22.093Z","web_url":"https://gitlab.com/gitlab-org/cli/-/pipelines/2965322761"}}

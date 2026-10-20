@@ -184,9 +184,7 @@ impl<'a, E: Exec> Locator<'a, E> {
                 ));
             }
             Prefix::Bang => (Forge::GitLab, TargetKind::ChangeRequest, gitlab),
-            Prefix::Hash if !gitlab.is_empty() => {
-                return Err(usage("names a GitLab issue, which babysit can't watch yet"));
-            }
+            Prefix::Hash if !gitlab.is_empty() => (Forge::GitLab, TargetKind::Issue, gitlab),
             // GitHub numbers pull requests as issues, and resolving one says which it is.
             Prefix::Hash => (Forge::GitHub, TargetKind::Issue, github),
         };
@@ -573,6 +571,23 @@ mod tests {
     }
 
     #[test]
+    fn locates_a_hash_reference_in_a_gitlab_checkout_as_an_issue() {
+        let script = Script::new([
+            remotes(&[("origin", "git@gitlab.com:g/p.git")]),
+            (GLAB_RESOLVED.to_owned(), Ok(Output::exited(1, ""))),
+        ]);
+
+        assert_eq!(
+            locate(&script, &checkout()),
+            Ok(Reference {
+                given: "#12".to_owned(),
+                kind: TargetKind::Issue,
+                ..located_on_gitlab("gitlab.com", "g/p")
+            }),
+        );
+    }
+
+    #[test]
     fn locates_the_base_repository_glab_recorded() {
         let resolved = "remote.origin.glab-resolved head\n\
                         remote.upstream.glab-resolved-base base:g/parent\n";
@@ -661,18 +676,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_reference_naming_the_other_forge() {
-        for (name, url) in [
-            (merge_request(), "git@github.com:o/r.git"),
-            (checkout(), "git@gitlab.com:g/p.git"),
-        ] {
-            let script = Script::new([remotes(&[("origin", url)])]);
+    fn rejects_a_merge_request_reference_in_a_github_checkout() {
+        let script = Script::new([remotes(&[("origin", "git@github.com:o/r.git")])]);
 
-            assert!(
-                matches!(locate(&script, &name), Err(Error::Usage(_))),
-                "{url}",
-            );
-        }
+        assert!(matches!(
+            locate(&script, &merge_request()),
+            Err(Error::Usage(_)),
+        ));
     }
 
     #[test]

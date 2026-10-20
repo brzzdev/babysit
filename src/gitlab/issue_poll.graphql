@@ -1,0 +1,36 @@
+query ($id: IssueID!, $notesAfter: String) {
+  issue(id: $id) {
+    closedAt
+    state
+    notes(first: 100, after: $notesAfter, filter: ONLY_COMMENTS) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        author {
+          ...user
+        }
+        body
+        createdAt
+        discussion {
+          id
+          resolvable
+          resolved
+        }
+        id
+        lastEditedAt
+        lastEditedBy {
+          ...user
+        }
+        url
+      }
+    }
+  }
+}
+
+fragment user on User {
+  bot
+  id
+  username
+}
