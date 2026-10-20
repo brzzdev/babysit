@@ -15,9 +15,15 @@ use crate::response::{self, Response};
 const CLI: &str = "gh";
 const EXIT_AUTH: i32 = 4;
 const EXIT_NOT_FOUND: i32 = 127;
-const POLL_QUERY: &str = include_str!("github/poll.graphql");
+const POLL_QUERY: &str = concat!(
+    include_str!("github/poll.graphql"),
+    include_str!("github/fragments.graphql"),
+);
 const STATUS_NOT_FOUND: u16 = 404;
-const THREAD_COMMENTS_QUERY: &str = include_str!("github/thread_comments.graphql");
+const THREAD_COMMENTS_QUERY: &str = concat!(
+    include_str!("github/thread_comments.graphql"),
+    include_str!("github/fragments.graphql"),
+);
 
 pub struct GitHub<'a, E> {
     exec: &'a E,
@@ -486,7 +492,7 @@ fn thread(node: ThreadFields, comments: Vec<CommentNode>) -> Option<Thread> {
     Some(Thread {
         id: node.id,
         line: node.line,
-        path: Some(node.path),
+        path: node.path,
         reply_to: first.id.clone(),
         resolved: node.is_resolved,
         resolved_by: node.resolved_by.map(Account::from),
@@ -607,6 +613,25 @@ mod tests {
         graphql(POLL_QUERY, &format!("-f id={POLLED_ID}"), stdout)
     }
 
+    /// Reviews over two pages, then the thread's second page of comments answered by `thread_page`.
+    fn paged(thread_page: &str) -> [(String, Result<Output, exec::Error>); 3] {
+        [
+            first_page(include_str!("github/fixtures/poll_page_1.http")),
+            graphql(
+                POLL_QUERY,
+                &format!(
+                    "-f id={POLLED_ID} -F comments=false -f reviewsAfter=REVIEWS_1 -F threads=false"
+                ),
+                include_str!("github/fixtures/poll_page_2.http"),
+            ),
+            graphql(
+                THREAD_COMMENTS_QUERY,
+                &format!("-f id={THREAD_ID} -f commentsAfter=THREAD_1"),
+                thread_page,
+            ),
+        ]
+    }
+
     fn poll_with(
         calls: impl IntoIterator<Item = (String, Result<Output, exec::Error>)>,
     ) -> Result<Poll, Failure> {
@@ -692,7 +717,7 @@ mod tests {
                 ],
                 id: THREAD_ID.to_owned(),
                 line: Some(84),
-                path: Some("src/run.rs".to_owned()),
+                path: "src/run.rs".to_owned(),
                 reply_to: "4328942196".to_owned(),
                 resolved: true,
                 resolved_by: Some(account("brzzdev", false)),
@@ -710,21 +735,7 @@ mod tests {
 
     #[test]
     fn pages_every_connection_within_the_poll() {
-        let poll = poll_with([
-            first_page(include_str!("github/fixtures/poll_page_1.http")),
-            graphql(
-                POLL_QUERY,
-                &format!(
-                    "-f id={POLLED_ID} -F comments=false -f reviewsAfter=REVIEWS_1 -F threads=false"
-                ),
-                include_str!("github/fixtures/poll_page_2.http"),
-            ),
-            graphql(
-                THREAD_COMMENTS_QUERY,
-                &format!("-f id={THREAD_ID} -f commentsAfter=THREAD_1"),
-                include_str!("github/fixtures/thread_comments.http"),
-            ),
-        ]);
+        let poll = poll_with(paged(include_str!("github/fixtures/thread_comments.http")));
 
         assert_eq!(poll.unwrap(), expected());
     }
@@ -733,22 +744,7 @@ mod tests {
     fn a_head_that_moves_between_pages_fails_the_poll() {
         let moved = include_str!("github/fixtures/thread_comments.http").replace(HEAD, "f00d");
 
-        let failure = poll_with([
-            first_page(include_str!("github/fixtures/poll_page_1.http")),
-            graphql(
-                POLL_QUERY,
-                &format!(
-                    "-f id={POLLED_ID} -F comments=false -f reviewsAfter=REVIEWS_1 -F threads=false"
-                ),
-                include_str!("github/fixtures/poll_page_2.http"),
-            ),
-            graphql(
-                THREAD_COMMENTS_QUERY,
-                &format!("-f id={THREAD_ID} -f commentsAfter=THREAD_1"),
-                &moved,
-            ),
-        ])
-        .unwrap_err();
+        let failure = poll_with(paged(&moved)).unwrap_err();
 
         assert_eq!(kind(&failure), ErrorKind::PollFailed);
         assert_eq!(

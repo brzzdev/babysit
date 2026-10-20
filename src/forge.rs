@@ -90,8 +90,8 @@ pub struct Thread {
     pub comments: Vec<Comment>,
     pub id: String,
     pub line: Option<u64>,
-    pub path: Option<String>,
-    /// Where a reply goes: the id of the thread's first comment.
+    pub path: String,
+    /// Where a reply goes, in the form the forge's reply call takes.
     pub reply_to: String,
     pub resolved: bool,
     pub resolved_by: Option<Account>,
@@ -106,12 +106,17 @@ pub struct Account {
 }
 
 #[cfg(test)]
+pub fn octocat() -> Account {
+    Account {
+        bot: None,
+        login: "octocat".to_owned(),
+    }
+}
+
+#[cfg(test)]
 pub fn comment(id: &str) -> Comment {
     Comment {
-        actor: Some(Account {
-            bot: None,
-            login: "octocat".to_owned(),
-        }),
+        actor: Some(octocat()),
         at: "2026-10-20T19:00:00Z".to_owned(),
         body: format!("comment {id}"),
         edited_at: None,

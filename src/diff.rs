@@ -44,8 +44,7 @@ pub enum Detail {
         comment_id: String,
         reply_to: String,
         body: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
+        path: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         line: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,29 +68,32 @@ pub enum Detail {
 /// The events between `baseline` and `poll`, in report order, and the snapshot that follows.
 pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
     let mut events = Vec::new();
-    for comment in &poll.comments {
-        match find_comment(baseline, &comment.id) {
-            None => events.push(comment_created(comment)),
-            Some(seen) if seen.body != comment.body => events.push(comment_edited(comment, None)),
-            Some(_) => {}
+    let threaded = poll.threads.iter().flat_map(|thread| {
+        thread
+            .comments
+            .iter()
+            .map(move |comment| (Some(thread), comment))
+    });
+    for (thread, comment) in poll
+        .comments
+        .iter()
+        .map(|comment| (None, comment))
+        .chain(threaded)
+    {
+        match (find_comment(baseline, &comment.id), thread) {
+            (None, None) => events.push(comment_created(comment)),
+            (None, Some(thread)) => events.push(thread_comment(thread, comment)),
+            (Some(seen), _) if seen.body != comment.body => {
+                events.push(comment_edited(comment, thread));
+            }
+            (Some(_), _) => {}
         }
     }
     for review in &poll.reviews {
         let seen = baseline.reviews.iter().find(|seen| seen.id == review.id);
-        if let Some(event) = review_change(seen, review) {
-            events.push(event);
-        }
+        events.extend(review_change(seen, review));
     }
     for thread in &poll.threads {
-        for comment in &thread.comments {
-            match find_comment(baseline, &comment.id) {
-                None => events.push(thread_comment(thread, comment)),
-                Some(seen) if seen.body != comment.body => {
-                    events.push(comment_edited(comment, Some(thread)));
-                }
-                Some(_) => {}
-            }
-        }
         let was_resolved = baseline
             .threads
             .iter()
@@ -147,36 +149,34 @@ fn comment_edited(comment: &Comment, thread: Option<&Thread>) -> Event {
 /// A review first seen dismissed was submitted and withdrawn in between, so it reports nothing.
 fn review_change(seen: Option<&Review>, review: &Review) -> Option<Event> {
     let withdrawn = review.state == ReviewState::Dismissed;
-    let detail = match seen {
-        None if !withdrawn => Detail::ReviewSubmitted {
-            review_id: review.id.clone(),
-            state: review.state,
-            body: review.body.clone(),
-        },
-        Some(seen) if withdrawn && seen.state != ReviewState::Dismissed => {
-            return Some(Event {
-                detail: Detail::ReviewWithdrawn {
-                    review_id: review.id.clone(),
-                },
-                url: review.url.clone(),
-                at: None,
-                actor: None,
-                subject: review.actor.clone(),
-            });
-        }
-        _ => return None,
-    };
-    Some(Event {
-        detail,
-        url: review.url.clone(),
-        at: Some(review.at.clone()),
-        actor: review.actor.clone(),
-        subject: None,
-    })
+    match seen {
+        None if !withdrawn => Some(Event {
+            detail: Detail::ReviewSubmitted {
+                review_id: review.id.clone(),
+                state: review.state,
+                body: review.body.clone(),
+            },
+            url: review.url.clone(),
+            at: Some(review.at.clone()),
+            actor: review.actor.clone(),
+            subject: None,
+        }),
+        Some(seen) if withdrawn && seen.state != ReviewState::Dismissed => Some(Event {
+            detail: Detail::ReviewWithdrawn {
+                review_id: review.id.clone(),
+            },
+            url: review.url.clone(),
+            at: None,
+            actor: None,
+            subject: review.actor.clone(),
+        }),
+        _ => None,
+    }
 }
 
 fn thread_comment(thread: &Thread, comment: &Comment) -> Event {
-    let detail = if comment.id == thread.reply_to {
+    let opens = thread.comments.first() == Some(comment);
+    let detail = if opens {
         Detail::ThreadOpened {
             thread_id: thread.id.clone(),
             comment_id: comment.id.clone(),
@@ -208,11 +208,13 @@ fn resolution(thread: &Thread) -> Event {
     let thread_id = thread.id.clone();
     let reply_to = thread.reply_to.clone();
     let (detail, actor) = if thread.resolved {
-        let detail = Detail::ThreadResolved {
-            thread_id,
-            reply_to,
-        };
-        (detail, thread.resolved_by.clone())
+        (
+            Detail::ThreadResolved {
+                thread_id,
+                reply_to,
+            },
+            thread.resolved_by.clone(),
+        )
     } else {
         (
             Detail::ThreadUnresolved {
@@ -234,17 +236,10 @@ fn resolution(thread: &Thread) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::{comment, poll};
+    use crate::forge::{comment, octocat, poll};
 
     const THREAD: &str = "PRRT_1";
     const THREAD_URL: &str = "https://github.com/o/r/pull/1#discussion_r10";
-
-    fn octocat() -> Account {
-        Account {
-            bot: None,
-            login: "octocat".to_owned(),
-        }
-    }
 
     fn reviewed(id: &str, review: &str) -> Comment {
         Comment {
@@ -260,7 +255,7 @@ mod tests {
             comments,
             id: THREAD.to_owned(),
             line: Some(84),
-            path: Some("src/run.rs".to_owned()),
+            path: "src/run.rs".to_owned(),
             reply_to: "10".to_owned(),
             resolved,
             resolved_by: resolved.then(octocat),
@@ -332,13 +327,14 @@ mod tests {
 
     #[test]
     fn a_changed_body_is_edited_by_its_editor() {
+        let hubot = Account {
+            bot: Some(false),
+            login: "hubot".to_owned(),
+        };
         let mut next = poll(&["1"]);
         next.comments[0].body = "comment 1, reworded".to_owned();
         next.comments[0].edited_at = Some("2026-10-20T19:30:00Z".to_owned());
-        next.comments[0].editor = Some(Account {
-            bot: Some(false),
-            login: "hubot".to_owned(),
-        });
+        next.comments[0].editor = Some(hubot.clone());
 
         let (events, _) = diff(&poll(&["1"]), next);
 
@@ -353,10 +349,7 @@ mod tests {
                 },
                 url: "https://github.com/o/r/pull/1#issuecomment-1".to_owned(),
                 at: Some("2026-10-20T19:30:00Z".to_owned()),
-                actor: Some(Account {
-                    bot: Some(false),
-                    login: "hubot".to_owned(),
-                }),
+                actor: Some(hubot),
                 subject: None,
             }],
         );
@@ -426,7 +419,7 @@ mod tests {
                         comment_id: "20".to_owned(),
                         reply_to: "20".to_owned(),
                         body: "comment 20".to_owned(),
-                        path: Some("src/run.rs".to_owned()),
+                        path: "src/run.rs".to_owned(),
                         line: None,
                         review_id: Some("500".to_owned()),
                     },
