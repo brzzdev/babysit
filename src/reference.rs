@@ -55,7 +55,7 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     }
     if host.contains(':') {
         return Err(format!(
-            "`{given}` names a port, which gh can't reach a GitHub host on"
+            "`{given}` names a port, and gh can't reach a GitHub host through one"
         ));
     }
     Ok(Reference {
@@ -127,6 +127,13 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_port_on_a_github_url() {
+        let error = parse_name("https://ghe.example.com:8443/o/r/pull/12").unwrap_err();
+
+        assert!(error.contains("names a port"), "{error}");
+    }
+
+    #[test]
     fn parses_a_checkout_reference() {
         assert_eq!(
             parse_name("#12"),
@@ -170,7 +177,6 @@ mod tests {
             "https://github.com:8a/o/r/pull/12",
             "https://github.com:99999/o/r/pull/12",
             "https://github.com:0/o/r/pull/12",
-            "https://ghe.example.com:8443/o/r/pull/12",
             "https://./o/r/pull/12",
             "https://-/o/r/pull/12",
             "https://a..b/o/r/pull/12",

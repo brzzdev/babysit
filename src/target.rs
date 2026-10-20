@@ -9,6 +9,7 @@ use crate::reference::{self, Name, Reference};
 const GITHUB_HOST: &str = "github.com";
 const GITLAB_HOST: &str = "gitlab.com";
 const EXIT_NOT_FOUND: i32 = 127;
+const PASS_THE_URL: &str = "pass the target's URL instead";
 /// The git config key, under a remote, where `gh repo set-default` records its choice.
 const GH_RESOLVED_KEY: &str = "gh-resolved";
 /// The `gh-resolved` value marking the remote `gh repo set-default` chose.
@@ -95,9 +96,7 @@ impl<'a, E: Exec> Locator<'a, E> {
     /// The project `gh pr view` would use: the default `gh repo set-default` chose, else the only
     /// GitHub remote.
     fn locate_in_checkout(&mut self, given: &str, number: u64) -> Result<Reference, Error> {
-        let usage = |reason: &str| {
-            Error::Usage(format!("`{given}` {reason}; pass the target's URL instead"))
-        };
+        let usage = |reason: &str| Error::Usage(format!("`{given}` {reason}; {PASS_THE_URL}"));
         let Some(remotes) = self.call("git", &["remote", "-v"])? else {
             return Err(Error::Fatal {
                 kind: ErrorKind::CliMissing,
@@ -117,14 +116,17 @@ impl<'a, E: Exec> Locator<'a, E> {
                         kind: ErrorKind::Auth,
                         message: format!(
                             "both gh and glab hold a token for {}, so its forge is unknown; \
-                             pass the target's URL instead",
+                             {PASS_THE_URL}",
                             remote.host,
                         ),
                     });
                 }
                 Claim::GitHub => github.push(remote),
                 Claim::GitLab => gitlab = true,
-                Claim::Neither => unclaimed.push(remote.host),
+                Claim::Neither if !unclaimed.contains(&remote.host) => {
+                    unclaimed.push(remote.host);
+                }
+                Claim::Neither => {}
             }
         }
         if gitlab {
@@ -157,10 +159,9 @@ impl<'a, E: Exec> Locator<'a, E> {
                     return Err(usage("needs a checkout with a GitHub remote"));
                 }
                 [] => {
-                    unclaimed.dedup();
-                    return Err(usage(&format!(
-                        "needs a checkout with a GitHub remote, and neither gh nor glab holds a \
-                         token for {}",
+                    return Err(Error::Usage(format!(
+                        "`{given}` needs a checkout with a GitHub remote, and neither gh nor glab \
+                         holds a token for {}; log in with `gh auth login --hostname <host>`",
                         unclaimed.join(", "),
                     )));
                 }
@@ -232,26 +233,24 @@ fn fetch_remotes(listing: &str) -> impl Iterator<Item = Remote> {
     })
 }
 
-/// Splits a remote URL, in URL or scp-like form, into its web host and project path. Only a web
-/// URL keeps its port, since an SSH port isn't part of the forge's host.
+/// Splits a remote URL, in URL or scp-like form, into its host and project path. The port is
+/// dropped, as `gh` drops it, since `gh` can't reach a host on one.
 fn split_remote_url(url: &str) -> Option<(String, String)> {
-    let (authority, path, keeps_port) = if let Some((scheme, rest)) = url.split_once("://") {
-        let (authority, path) = rest.split_once('/')?;
-        (authority, path, matches!(scheme, "http" | "https"))
+    let (authority, path) = if let Some((_, rest)) = url.split_once("://") {
+        rest.split_once('/')?
     } else {
         let (authority, path) = url.split_once(':')?;
         if authority.contains('/') {
             return None;
         }
-        (authority, path, false)
+        (authority, path)
     };
     let host_and_port = authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host);
-    let host = match (keeps_port, host_and_port.split_once(':')) {
-        (false, Some((host, _))) => host,
-        _ => host_and_port,
-    };
+    let host = host_and_port
+        .split_once(':')
+        .map_or(host_and_port, |(host, _)| host);
     let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     if !reference::is_authority(host) || path.is_empty() {
@@ -370,7 +369,7 @@ mod tests {
         let script = Script::new(
             [remotes(&[
                 ("mirror", "https://git.example.org/o/r.git"),
-                ("origin", "https://ghe.example.com/o/r.git"),
+                ("origin", "https://ghe.example.com:8443/o/r.git"),
             ])]
             .into_iter()
             .chain(tokens("git.example.org", Claim::Neither))
@@ -476,17 +475,25 @@ mod tests {
     #[test]
     fn names_unclaimed_remote_hosts_when_no_github_remote_is_left() {
         let script = Script::new(
-            [remotes(&[("origin", "https://ghe.example.com/o/r.git")])]
-                .into_iter()
-                .chain(tokens("ghe.example.com", Claim::Neither))
-                .chain([(GH_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
+            [remotes(&[
+                ("a", "https://ghe.example.com/o/r.git"),
+                ("b", "https://gitea.example.org/o/r.git"),
+                ("c", "git@ghe.example.com:o/r.git"),
+            ])]
+            .into_iter()
+            .chain(tokens("ghe.example.com", Claim::Neither))
+            .chain(tokens("gitea.example.org", Claim::Neither))
+            .chain([(GH_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
         );
 
         let Err(Error::Usage(message)) = locate(&script, &checkout()) else {
             panic!("expected a usage error");
         };
 
-        assert!(message.contains("ghe.example.com"), "{message}");
+        assert!(
+            message.contains("token for ghe.example.com, gitea.example.org;"),
+            "{message}",
+        );
     }
 
     #[test]

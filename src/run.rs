@@ -505,7 +505,8 @@ mod tests {
                 "git remote -v".to_owned(),
                 Ok(Output::exited(
                     0,
-                    "origin\thttps://forge.example.com/o/r.git (fetch)\n",
+                    "origin\thttps://forge.example.com/o/r.git (fetch)\n\
+                     origin\thttps://forge.example.com/o/r.git (push)\n",
                 )),
             ),
             (
@@ -530,6 +531,12 @@ mod tests {
         assert_eq!(envelope["error"]["kind"], "auth");
         assert_eq!(envelope["error"]["forge"], Value::Null);
         assert_eq!(envelope["error"]["target"], "#1");
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("forge.example.com"),
+        );
         assert!(!sandbox.snapshot().exists());
     }
 
