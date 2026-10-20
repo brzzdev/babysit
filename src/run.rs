@@ -20,7 +20,19 @@ pub fn run(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<u8, UsageError> {
-    let deadline = args.timeout.map(|timeout| clock.now() + timeout);
+    let now = clock.now();
+    let reach = |flag: &str, duration| {
+        now.checked_add(duration).ok_or_else(|| {
+            UsageError(format!(
+                "{flag} reaches past the latest time the clock can hold"
+            ))
+        })
+    };
+    reach("--interval", args.interval)?;
+    let deadline = args
+        .timeout
+        .map(|timeout| reach("--timeout", timeout))
+        .transpose()?;
     // `--timeout 0` polls once, so its already-passed deadline must not kill that poll.
     let call_deadline = args
         .timeout
@@ -448,6 +460,21 @@ mod tests {
             envelope["error"],
             json!({ "kind": "auth", "forge": "github", "target": URL, "message": "gh auth login" }),
         );
+    }
+
+    #[test]
+    fn a_duration_past_the_clocks_reach_is_a_usage_error_before_any_write() {
+        let sandbox = Sandbox::new("overflow");
+        let mut too_long = args(&sandbox.snapshot(), Some(u64::MAX));
+
+        let (timeout, _) = watch_into(&too_long, vec![], &mut Vec::new());
+        too_long.timeout = None;
+        too_long.interval = Duration::from_secs(u64::MAX);
+        let (interval, _) = watch_into(&too_long, vec![], &mut Vec::new());
+
+        assert!(timeout.is_err());
+        assert!(interval.is_err());
+        assert_eq!(fs::read_dir(&sandbox.dir).unwrap().count(), 0);
     }
 
     #[test]

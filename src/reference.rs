@@ -38,16 +38,26 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     })
 }
 
-/// A hostname, optionally followed by `:` and a decimal port from 1 to 65535.
+/// Dot-separated labels of letters, digits and inner hyphens, then an optional `:` and a decimal
+/// port from 1 to 65535.
 fn is_authority(authority: &str) -> bool {
-    let (host, port) = authority.split_once(':').unwrap_or((authority, "1"));
-    let host_is_valid = !host.is_empty()
-        && host
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.');
-    let port_is_valid = port.bytes().all(|byte| byte.is_ascii_digit())
-        && port.parse::<u16>().is_ok_and(|port| port != 0);
-    host_is_valid && port_is_valid
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    let label_is_valid = |label: &str| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    };
+    let port_is_valid = |port: &str| {
+        port.bytes().all(|byte| byte.is_ascii_digit())
+            && port.parse::<u16>().is_ok_and(|port| port != 0)
+    };
+    host.split('.').all(label_is_valid) && port.is_none_or(port_is_valid)
 }
 
 #[cfg(test)]
@@ -90,6 +100,9 @@ mod tests {
             "https://github.com:8a/o/r/pull/12",
             "https://github.com:99999/o/r/pull/12",
             "https://github.com:0/o/r/pull/12",
+            "https://./o/r/pull/12",
+            "https://-/o/r/pull/12",
+            "https://a..b/o/r/pull/12",
         ] {
             assert!(parse(given).is_err(), "{given}");
         }
