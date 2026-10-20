@@ -82,12 +82,12 @@ impl<'a, E: Exec> Locator<'a, E> {
             if !url_host(&target.url).is_some_and(|host| host.eq_ignore_ascii_case(&reference.host))
             {
                 let message = format!(
-                    "`{given}` redirects to {}, on another host, and babysit never follows a \
+                    "`{given}` resolves to {}, on another host, and babysit never takes a \
                      redirect across hosts; pass that URL instead",
                     target.url,
                 );
                 let error = Error::Fatal {
-                    forge: None,
+                    forge: Some(Forge::GitHub),
                     kind: ErrorKind::TargetNotFound,
                     message,
                 };

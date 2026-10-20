@@ -61,9 +61,10 @@ pub fn run(
     let mut tracked: Vec<_> = targets
         .into_iter()
         .map(|target| Tracked {
+            evaluated: false,
+            polled: None,
             stored: target::baseline(&mut file, &target),
             target,
-            polled: None,
         })
         .collect();
     let mut envelope = loop {
@@ -90,8 +91,10 @@ pub fn run(
     if envelope.write(stdout).is_err() {
         return Ok(EXIT_ERROR);
     }
+    let woke = envelope.outcome == Outcome::Woke;
     let entries: Vec<_> = tracked
         .into_iter()
+        .filter(|tracked| tracked.evaluated || !woke)
         .filter_map(|tracked| Some(entry(&tracked.target, tracked.polled?)))
         .collect();
     if !entries.is_empty()
@@ -105,13 +108,14 @@ pub fn run(
 
 /// A target through the run: the baseline the file held for it, then its last evaluated poll.
 struct Tracked {
+    /// Whether the latest round polled it successfully.
+    evaluated: bool,
     polled: Option<Snapshot>,
     stored: Option<Snapshot>,
     target: Target,
 }
 
-/// Polls each target once, in order, saving first baselines before the round returns. Returns the envelope the
-/// round ends the run with: a wake, else its first failure.
+/// Polls each target once, saving a first baseline at once; returns a wake, else the round's failure.
 fn poll_round(
     tracked: &mut [Tracked],
     backend: &impl Backend,
@@ -121,13 +125,15 @@ fn poll_round(
 ) -> io::Result<Option<Envelope>> {
     let mut events = Vec::new();
     let mut failed = None;
-    let mut baselines = Vec::new();
     for tracked in tracked.iter_mut() {
+        tracked.evaluated = false;
+    }
+    for tracked in tracked {
         let poll = match backend.poll(&tracked.target, call_deadline) {
             Ok(poll) => poll,
             // Every later call would be killed at once by the passed deadline.
             Err(Failure::TimedOut) => {
-                failed.get_or_insert(Envelope::ended(Outcome::TimedOut));
+                failed = Some(Envelope::ended(Outcome::TimedOut));
                 break;
             }
             Err(failure) => {
@@ -135,8 +141,9 @@ fn poll_round(
                 continue;
             }
         };
+        tracked.evaluated = true;
         let Some(baseline) = tracked.polled.as_ref().or(tracked.stored.as_ref()) else {
-            baselines.push(entry(&tracked.target, poll.clone()));
+            file.save([entry(&tracked.target, poll.clone())])?;
             tracked.polled = Some(poll);
             continue;
         };
@@ -151,9 +158,6 @@ fn poll_round(
             target: tracked.target.url.clone(),
             observed_at: observed_at.clone(),
         }));
-    }
-    if !baselines.is_empty() {
-        file.save(baselines)?;
     }
     if events.is_empty() {
         return Ok(failed);
@@ -746,13 +750,14 @@ mod tests {
     #[test]
     fn a_failed_poll_leaves_its_entry_while_another_target_wakes_and_saves() {
         let sandbox = Sandbox::new("partial");
-        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1", "2"]);
         seed(&sandbox.snapshot(), OTHER, "PR_2", &["1"]);
         let before = saved(&sandbox.snapshot());
 
         let (code, envelope) = watch(
             &args(&[URL, OTHER], &sandbox.snapshot(), None),
             vec![
+                // A deletion fires nothing but changes the snapshot.
                 returns(URL, poll(&["1"])),
                 returns(OTHER, poll(&["1"])),
                 fails(URL, auth_failure()),
@@ -791,6 +796,19 @@ mod tests {
             saved(&sandbox.snapshot())["targets"][OTHER]["snapshot"],
             json!(poll(&["5"]))
         );
+    }
+
+    #[test]
+    fn a_deadline_killing_a_later_poll_times_out_over_an_earlier_failure() {
+        let sandbox = Sandbox::new("timeout-over-error");
+
+        let (code, envelope) = watch(
+            &args(&[URL, OTHER], &sandbox.snapshot(), Some(600)),
+            vec![fails(URL, auth_failure()), fails(OTHER, Failure::TimedOut)],
+        );
+
+        assert_eq!(code, 3);
+        assert_eq!(envelope, timed_out(&[]));
     }
 
     #[test]
