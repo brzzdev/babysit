@@ -298,7 +298,7 @@ mod tests {
             "head": "abc123",
             "colour": null,
             "merge": null,
-            "unresolved_threads": null,
+            "unresolved_threads": 0,
         })
     }
 
@@ -330,11 +330,16 @@ mod tests {
                                 "actor": { "bot": null, "login": "octocat" },
                                 "at": "2026-10-20T19:00:00Z",
                                 "body": "comment 1",
+                                "edited_at": null,
+                                "editor": null,
                                 "id": "1",
+                                "review": null,
                                 "url": format!("{URL}#issuecomment-1"),
                             }],
                             "head": "abc123",
+                            "reviews": [],
                             "state": "open",
+                            "threads": [],
                         },
                     },
                 },

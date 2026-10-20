@@ -1,0 +1,26 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Tue, 20 Oct 2026 19:13:13 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Oauth-Scopes: repo
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Edge-Region: uksouth
+X-Github-Media-Type: github.v4; format=json
+X-Github-Request-Id: CBD6:2BB994:23947C:344EC8:6AD7BD48
+X-Oauth-Client-Id: 178c6fc778ccc68e1d6a
+X-Oauth-Scopes: delete_repo, gist, read:org, repo, workflow
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4962
+X-Ratelimit-Reset: 1792526402
+X-Ratelimit-Resource: graphql
+X-Ratelimit-Used: 38
+X-Xss-Protection: 0
+
+{"data":{"node":{"state":"MERGED","headRefOid":"dfd1945e66eb0008cad921a1230fd2c533598845","comments":{"pageInfo":{"hasNextPage":false,"endCursor":"END"},"nodes":[{"author":{"__typename":"User","login":"brzzdev"},"body":"Paul's Codex:\n\n> Review verdict: Approved\n","createdAt":"2026-10-20T19:07:43Z","editor":{"__typename":"User","login":"brzzdev"},"lastEditedAt":"2026-10-20T19:20:00Z","databaseId":6298972911,"url":"https://github.com/brzzdev/babysit/pull/30#issuecomment-6298972911"}]},"reviews":{"pageInfo":{"hasNextPage":true,"endCursor":"REVIEWS_1"},"nodes":[{"databaseId":5590010588,"author":{"__typename":"User","login":"brzzdev"},"state":"COMMENTED","body":"","submittedAt":"2026-10-20T18:52:30Z","url":"https://github.com/brzzdev/babysit/pull/30#pullrequestreview-5590010588"}]},"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":"END"},"nodes":[{"id":"PRRT_kwDOVQ0d8c6ueY8r","isResolved":true,"resolvedBy":{"__typename":"User","login":"brzzdev"},"path":"src/run.rs","line":84,"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"THREAD_1"},"nodes":[{"author":{"__typename":"User","login":"brzzdev"},"body":"Reject durations that overflow SystemTime.","createdAt":"2026-10-20T18:52:30Z","editor":null,"lastEditedAt":null,"databaseId":4328942196,"url":"https://github.com/brzzdev/babysit/pull/30#discussion_r4328942196","pullRequestReview":{"databaseId":5590010588,"state":"COMMENTED"}}]}}]}}}}

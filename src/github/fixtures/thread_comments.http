@@ -1,0 +1,26 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Tue, 20 Oct 2026 19:13:13 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Oauth-Scopes: repo
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Edge-Region: uksouth
+X-Github-Media-Type: github.v4; format=json
+X-Github-Request-Id: CBD6:2BB994:23947C:344EC8:6AD7BD48
+X-Oauth-Client-Id: 178c6fc778ccc68e1d6a
+X-Oauth-Scopes: delete_repo, gist, read:org, repo, workflow
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4962
+X-Ratelimit-Reset: 1792526402
+X-Ratelimit-Resource: graphql
+X-Ratelimit-Used: 38
+X-Xss-Protection: 0
+
+{"data":{"node":{"pullRequest":{"headRefOid":"dfd1945e66eb0008cad921a1230fd2c533598845"},"comments":{"pageInfo":{"hasNextPage":false,"endCursor":"END"},"nodes":[{"author":{"__typename":"Bot","login":"gitar-bot"},"body":"Fixed in 0b1ff04.","createdAt":"2026-10-20T18:58:01Z","editor":null,"lastEditedAt":null,"databaseId":4329001432,"url":"https://github.com/brzzdev/babysit/pull/30#discussion_r4329001432","pullRequestReview":{"databaseId":5590011214,"state":"COMMENTED"}}]}}}}

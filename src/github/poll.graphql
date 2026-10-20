@@ -1,19 +1,98 @@
-query ($id: ID!) {
+query (
+  $id: ID!
+  $comments: Boolean = true
+  $commentsAfter: String
+  $reviews: Boolean = true
+  $reviewsAfter: String
+  $threads: Boolean = true
+  $threadsAfter: String
+) {
   node(id: $id) {
     ... on PullRequest {
       state
       headRefOid
-      comments(last: 100) {
+      comments(first: 100, after: $commentsAfter) @include(if: $comments) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          ...comment
+        }
+      }
+      reviews(first: 100, after: $reviewsAfter) @include(if: $reviews) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           databaseId
           author {
-            login
+            ...author
           }
+          state
           body
-          createdAt
+          submittedAt
           url
         }
       }
+      reviewThreads(first: 100, after: $threadsAfter) @include(if: $threads) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          isResolved
+          resolvedBy {
+            ...author
+          }
+          path
+          line
+          comments(first: 100) {
+            ...threadComments
+          }
+        }
+      }
+    }
+  }
+}
+
+fragment author on Actor {
+  __typename
+  login
+}
+
+fragment comment on Comment {
+  author {
+    ...author
+  }
+  body
+  createdAt
+  editor {
+    ...author
+  }
+  lastEditedAt
+  ... on IssueComment {
+    databaseId
+    url
+  }
+  ... on PullRequestReviewComment {
+    databaseId
+    url
+  }
+}
+
+fragment threadComments on PullRequestReviewCommentConnection {
+  pageInfo {
+    hasNextPage
+    endCursor
+  }
+  nodes {
+    ...comment
+    pullRequestReview {
+      databaseId
+      state
     }
   }
 }

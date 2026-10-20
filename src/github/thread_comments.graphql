@@ -1,0 +1,41 @@
+query ($id: ID!, $commentsAfter: String) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      pullRequest {
+        headRefOid
+      }
+      comments(first: 100, after: $commentsAfter) {
+        ...threadComments
+      }
+    }
+  }
+}
+
+fragment author on Actor {
+  __typename
+  login
+}
+
+fragment threadComments on PullRequestReviewCommentConnection {
+  pageInfo {
+    hasNextPage
+    endCursor
+  }
+  nodes {
+    author {
+      ...author
+    }
+    body
+    createdAt
+    databaseId
+    editor {
+      ...author
+    }
+    lastEditedAt
+    pullRequestReview {
+      databaseId
+      state
+    }
+    url
+  }
+}
