@@ -118,6 +118,11 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
         )?;
+        let secondary = serde_json::from_str::<RestError>(&response.body)
+            .is_ok_and(|error| names_secondary_limit(&error.message));
+        if secondary {
+            return Err(rate_limit(hints));
+        }
         let pull: PullRequest = decode(&response.body).map_err(|failure| paced(failure, hints))?;
         let target = Target {
             forge_id: pull.node_id,
@@ -972,6 +977,20 @@ mod tests {
         let resolved = resolve_with(Ok(gh(0, include_str!("github/fixtures/resolve.http"), "")));
 
         assert_eq!(resolved.unwrap(), target());
+    }
+
+    #[test]
+    fn a_secondary_rate_limit_on_a_200_resolve_is_a_rate_limit() {
+        let ok = include_str!("github/fixtures/poll_secondary_rate_limit.http")
+            .replace("HTTP/2.0 403 Forbidden", "HTTP/2.0 200 OK");
+        let exec = Script::new([(RESOLVE.to_owned(), Ok(gh(0, &ok, "")))]);
+
+        let failure = GitHub::new(&exec).resolve(&reference(), None).unwrap_err();
+
+        assert!(matches!(
+            failure,
+            Failure::RateLimited { hints, .. } if hints.retry_after == Some(Duration::from_secs(120))
+        ));
     }
 
     #[test]
