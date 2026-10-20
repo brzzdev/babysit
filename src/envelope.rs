@@ -1,0 +1,132 @@
+use std::io::{self, Write};
+
+use serde::Serialize;
+
+use crate::diff;
+use crate::forge::{Failure, Snapshot, TargetState};
+
+pub const EXIT_ERROR: u8 = 1;
+const EXIT_TIMED_OUT: u8 = 3;
+const EXIT_WOKE: u8 = 0;
+
+/// What a run prints on stdout once it ends past validation.
+#[derive(Debug, Serialize)]
+pub struct Envelope {
+    pub outcome: Outcome,
+    pub events: Vec<Event>,
+    pub targets: Vec<Summary>,
+    pub error: Option<Error>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    Error,
+    TimedOut,
+    Woke,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Event {
+    #[serde(flatten)]
+    pub seen: diff::Event,
+    pub target: String,
+    pub observed_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Summary {
+    pub target: String,
+    pub state: TargetState,
+    pub head: String,
+    pub colour: Option<String>,
+    pub merge: Option<String>,
+    pub unresolved_threads: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub forge: Option<Forge>,
+    /// The target's URL, or the name as given before it resolved.
+    pub target: Option<String>,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+    Auth,
+    CliMissing,
+    LockHeld,
+    PollFailed,
+    SnapshotIo,
+    TargetNotFound,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum Forge {
+    #[serde(rename = "github")]
+    GitHub,
+}
+
+impl Envelope {
+    pub fn ended(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            events: Vec::new(),
+            targets: Vec::new(),
+            error: None,
+        }
+    }
+
+    pub fn failed(error: Error) -> Self {
+        Self {
+            error: Some(error),
+            ..Self::ended(Outcome::Error)
+        }
+    }
+
+    pub fn from_failure(failure: Failure, target: &str) -> Self {
+        match failure {
+            Failure::Fatal {
+                forge,
+                kind,
+                message,
+            } => Self::failed(Error {
+                kind,
+                forge: Some(forge),
+                target: Some(target.to_owned()),
+                message,
+            }),
+            Failure::TimedOut => Self::ended(Outcome::TimedOut),
+        }
+    }
+
+    pub fn exit_code(&self) -> u8 {
+        match self.outcome {
+            Outcome::Error => EXIT_ERROR,
+            Outcome::TimedOut => EXIT_TIMED_OUT,
+            Outcome::Woke => EXIT_WOKE,
+        }
+    }
+
+    pub fn write(&self, out: &mut impl Write) -> io::Result<()> {
+        serde_json::to_writer_pretty(&mut *out, self)?;
+        writeln!(out)?;
+        out.flush()
+    }
+}
+
+impl Summary {
+    pub fn new(target: &str, snapshot: &Snapshot) -> Self {
+        Self {
+            target: target.to_owned(),
+            state: snapshot.state,
+            head: snapshot.head.clone(),
+            colour: None,
+            merge: None,
+            unresolved_threads: None,
+        }
+    }
+}
