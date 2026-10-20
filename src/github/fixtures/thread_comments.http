@@ -23,4 +23,4 @@ X-Ratelimit-Resource: graphql
 X-Ratelimit-Used: 38
 X-Xss-Protection: 0
 
-{"data":{"node":{"pullRequest":{"headRefOid":"dfd1945e66eb0008cad921a1230fd2c533598845"},"comments":{"pageInfo":{"hasNextPage":false,"endCursor":"END"},"nodes":[{"author":{"__typename":"Bot","login":"gitar-bot"},"body":"Fixed in 0b1ff04.","createdAt":"2026-10-20T18:58:01Z","editor":null,"lastEditedAt":null,"databaseId":4329001432,"url":"https://github.com/brzzdev/babysit/pull/30#discussion_r4329001432","pullRequestReview":{"databaseId":5590011214,"state":"COMMENTED"}}]}}}}
+{"data":{"node":{"pullRequest":{"headRefOid":"dfd1945e66eb0008cad921a1230fd2c533598845"},"comments":{"pageInfo":{"hasNextPage":false,"endCursor":"END"},"nodes":[{"author":{"__typename":"Bot","login":"gitar-bot","id":"BOT_kgDOgitar"},"body":"Fixed in 0b1ff04.","createdAt":"2026-10-20T18:58:01Z","editor":null,"lastEditedAt":null,"databaseId":4329001432,"url":"https://github.com/brzzdev/babysit/pull/30#discussion_r4329001432","pullRequestReview":{"databaseId":5590011214,"state":"COMMENTED"}}]}}}}

@@ -13,6 +13,8 @@ pub trait Backend {
         deadline: Option<SystemTime>,
     ) -> Result<Target, Failure>;
     fn poll(&self, target: &Target, deadline: Option<SystemTime>) -> Result<Poll, Failure>;
+    /// The account id of whoever the forge's CLI is signed in as on `host`.
+    fn viewer(&self, host: &str, deadline: Option<SystemTime>) -> Result<String, Failure>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,6 +106,10 @@ pub struct Thread {
 pub struct Account {
     /// `None` where the forge doesn't say.
     pub bot: Option<bool>,
+    /// The forge's permanent account id; snapshots leave it out, since events come only from
+    /// fresh polls.
+    #[serde(skip)]
+    pub id: Option<String>,
     pub login: String,
 }
 
@@ -111,6 +117,7 @@ pub struct Account {
 pub fn octocat() -> Account {
     Account {
         bot: None,
+        id: None,
         login: "octocat".to_owned(),
     }
 }

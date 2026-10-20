@@ -64,6 +64,22 @@ pub enum Detail {
     ThreadUnresolved { thread_id: String, reply_to: String },
 }
 
+impl Detail {
+    /// The kind as printed, matching the `serde` renames above.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::CommentCreated { .. } => "comment.created",
+            Self::CommentEdited { .. } => "comment.edited",
+            Self::ReviewSubmitted { .. } => "review.submitted",
+            Self::ReviewWithdrawn { .. } => "review.withdrawn",
+            Self::ThreadOpened { .. } => "thread.opened",
+            Self::ThreadReplied { .. } => "thread.replied",
+            Self::ThreadResolved { .. } => "thread.resolved",
+            Self::ThreadUnresolved { .. } => "thread.unresolved",
+        }
+    }
+}
+
 /// The events between `baseline` and `poll`, in report order, and the snapshot that follows.
 pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
     let mut events = Vec::new();
@@ -330,6 +346,7 @@ mod tests {
     fn a_changed_body_is_edited_by_its_editor() {
         let hubot = Account {
             bot: Some(false),
+            id: None,
             login: "hubot".to_owned(),
         };
         let mut next = poll(&["1"]);
@@ -475,6 +492,7 @@ mod tests {
         let baseline = with_reviews(vec![review(ReviewState::Approved)]);
         let hubot = Account {
             bot: Some(false),
+            id: None,
             login: "hubot".to_owned(),
         };
         let dismissed = Review {

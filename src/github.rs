@@ -25,6 +25,7 @@ const THREAD_COMMENTS_QUERY: &str = concat!(
     include_str!("github/thread_comments.graphql"),
     include_str!("github/fragments.graphql"),
 );
+const VIEWER_QUERY: &str = include_str!("github/viewer.graphql");
 
 pub struct GitHub<'a, E> {
     exec: &'a E,
@@ -147,6 +148,12 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             threads: polled_threads,
         })
     }
+
+    fn viewer(&self, host: &str, deadline: Option<SystemTime>) -> Result<String, Failure> {
+        let data: Option<ViewerData> = self.graphql(host, VIEWER_QUERY, &[], deadline)?;
+        data.map(|data| data.viewer.id)
+            .ok_or_else(|| fatal(ErrorKind::PollFailed, "gh returned no viewer"))
+    }
 }
 
 impl<E: Exec> GitHub<'_, E> {
@@ -185,16 +192,25 @@ impl<E: Exec> GitHub<'_, E> {
         node_kind: &str,
         deadline: Option<SystemTime>,
     ) -> Result<T, Failure> {
+        let data: Option<Data<T>> = self.graphql(&target.host, query, variables, deadline)?;
+        data.and_then(|data| data.node).ok_or_else(|| {
+            fatal(
+                ErrorKind::PollFailed,
+                &format!("{} returned no {node_kind}", target.url),
+            )
+        })
+    }
+
+    /// The reply's `data`, failing the call on any GraphQL `errors` entry.
+    fn graphql<T: DeserializeOwned>(
+        &self,
+        host: &str,
+        query: &str,
+        variables: &[(&str, String)],
+        deadline: Option<SystemTime>,
+    ) -> Result<Option<T>, Failure> {
         let query = format!("query={query}");
-        let mut args = vec![
-            "api",
-            "-i",
-            "--hostname",
-            &target.host,
-            "graphql",
-            "-f",
-            &query,
-        ];
+        let mut args = vec!["api", "-i", "--hostname", host, "graphql", "-f", &query];
         for (flag, variable) in variables {
             args.extend([*flag, variable.as_str()]);
         }
@@ -203,12 +219,7 @@ impl<E: Exec> GitHub<'_, E> {
         if let Some(error) = reply.errors.first() {
             return Err(fatal(ErrorKind::PollFailed, &error.message));
         }
-        reply.data.and_then(|data| data.node).ok_or_else(|| {
-            fatal(
-                ErrorKind::PollFailed,
-                &format!("{} returned no {node_kind}", target.url),
-            )
-        })
+        Ok(reply.data)
     }
 }
 
@@ -291,7 +302,7 @@ struct PullRequest {
 
 #[derive(Deserialize)]
 struct Reply<T> {
-    data: Option<Data<T>>,
+    data: Option<T>,
     #[serde(default)]
     errors: Vec<GraphQlError>,
 }
@@ -304,6 +315,16 @@ struct GraphQlError {
 #[derive(Deserialize)]
 struct Data<T> {
     node: Option<T>,
+}
+
+#[derive(Deserialize)]
+struct ViewerData {
+    viewer: Viewer,
+}
+
+#[derive(Deserialize)]
+struct Viewer {
+    id: String,
 }
 
 /// A connection skipped with `@include(if: false)` is absent.
@@ -416,6 +437,7 @@ struct ThreadFields {
 struct Author {
     #[serde(rename = "__typename")]
     typename: Typename,
+    id: Option<String>,
     login: String,
 }
 
@@ -442,14 +464,17 @@ impl From<Author> for Account {
         match author.typename {
             Typename::Bot => Self {
                 bot: Some(true),
+                id: author.id,
                 login: format!("{}{BOT_SUFFIX}", author.login),
             },
             Typename::User => Self {
                 bot: Some(author.login.ends_with(BOT_SUFFIX)),
+                id: author.id,
                 login: author.login,
             },
             Typename::Other => Self {
                 bot: None,
+                id: author.id,
                 login: author.login,
             },
         }
@@ -673,11 +698,23 @@ mod tests {
         }
     }
 
-    fn account(login: &str, bot: bool) -> Account {
+    const BRZZDEV_ID: &str = "MDQ6VXNlcjE1Njg3NDUw";
+    const GITAR_ID: &str = "BOT_kgDOgitar";
+
+    fn account(login: &str, bot: bool, id: &str) -> Account {
         Account {
             bot: Some(bot),
+            id: Some(id.to_owned()),
             login: login.to_owned(),
         }
+    }
+
+    fn brzzdev() -> Account {
+        account("brzzdev", false, BRZZDEV_ID)
+    }
+
+    fn gitar() -> Account {
+        account("gitar-bot[bot]", true, GITAR_ID)
     }
 
     fn expected() -> Poll {
@@ -703,11 +740,11 @@ mod tests {
         };
         Poll {
             comments: vec![Comment {
-                actor: Some(account("brzzdev", false)),
+                actor: Some(brzzdev()),
                 at: "2026-10-20T19:07:43Z".to_owned(),
                 body: "Paul's Codex:\n\n> Review verdict: Approved\n".to_owned(),
                 edited_at: Some("2026-10-20T19:20:00Z".to_owned()),
-                editor: Some(account("brzzdev", false)),
+                editor: Some(brzzdev()),
                 id: "6298972911".to_owned(),
                 review_id: None,
                 url: "https://github.com/brzzdev/babysit/pull/30#issuecomment-6298972911"
@@ -715,16 +752,8 @@ mod tests {
             }],
             head: HEAD.to_owned(),
             reviews: vec![
-                review(
-                    "5590010588",
-                    "2026-10-20T18:52:30Z",
-                    Some(account("brzzdev", false)),
-                ),
-                review(
-                    "5590011214",
-                    "2026-10-20T18:52:33Z",
-                    Some(account("gitar-bot[bot]", true)),
-                ),
+                review("5590010588", "2026-10-20T18:52:30Z", Some(brzzdev())),
+                review("5590011214", "2026-10-20T18:52:33Z", Some(gitar())),
             ],
             state: TargetState::Merged,
             threads: vec![Thread {
@@ -734,14 +763,14 @@ mod tests {
                         "5590010588",
                         "Reject durations that overflow SystemTime.",
                         "2026-10-20T18:52:30Z",
-                        Some(account("brzzdev", false)),
+                        Some(brzzdev()),
                     ),
                     thread_comment(
                         "4329001432",
                         "5590011214",
                         "Fixed in 0b1ff04.",
                         "2026-10-20T18:58:01Z",
-                        Some(account("gitar-bot[bot]", true)),
+                        Some(gitar()),
                     ),
                 ],
                 id: THREAD_ID.to_owned(),
@@ -749,7 +778,7 @@ mod tests {
                 path: "src/run.rs".to_owned(),
                 reply_to: "4328942196".to_owned(),
                 resolved: true,
-                resolved_by: Some(account("brzzdev", false)),
+                resolved_by: Some(brzzdev()),
                 url: "https://github.com/brzzdev/babysit/pull/30#discussion_r4328942196".to_owned(),
             }],
         }
@@ -812,13 +841,13 @@ mod tests {
     fn a_dismissed_review_carries_its_dismisser_and_time() {
         let dismissed = include_str!("github/fixtures/poll.http")
             .replace(
-                r#""login":"gitar-bot"},"state":"COMMENTED""#,
-                r#""login":"gitar-bot"},"state":"DISMISSED""#,
+                &format!(r#""id":"{GITAR_ID}"}},"state":"COMMENTED""#),
+                &format!(r#""id":"{GITAR_ID}"}},"state":"DISMISSED""#),
             )
             .replace(
                 r#""nodes":[]},"reviews""#,
-                r#""nodes":[{"actor":{"__typename":"User","login":"brzzdev"},
-                    "createdAt":"2026-10-20T19:30:00Z",
+                r#""nodes":[{"actor":{"__typename":"User","login":"brzzdev",
+                    "id":"MDQ6VXNlcjE1Njg3NDUw"},"createdAt":"2026-10-20T19:30:00Z",
                     "review":{"databaseId":5590011214,"state":"DISMISSED"}}]},"reviews""#,
             );
 
@@ -827,22 +856,23 @@ mod tests {
         let mut withdrawn = expected();
         withdrawn.reviews[1].state = ReviewState::Dismissed;
         withdrawn.reviews[1].withdrawn_at = Some("2026-10-20T19:30:00Z".to_owned());
-        withdrawn.reviews[1].withdrawn_by = Some(account("brzzdev", false));
+        withdrawn.reviews[1].withdrawn_by = Some(brzzdev());
         assert_eq!(poll, withdrawn);
     }
 
     #[test]
     fn an_app_resolving_a_thread_is_a_bot() {
         let resolved_by_app = include_str!("github/fixtures/poll.http").replace(
-            r#""resolvedBy":{"__typename":"User","login":"brzzdev"}"#,
-            r#""resolvedBy":{"__typename":"User","login":"github-advanced-security[bot]"}"#,
+            r#""resolvedBy":{"__typename":"User","login":"brzzdev","#,
+            r#""resolvedBy":{"__typename":"User","login":"github-advanced-security[bot]","#,
         );
 
         let poll = poll_with([first_page(&resolved_by_app)]).unwrap();
 
+        let resolver = poll.threads[0].resolved_by.as_ref().unwrap();
         assert_eq!(
-            poll.threads[0].resolved_by,
-            Some(account("github-advanced-security[bot]", true))
+            (resolver.login.as_str(), resolver.bot),
+            ("github-advanced-security[bot]", Some(true))
         );
     }
 
@@ -850,8 +880,8 @@ mod tests {
     fn a_pending_review_and_its_draft_comments_are_left_out() {
         let drafted = include_str!("github/fixtures/poll.http")
             .replace(
-                r#""login":"gitar-bot"},"state":"COMMENTED""#,
-                r#""login":"gitar-bot"},"state":"PENDING""#,
+                &format!(r#""id":"{GITAR_ID}"}},"state":"COMMENTED""#),
+                &format!(r#""id":"{GITAR_ID}"}},"state":"PENDING""#),
             )
             .replace(
                 r#""databaseId":5590011214,"state":"COMMENTED""#,
@@ -864,6 +894,18 @@ mod tests {
         submitted.reviews.pop();
         submitted.threads[0].comments.pop();
         assert_eq!(poll, submitted);
+    }
+
+    #[test]
+    fn reads_the_viewers_account_id() {
+        let exec = Script::new([(
+            format!("gh api -i --hostname github.com graphql -f query={VIEWER_QUERY}"),
+            Ok(gh(0, include_str!("github/fixtures/viewer.http"), "")),
+        )]);
+
+        let viewer = GitHub::new(&exec).viewer("github.com", None);
+
+        assert_eq!(viewer.unwrap(), BRZZDEV_ID);
     }
 
     #[test]

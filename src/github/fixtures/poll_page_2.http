@@ -23,4 +23,4 @@ X-Ratelimit-Resource: graphql
 X-Ratelimit-Used: 38
 X-Xss-Protection: 0
 
-{"data":{"node":{"state":"MERGED","headRefOid":"dfd1945e66eb0008cad921a1230fd2c533598845","reviews":{"pageInfo":{"hasNextPage":false,"endCursor":"END"},"nodes":[{"databaseId":5590011214,"author":{"__typename":"Bot","login":"gitar-bot"},"state":"COMMENTED","body":"","submittedAt":"2026-10-20T18:52:33Z","url":"https://github.com/brzzdev/babysit/pull/30#pullrequestreview-5590011214"}]}}}}
+{"data":{"node":{"state":"MERGED","headRefOid":"dfd1945e66eb0008cad921a1230fd2c533598845","reviews":{"pageInfo":{"hasNextPage":false,"endCursor":"END"},"nodes":[{"databaseId":5590011214,"author":{"__typename":"Bot","login":"gitar-bot","id":"BOT_kgDOgitar"},"state":"COMMENTED","body":"","submittedAt":"2026-10-20T18:52:33Z","url":"https://github.com/brzzdev/babysit/pull/30#pullrequestreview-5590011214"}]}}}}
