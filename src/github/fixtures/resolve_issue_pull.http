@@ -1,0 +1,30 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Cache-Control: private, max-age=60, s-maxage=60
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Tue, 20 Oct 2026 22:45:14 GMT
+Etag: W/"6551ad080892a43c2e39c8a39066e3f6cb06665e81bed92fdd9ae225c76d3c3f"
+Last-Modified: Tue, 20 Oct 2026 22:40:51 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Oauth-Scopes: repo
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Api-Version-Selected: 2022-11-28
+X-Github-Edge-Region: uksouth
+X-Github-Media-Type: github.v3; format=json
+X-Github-Request-Id: F04D:313252:C7052:1276F9:6AD7EEF9
+X-Oauth-Client-Id: 178c6fc778ccc68e1d6a
+X-Oauth-Scopes: delete_repo, gist, read:org, repo, workflow
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4903
+X-Ratelimit-Reset: 1792538469
+X-Ratelimit-Resource: core
+X-Ratelimit-Used: 97
+X-Xss-Protection: 0
+
+{"html_url":"https://github.com/brzzdev/babysit/pull/38","node_id":"PR_kwDOVQ0d8c8AAAABJqUrxg","number":38,"pull_request":{"html_url":"https://github.com/brzzdev/babysit/pull/38","url":"https://api.github.com/repos/brzzdev/babysit/pulls/38"}}

@@ -27,8 +27,17 @@ pub struct Target {
     pub forge: Forge,
     pub forge_id: String,
     pub host: String,
+    pub kind: TargetKind,
     /// The forge-reported web URL: the target's identity for the run.
     pub url: String,
+}
+
+/// What a target is, whichever forge it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetKind {
+    /// A GitHub pull request or GitLab merge request.
+    ChangeRequest,
+    Issue,
 }
 
 #[derive(Debug)]
@@ -143,7 +152,9 @@ pub struct Poll {
     pub ci: Option<Ci>,
     /// The comments outside any thread.
     pub comments: Vec<Comment>,
-    pub head: String,
+    /// `None` for an issue, which has no commits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
     /// `None` while the forge is still computing it; snapshots keep the last known value.
     #[serde(skip)]
     pub merge: Option<Merge>,
@@ -340,7 +351,7 @@ pub fn poll(ids: &[&str]) -> Poll {
     Poll {
         ci: None,
         comments: ids.iter().map(|id| comment(id)).collect(),
-        head: "abc123".to_owned(),
+        head: Some("abc123".to_owned()),
         merge: None,
         reviews: Vec::new(),
         state: TargetState::Open,

@@ -1,4 +1,5 @@
 use crate::envelope::Forge;
+use crate::forge::TargetKind;
 
 /// A target as the caller named it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,13 +31,15 @@ impl Name {
     }
 }
 
-/// A GitHub pull request or GitLab merge request on a known host and project.
+/// A target on a known host and project.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reference {
     pub forge: Forge,
     pub given: String,
     /// The host, with its port where a GitLab URL names one.
     pub host: String,
+    /// What the name asks for; a GitHub issue may turn out to be a pull request.
+    pub kind: TargetKind,
     pub number: u64,
     /// The project's full path: `owner/repo` on GitHub, every group then the project on GitLab.
     pub project: String,
@@ -60,7 +63,8 @@ pub fn parse_name(given: &str) -> Result<Name, String> {
 }
 
 pub fn parse(given: &str) -> Result<Reference, String> {
-    let invalid = || format!("`{given}` is not a GitHub pull request or GitLab merge request URL");
+    let invalid =
+        || format!("`{given}` is not a GitHub pull request or issue, or GitLab merge request, URL");
     let rest = given
         .strip_prefix("https://")
         .or_else(|| given.strip_prefix("http://"))
@@ -69,13 +73,24 @@ pub fn parse(given: &str) -> Result<Reference, String> {
         return Err(format!("`{given}` must not carry a query or fragment"));
     }
     let segments: Vec<_> = rest.split('/').collect();
-    let (forge, host, project, number) = match &segments[..] {
-        [host, project @ .., "-", "merge_requests", number] if project.len() >= 2 => {
-            (Forge::GitLab, *host, project, *number)
+    let (forge, kind, host, project, number) = match &segments[..] {
+        [host, project @ .., "-", "merge_requests", number] if project.len() >= 2 => (
+            Forge::GitLab,
+            TargetKind::ChangeRequest,
+            *host,
+            project,
+            *number,
+        ),
+        [host, project @ .., "issues", number] if project.len() == 2 => {
+            (Forge::GitHub, TargetKind::Issue, *host, project, *number)
         }
-        [host, project @ .., "pull", number] if project.len() == 2 => {
-            (Forge::GitHub, *host, project, *number)
-        }
+        [host, project @ .., "pull", number] if project.len() == 2 => (
+            Forge::GitHub,
+            TargetKind::ChangeRequest,
+            *host,
+            project,
+            *number,
+        ),
         _ => return Err(invalid()),
     };
     let project = project.join("/");
@@ -91,6 +106,7 @@ pub fn parse(given: &str) -> Result<Reference, String> {
         forge,
         given: given.to_owned(),
         host: host.to_owned(),
+        kind,
         number: parse_number(number, given)?,
         project,
     })
@@ -98,7 +114,8 @@ pub fn parse(given: &str) -> Result<Reference, String> {
 
 /// A decimal number from 1 up, never zero-padded.
 fn parse_number(number: &str, given: &str) -> Result<u64, String> {
-    let invalid = || format!("`{number}` in `{given}` is not a pull or merge request number");
+    let invalid =
+        || format!("`{number}` in `{given}` is not an issue, pull or merge request number");
     if number.starts_with('0') || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid());
     }
@@ -160,6 +177,7 @@ mod tests {
                 forge: Forge::GitHub,
                 given: "http://ghe.example.com/o/r/pull/12".to_owned(),
                 host: "ghe.example.com".to_owned(),
+                kind: TargetKind::ChangeRequest,
                 number: 12,
                 project: "o/r".to_owned(),
             })),
@@ -174,8 +192,24 @@ mod tests {
                 forge: Forge::GitLab,
                 given: "https://gitlab.example.com:8443/g/sub/p/-/merge_requests/12".to_owned(),
                 host: "gitlab.example.com:8443".to_owned(),
+                kind: TargetKind::ChangeRequest,
                 number: 12,
                 project: "g/sub/p".to_owned(),
+            })),
+        );
+    }
+
+    #[test]
+    fn parses_an_issue_url() {
+        assert_eq!(
+            parse_name("https://github.com/o/r/issues/12"),
+            Ok(Name::Url(Reference {
+                forge: Forge::GitHub,
+                given: "https://github.com/o/r/issues/12".to_owned(),
+                host: "github.com".to_owned(),
+                kind: TargetKind::Issue,
+                number: 12,
+                project: "o/r".to_owned(),
             })),
         );
     }
@@ -229,6 +263,9 @@ mod tests {
             "ftp://github.com/o/r/pull/12",
             "https://github.com/o/r/pull/12/",
             "https://github.com/o/r/pull/12/files",
+            "https://github.com/o/r/issues/12/",
+            "https://github.com/o/r/issues/012",
+            "https://github.com/o/r/issues/12#issuecomment-1",
             "https://github.com/o/r/pull/12?w=1",
             "https://github.com/o/r/pull/12#issuecomment-1",
             "https://github.com/o/r/pull/012",

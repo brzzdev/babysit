@@ -1,0 +1,26 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Tue, 20 Oct 2026 22:45:13 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Oauth-Scopes: repo
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Edge-Region: uksouth
+X-Github-Media-Type: github.v4; format=json
+X-Github-Request-Id: F04B:132C6F:BD77B:11CB89:6AD7EEF8
+X-Oauth-Client-Id: 178c6fc778ccc68e1d6a
+X-Oauth-Scopes: delete_repo, gist, read:org, repo, workflow
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4808
+X-Ratelimit-Reset: 1792539259
+X-Ratelimit-Resource: graphql
+X-Ratelimit-Used: 192
+X-Xss-Protection: 0
+
+{"data":{"node":{"state":"CLOSED","stateChanges":{"nodes":[{"__typename":"ClosedEvent","actor":{"__typename":"User","login":"brzzdev","id":"MDQ6VXNlcjE1Njg3NDUw"},"createdAt":"2026-10-20T17:29:02Z"}]},"comments":{"pageInfo":{"hasNextPage":false,"endCursor":"Y3Vyc29yOnYyOpHPAAAAAXdUnQM="},"nodes":[{"author":{"__typename":"User","login":"brzzdev","id":"MDQ6VXNlcjE1Njg3NDUw"},"body":"Inherited from [How does a caller say which events wake baby","createdAt":"2026-10-20T12:19:30Z","editor":null,"lastEditedAt":null,"databaseId":6290682886,"url":"https://github.com/brzzdev/babysit/issues/9#issuecomment-6290682886"},{"author":{"__typename":"User","login":"brzzdev","id":"MDQ6VXNlcjE1Njg3NDUw"},"body":"Resolved.","createdAt":"2026-10-20T17:29:00Z","editor":null,"lastEditedAt":null,"databaseId":6297001219,"url":"https://github.com/brzzdev/babysit/issues/9#issuecomment-6297001219"}]}}}}

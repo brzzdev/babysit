@@ -220,19 +220,21 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         }
     }
     // A new head starts uncoloured, so returning to an earlier one settles it again.
-    let previous = if poll.head == baseline.head {
-        reported.colour
-    } else {
-        events.push(head_pushed(&baseline.head, &poll));
-        None
+    let previous = match (&baseline.head, &poll.head) {
+        (Some(old_sha), Some(new_sha)) if old_sha != new_sha => {
+            events.push(head_pushed(old_sha, new_sha, &poll));
+            None
+        }
+        _ => reported.colour,
     };
     // Unsettled CI keeps no colour, so settling again after a re-run is reported again.
     let colour = poll.ci.as_ref().and_then(Ci::colour);
     if let Some(ci) = &poll.ci
+        && let Some(head) = &poll.head
         && let Some(colour) = colour
         && previous != Some(colour)
     {
-        events.push(ci_settled(&poll, ci, colour));
+        events.push(ci_settled(&poll, head, ci, colour));
     }
     if poll.state != baseline.state {
         events.push(state_changed(&poll));
@@ -261,12 +263,12 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
     )
 }
 
-fn head_pushed(old_sha: &str, poll: &Poll) -> Event {
+fn head_pushed(old_sha: &str, new_sha: &str, poll: &Poll) -> Event {
     on_target(
         poll,
         Detail::HeadPushed {
             old_sha: old_sha.to_owned(),
-            new_sha: poll.head.clone(),
+            new_sha: new_sha.to_owned(),
         },
     )
 }
@@ -305,7 +307,7 @@ fn on_target(poll: &Poll, detail: Detail) -> Event {
 }
 
 /// Lists the deciding checks that failed or block, and as warnings the other checks that failed.
-fn ci_settled(poll: &Poll, ci: &Ci, colour: Colour) -> Event {
+fn ci_settled(poll: &Poll, head: &str, ci: &Ci, colour: Colour) -> Event {
     let reports = |keep: fn(&Check) -> bool| {
         ci.checks
             .iter()
@@ -322,7 +324,7 @@ fn ci_settled(poll: &Poll, ci: &Ci, colour: Colour) -> Event {
         poll,
         Detail::CiSettled {
             colour,
-            head_sha: poll.head.clone(),
+            head_sha: head.to_owned(),
             checks: reports(|check| {
                 check.deciding
                     && matches!(check.assessment, Assessment::Failed | Assessment::Waiting)
@@ -926,7 +928,7 @@ mod tests {
                 checks,
                 required_known: true,
             }),
-            head: head.to_owned(),
+            head: Some(head.to_owned()),
             ..poll(&[])
         }
     }
@@ -951,6 +953,22 @@ mod tests {
                 events.iter().map(label).collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn an_issue_reports_only_its_comments_and_state() {
+        let issue = |ids: &[&str], state| Poll {
+            head: None,
+            state,
+            ..poll(ids)
+        };
+
+        let events = steps(
+            issue(&["1"], TargetState::Open),
+            vec![issue(&["1", "2"], TargetState::Closed)],
+        );
+
+        assert_eq!(events, [["comment.created", "state.closed"]]);
     }
 
     #[test]

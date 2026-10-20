@@ -38,10 +38,17 @@ pub struct Event {
 pub struct Summary {
     pub target: String,
     pub state: TargetState,
+    /// `None` for an issue, which has no commits, CI, mergeability or threads.
+    #[serde(flatten)]
+    pub change: Option<ChangeSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChangeSummary {
     pub head: String,
     pub colour: Option<Colour>,
     pub merge: Option<Merge>,
-    pub unresolved_threads: Option<usize>,
+    pub unresolved_threads: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,23 +145,46 @@ impl Failure {
 
 impl Summary {
     pub fn new(target: &str, snapshot: &Snapshot) -> Self {
+        let poll = &snapshot.poll;
         Self {
             target: target.to_owned(),
-            state: snapshot.poll.state,
-            head: snapshot.poll.head.clone(),
-            colour: snapshot.reported.colour,
-            merge: snapshot
-                .reported
-                .merge
-                .filter(|_| snapshot.poll.state == TargetState::Open),
-            unresolved_threads: Some(
-                snapshot
-                    .poll
+            state: poll.state,
+            change: poll.head.as_ref().map(|head| ChangeSummary {
+                head: head.clone(),
+                colour: snapshot.reported.colour,
+                merge: snapshot
+                    .reported
+                    .merge
+                    .filter(|_| poll.state == TargetState::Open),
+                unresolved_threads: poll
                     .threads
                     .iter()
                     .filter(|thread| !thread.resolved)
                     .count(),
-            ),
+            }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::forge::{Poll, poll};
+
+    #[test]
+    fn an_issue_summary_names_only_its_target_and_state() {
+        let issue = Poll {
+            head: None,
+            ..poll(&[])
+        };
+
+        let summary = Summary::new("https://github.com/o/r/issues/1", &issue.into());
+
+        assert_eq!(
+            serde_json::to_value(summary).unwrap(),
+            json!({ "target": "https://github.com/o/r/issues/1", "state": "open" }),
+        );
     }
 }
