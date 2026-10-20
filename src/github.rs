@@ -118,9 +118,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
         )?;
-        let secondary = serde_json::from_str::<RestError>(&response.body)
-            .is_ok_and(|error| names_secondary_limit(&error.message));
-        if secondary {
+        if rest_names_secondary_limit(&response.body) {
             return Err(rate_limit(hints));
         }
         let pull: PullRequest = decode(&response.body).map_err(|failure| paced(failure, hints))?;
@@ -405,13 +403,15 @@ fn rate_limited(response: &Response) -> bool {
     if response.status == STATUS_TOO_MANY_REQUESTS || quota_spent(response) {
         return true;
     }
-    response.status == STATUS_FORBIDDEN
-        && serde_json::from_str::<RestError>(&response.body)
-            .is_ok_and(|error| names_secondary_limit(&error.message))
+    response.status == STATUS_FORBIDDEN && rest_names_secondary_limit(&response.body)
 }
 
 fn quota_spent(response: &Response) -> bool {
     response.header(HEADER_REMAINING) == Some("0")
+}
+
+fn rest_names_secondary_limit(body: &str) -> bool {
+    serde_json::from_str::<RestError>(body).is_ok_and(|error| names_secondary_limit(&error.message))
 }
 
 fn names_secondary_limit(message: &str) -> bool {
@@ -981,11 +981,9 @@ mod tests {
 
     #[test]
     fn a_secondary_rate_limit_on_a_200_resolve_is_a_rate_limit() {
-        let ok = include_str!("github/fixtures/poll_secondary_rate_limit.http")
-            .replace("HTTP/2.0 403 Forbidden", "HTTP/2.0 200 OK");
-        let exec = Script::new([(RESOLVE.to_owned(), Ok(gh(0, &ok, "")))]);
+        let stdout = include_str!("github/fixtures/resolve_secondary_rate_limit.http");
 
-        let failure = GitHub::new(&exec).resolve(&reference(), None).unwrap_err();
+        let failure = resolve_with(Ok(gh(0, stdout, ""))).unwrap_err();
 
         assert!(matches!(
             failure,
