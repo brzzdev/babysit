@@ -542,7 +542,7 @@ impl Schedule {
     }
 
     /// Records a complete successful poll at `now`: the backoff restarts, and a spent quota holds
-    /// the host until the refill it returns.
+    /// the host until the refill it returns, unless `once`.
     fn polled(&mut self, host: &str, hints: Hints, now: SystemTime) -> Option<SystemTime> {
         self.hosts.entry(host.to_owned()).or_default().backoffs = 0;
         if self.once {
@@ -552,7 +552,7 @@ impl Schedule {
     }
 
     /// Holds `host` after a successful startup call at `now` for its `retry-after` and spent
-    /// quota, returning the quota's refill.
+    /// quota, returning the quota's refill, unless `once`.
     fn answered(&mut self, host: &str, hints: Hints, now: SystemTime) -> Option<SystemTime> {
         if self.once {
             return None;
