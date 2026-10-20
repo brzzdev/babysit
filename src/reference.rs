@@ -22,7 +22,6 @@ impl Name {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reference {
     pub given: String,
-    /// The host, port included.
     pub host: String,
     pub number: u64,
     pub owner: String,
@@ -53,6 +52,11 @@ pub fn parse(given: &str) -> Result<Reference, String> {
     };
     if !is_authority(host) || !is_name(owner) || !is_name(repo) {
         return Err(invalid());
+    }
+    if host.contains(':') {
+        return Err(format!(
+            "`{given}` names a port, which gh can't reach a GitHub host on"
+        ));
     }
     Ok(Reference {
         given: given.to_owned(),
@@ -111,10 +115,10 @@ mod tests {
     #[test]
     fn parses_a_pull_request_url() {
         assert_eq!(
-            parse_name("http://ghe.example.com:8443/o/r/pull/12"),
+            parse_name("http://ghe.example.com/o/r/pull/12"),
             Ok(Name::Url(Reference {
-                given: "http://ghe.example.com:8443/o/r/pull/12".to_owned(),
-                host: "ghe.example.com:8443".to_owned(),
+                given: "http://ghe.example.com/o/r/pull/12".to_owned(),
+                host: "ghe.example.com".to_owned(),
                 number: 12,
                 owner: "o".to_owned(),
                 repo: "r".to_owned(),
@@ -166,6 +170,7 @@ mod tests {
             "https://github.com:8a/o/r/pull/12",
             "https://github.com:99999/o/r/pull/12",
             "https://github.com:0/o/r/pull/12",
+            "https://ghe.example.com:8443/o/r/pull/12",
             "https://./o/r/pull/12",
             "https://-/o/r/pull/12",
             "https://a..b/o/r/pull/12",

@@ -60,18 +60,7 @@ impl<'a, E: Exec> Locator<'a, E> {
     pub fn locate(&mut self, name: &Name) -> Result<Reference, Error> {
         match name {
             Name::Checkout { given, number } => self.locate_in_checkout(given, *number),
-            Name::Url(reference) => match self.claim(&reference.host)? {
-                Claim::Both => Err(claimed_by_both(&reference.host)),
-                Claim::GitHub => Ok(reference.clone()),
-                Claim::GitLab => Err(Error::Usage(format!(
-                    "`{}` is a GitHub URL, but {} is a GitLab host",
-                    reference.given, reference.host,
-                ))),
-                Claim::Neither => Err(Error::Fatal {
-                    kind: ErrorKind::Auth,
-                    message: format!("neither gh nor glab holds a token for {}", reference.host),
-                }),
-            },
+            Name::Url(reference) => Ok(reference.clone()),
         }
     }
 
@@ -120,12 +109,22 @@ impl<'a, E: Exec> Locator<'a, E> {
         }
         let mut github = Vec::new();
         let mut gitlab = false;
+        let mut unclaimed = Vec::new();
         for remote in fetch_remotes(&remotes.stdout) {
             match self.claim(&remote.host)? {
-                Claim::Both => return Err(claimed_by_both(&remote.host)),
+                Claim::Both => {
+                    return Err(Error::Fatal {
+                        kind: ErrorKind::Auth,
+                        message: format!(
+                            "both gh and glab hold a token for {}, so its forge is unknown; \
+                             pass the target's URL instead",
+                            remote.host,
+                        ),
+                    });
+                }
                 Claim::GitHub => github.push(remote),
                 Claim::GitLab => gitlab = true,
-                Claim::Neither => {}
+                Claim::Neither => unclaimed.push(remote.host),
             }
         }
         if gitlab {
@@ -154,7 +153,17 @@ impl<'a, E: Exec> Locator<'a, E> {
             (remote.host.as_str(), path)
         } else {
             match &github[..] {
-                [] => return Err(usage("needs a checkout with a GitHub remote")),
+                [] if unclaimed.is_empty() => {
+                    return Err(usage("needs a checkout with a GitHub remote"));
+                }
+                [] => {
+                    unclaimed.dedup();
+                    return Err(usage(&format!(
+                        "needs a checkout with a GitHub remote, and neither gh nor glab holds a \
+                         token for {}",
+                        unclaimed.join(", "),
+                    )));
+                }
                 [only] => (only.host.as_str(), only.path.as_str()),
                 _ => {
                     return Err(usage(
@@ -194,13 +203,6 @@ impl<'a, E: Exec> Locator<'a, E> {
             }),
             Err(exec::Error::TimedOut(Limit::Deadline)) => Err(Error::TimedOut),
         }
-    }
-}
-
-fn claimed_by_both(host: &str) -> Error {
-    Error::Fatal {
-        kind: ErrorKind::Auth,
-        message: format!("both gh and glab hold a token for {host}, so its forge is unknown"),
     }
 }
 
@@ -446,45 +448,45 @@ mod tests {
     }
 
     #[test]
-    fn classifies_a_url_host_by_the_cli_holding_its_token() {
+    fn takes_a_url_as_given_without_asking_for_tokens() {
         let name = reference::parse_name("https://ghe.example.com/o/r/pull/12").unwrap();
         let Name::Url(reference) = &name else {
             unreachable!()
         };
-        let script = Script::new([
-            (
-                "gh auth token --hostname ghe.example.com".to_owned(),
-                Ok(Output::exited(0, "gho_x\n")),
-            ),
-            (
-                "glab config get token --host ghe.example.com".to_owned(),
-                missing(),
-            ),
-        ]);
 
-        assert_eq!(locate(&script, &name), Ok(reference.clone()));
+        assert_eq!(locate(&Script::new([]), &name), Ok(reference.clone()));
     }
 
     #[test]
-    fn needs_no_token_for_github_com() {
-        let name = reference::parse_name("https://github.com/o/r/pull/12").unwrap();
+    fn rejects_a_remote_host_claimed_by_both_clis() {
+        let script = Script::new(
+            [remotes(&[("origin", "https://forge.example.com/o/r.git")])]
+                .into_iter()
+                .chain(tokens("forge.example.com", Claim::Both)),
+        );
 
-        assert!(locate(&Script::new([]), &name).is_ok());
+        let Err(Error::Fatal { kind, message }) = locate(&script, &checkout()) else {
+            panic!("expected an auth error");
+        };
+
+        assert_eq!(kind, ErrorKind::Auth);
+        assert!(message.contains("forge.example.com"), "{message}");
     }
 
     #[test]
-    fn rejects_a_host_claimed_by_both_clis_or_neither() {
-        for claim in [Claim::Both, Claim::Neither] {
-            let name = reference::parse_name("https://forge.example.com/o/r/pull/12").unwrap();
-            let script = Script::new(tokens("forge.example.com", claim));
+    fn names_unclaimed_remote_hosts_when_no_github_remote_is_left() {
+        let script = Script::new(
+            [remotes(&[("origin", "https://ghe.example.com/o/r.git")])]
+                .into_iter()
+                .chain(tokens("ghe.example.com", Claim::Neither))
+                .chain([(GH_RESOLVED.to_owned(), Ok(Output::exited(1, "")))]),
+        );
 
-            let Err(Error::Fatal { kind, message }) = locate(&script, &name) else {
-                panic!("expected an auth error");
-            };
+        let Err(Error::Usage(message)) = locate(&script, &checkout()) else {
+            panic!("expected a usage error");
+        };
 
-            assert_eq!(kind, ErrorKind::Auth);
-            assert!(message.contains("forge.example.com"), "{message}");
-        }
+        assert!(message.contains("ghe.example.com"), "{message}");
     }
 
     #[test]

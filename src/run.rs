@@ -494,21 +494,27 @@ mod tests {
     }
 
     #[test]
-    fn an_unclaimed_host_is_auth_naming_the_target_as_given() {
-        let sandbox = Sandbox::new("unclaimed");
-        let given = "https://forge.example.com/o/r/pull/1";
+    fn a_remote_host_claimed_by_both_clis_is_auth_naming_the_target_as_given() {
+        let sandbox = Sandbox::new("claimed-by-both");
         let args = Args {
-            target: reference::parse_name(given).unwrap(),
+            target: reference::parse_name("#1").unwrap(),
             ..args(&sandbox.snapshot(), None)
         };
         let exec = Script::new([
             (
+                "git remote -v".to_owned(),
+                Ok(Output::exited(
+                    0,
+                    "origin\thttps://forge.example.com/o/r.git (fetch)\n",
+                )),
+            ),
+            (
                 "gh auth token --hostname forge.example.com".to_owned(),
-                Ok(Output::exited(1, "")),
+                Ok(Output::exited(0, "gho_x\n")),
             ),
             (
                 "glab config get token --host forge.example.com".to_owned(),
-                Ok(Output::exited(1, "")),
+                Ok(Output::exited(0, "glpat-x\n")),
             ),
         ]);
         let clock = FakeClock(Cell::new(UNIX_EPOCH + Duration::from_secs(STARTED)));
@@ -521,15 +527,9 @@ mod tests {
 
         let envelope: Value = serde_json::from_slice(&stdout).unwrap();
         assert_eq!(code.unwrap(), 1);
-        assert_eq!(
-            envelope["error"],
-            json!({
-                "kind": "auth",
-                "forge": null,
-                "target": given,
-                "message": "neither gh nor glab holds a token for forge.example.com",
-            }),
-        );
+        assert_eq!(envelope["error"]["kind"], "auth");
+        assert_eq!(envelope["error"]["forge"], Value::Null);
+        assert_eq!(envelope["error"]["target"], "#1");
         assert!(!sandbox.snapshot().exists());
     }
 
