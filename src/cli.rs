@@ -18,9 +18,9 @@ pub struct Args {
     #[arg(long, value_name = "RULE", value_parser = rule::parse)]
     pub ignore: Vec<Rule>,
 
-    /// The pull request to watch, as its GitHub web URL or `#<number>` inside a checkout
-    #[arg(value_name = "TARGET", value_parser = reference::parse_name)]
-    pub target: Name,
+    /// The pull requests to watch, each as its GitHub web URL or `#<number>` inside a checkout
+    #[arg(value_name = "TARGET", required = true, value_parser = reference::parse_name)]
+    pub targets: Vec<Name>,
 
     /// The file that keeps what babysit has seen between runs
     #[arg(long, value_name = "PATH")]

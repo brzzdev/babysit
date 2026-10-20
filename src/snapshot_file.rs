@@ -78,9 +78,20 @@ impl SnapshotFile {
         self.contents.targets.get(url)
     }
 
-    /// Records `entry` under its URL and replaces the file atomically, through a temp file.
-    pub fn save(&mut self, entry: Entry) -> io::Result<()> {
-        self.contents.targets.insert(entry.url.clone(), entry);
+    /// Moves the first entry that `matches` under `url`, in memory until the next save.
+    pub fn rename(&mut self, url: &str, matches: impl Fn(&Entry) -> bool) -> Option<&Entry> {
+        let targets = &mut self.contents.targets;
+        let from = targets.values().find(|entry| matches(entry))?.url.clone();
+        let mut entry = targets.remove(&from)?;
+        url.clone_into(&mut entry.url);
+        Some(targets.entry(url.to_owned()).insert_entry(entry).into_mut())
+    }
+
+    /// Records each entry under its URL and replaces the file atomically, through a temp file.
+    pub fn save(&mut self, entries: impl IntoIterator<Item = Entry>) -> io::Result<()> {
+        for entry in entries {
+            self.contents.targets.insert(entry.url.clone(), entry);
+        }
         let temp_path = self.path.with_added_extension("tmp");
         let mut temp = File::create(&temp_path)?;
         serde_json::to_writer_pretty(&mut temp, &self.contents)?;
