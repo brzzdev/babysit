@@ -74,8 +74,16 @@ pub struct Poll {
     /// The comments outside any thread.
     pub comments: Vec<Comment>,
     pub head: String,
+    /// `None` while the forge is still computing it; snapshots keep the last known value.
+    #[serde(skip)]
+    pub merge: Option<Merge>,
     pub reviews: Vec<Review>,
     pub state: TargetState,
+    /// When the target entered its state, where the forge records it.
+    #[serde(skip)]
+    pub state_changed_at: Option<String>,
+    #[serde(skip)]
+    pub state_changed_by: Option<Account>,
     pub threads: Vec<Thread>,
     /// The target's URL; snapshots leave it out, since events come only from fresh polls.
     #[serde(skip)]
@@ -95,11 +103,13 @@ pub struct Snapshot {
 pub struct Reported {
     /// The colour reported for the snapshot's head, kept only while its CI stays settled.
     pub colour: Option<Colour>,
+    /// The last known mergeability, frozen while the target isn't open.
+    pub merge: Option<Merge>,
 }
 
 impl Reported {
     fn is_empty(&self) -> bool {
-        self.colour.is_none()
+        self.colour.is_none() && self.merge.is_none()
     }
 }
 
@@ -137,6 +147,15 @@ pub enum Colour {
     Amber,
     Green,
     Red,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Merge {
+    /// The forge requires the head to be brought up to date before it merges.
+    Behind,
+    Clean,
+    Conflicted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,8 +252,11 @@ pub fn poll(ids: &[&str]) -> Poll {
         ci: None,
         comments: ids.iter().map(|id| comment(id)).collect(),
         head: "abc123".to_owned(),
+        merge: None,
         reviews: Vec::new(),
         state: TargetState::Open,
+        state_changed_at: None,
+        state_changed_by: None,
         threads: Vec::new(),
         url: "https://github.com/o/r/pull/1".to_owned(),
     }

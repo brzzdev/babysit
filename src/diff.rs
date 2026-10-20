@@ -1,8 +1,8 @@
 use serde::Serialize;
 
 use crate::forge::{
-    Account, Assessment, Check, Ci, Colour, Comment, Poll, Reported, Review, ReviewState, Snapshot,
-    Thread,
+    Account, Assessment, Check, Ci, Colour, Comment, Merge, Poll, Reported, Review, ReviewState,
+    Snapshot, TargetState, Thread,
 };
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -42,6 +42,10 @@ pub enum Detail {
     },
     #[serde(rename = "head.pushed")]
     HeadPushed { old_sha: String, new_sha: String },
+    #[serde(rename = "merge.behind")]
+    MergeBehind,
+    #[serde(rename = "merge.conflicted")]
+    MergeConflicted,
     #[serde(rename = "review.submitted")]
     ReviewSubmitted {
         review_id: String,
@@ -50,6 +54,12 @@ pub enum Detail {
     },
     #[serde(rename = "review.withdrawn")]
     ReviewWithdrawn { review_id: String },
+    #[serde(rename = "state.closed")]
+    StateClosed,
+    #[serde(rename = "state.merged")]
+    StateMerged,
+    #[serde(rename = "state.reopened")]
+    StateReopened,
     #[serde(rename = "thread.opened")]
     ThreadOpened {
         thread_id: String,
@@ -93,8 +103,13 @@ impl Detail {
             Self::CommentCreated { .. } => "comment.created",
             Self::CommentEdited { .. } => "comment.edited",
             Self::HeadPushed { .. } => "head.pushed",
+            Self::MergeBehind => "merge.behind",
+            Self::MergeConflicted => "merge.conflicted",
             Self::ReviewSubmitted { .. } => "review.submitted",
             Self::ReviewWithdrawn { .. } => "review.withdrawn",
+            Self::StateClosed => "state.closed",
+            Self::StateMerged => "state.merged",
+            Self::StateReopened => "state.reopened",
             Self::ThreadOpened { .. } => "thread.opened",
             Self::ThreadReplied { .. } => "thread.replied",
             Self::ThreadResolved { .. } => "thread.resolved",
@@ -121,12 +136,13 @@ impl Ci {
     }
 }
 
-/// A first poll as baseline: whatever colour its head already shows counts as reported.
+/// A first poll as baseline: its colour, and an open target's mergeability, count as reported.
 impl From<Poll> for Snapshot {
     fn from(poll: Poll) -> Self {
         Self {
             reported: Reported {
                 colour: poll.ci.as_ref().and_then(Ci::colour),
+                merge: poll.merge.filter(|_| poll.state == TargetState::Open),
             },
             poll,
         }
@@ -197,6 +213,21 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
     {
         events.push(ci_settled(&poll, ci, colour));
     }
+    if poll.state != baseline.state {
+        events.push(state_changed(&poll));
+    }
+    // Only an open target's mergeability is news, so a merge reports nothing but itself.
+    let merge = match poll.merge {
+        Some(merge) if poll.state == TargetState::Open => Some(merge),
+        _ => reported.merge,
+    };
+    // Mergeability first known after computing is already on the target, so it reports nothing.
+    if let Some(changed) = merge
+        && reported.merge.is_some()
+        && merge != reported.merge
+    {
+        events.extend(merge_changed(&poll, changed));
+    }
     events.sort_by(|a, b| {
         (a.at.is_none(), &a.at, &a.detail).cmp(&(b.at.is_none(), &b.at, &b.detail))
     });
@@ -204,7 +235,7 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         events,
         Snapshot {
             poll,
-            reported: Reported { colour },
+            reported: Reported { colour, merge },
         },
     )
 }
@@ -217,6 +248,28 @@ fn head_pushed(old_sha: &str, poll: &Poll) -> Event {
             new_sha: poll.head.clone(),
         },
     )
+}
+
+fn merge_changed(poll: &Poll, merge: Merge) -> Option<Event> {
+    let detail = match merge {
+        Merge::Behind => Detail::MergeBehind,
+        Merge::Clean => return None,
+        Merge::Conflicted => Detail::MergeConflicted,
+    };
+    Some(on_target(poll, detail))
+}
+
+fn state_changed(poll: &Poll) -> Event {
+    let detail = match poll.state {
+        TargetState::Closed => Detail::StateClosed,
+        TargetState::Merged => Detail::StateMerged,
+        TargetState::Open => Detail::StateReopened,
+    };
+    Event {
+        at: poll.state_changed_at.clone(),
+        actor: poll.state_changed_by.clone(),
+        ..on_target(poll, detail)
+    }
 }
 
 /// An event about the target as a whole, which the forge neither times nor attributes.
@@ -953,5 +1006,112 @@ mod tests {
 
         let settled_again = vec!["ci.settled Green", "head.pushed"];
         assert_eq!(steps, [settled_again.clone(), settled_again]);
+    }
+
+    fn mergeability(merge: Option<Merge>) -> Poll {
+        Poll { merge, ..poll(&[]) }
+    }
+
+    const STATE_CHANGED_AT: &str = "2026-10-20T19:50:00Z";
+
+    fn standing(state: TargetState, merge: Option<Merge>) -> Poll {
+        Poll {
+            state,
+            state_changed_at: Some(STATE_CHANGED_AT.to_owned()),
+            state_changed_by: Some(octocat()),
+            ..mergeability(merge)
+        }
+    }
+
+    #[test]
+    fn turning_conflicted_or_behind_fires_and_computing_keeps_the_last_known_value() {
+        let steps = steps(
+            mergeability(Some(Merge::Clean)),
+            vec![
+                mergeability(None),
+                mergeability(Some(Merge::Conflicted)),
+                mergeability(None),
+                mergeability(Some(Merge::Conflicted)),
+                mergeability(Some(Merge::Behind)),
+                mergeability(Some(Merge::Clean)),
+                mergeability(Some(Merge::Behind)),
+            ],
+        );
+
+        assert_eq!(
+            steps,
+            [
+                vec![],
+                vec!["merge.conflicted"],
+                vec![],
+                vec![],
+                vec!["merge.behind"],
+                vec![],
+                vec!["merge.behind"],
+            ],
+        );
+    }
+
+    #[test]
+    fn the_first_known_mergeability_counts_as_reported() {
+        let conflicted = || mergeability(Some(Merge::Conflicted));
+
+        let from_known = steps(conflicted(), vec![conflicted()]);
+        let from_computing = steps(
+            mergeability(None),
+            vec![conflicted(), mergeability(Some(Merge::Behind))],
+        );
+
+        assert_eq!(from_known, [Vec::<String>::new()]);
+        assert_eq!(from_computing, [vec![], vec!["merge.behind"]]);
+    }
+
+    #[test]
+    fn a_merge_emits_only_state_merged() {
+        let baseline = mergeability(Some(Merge::Clean));
+        let merged = standing(TargetState::Merged, Some(Merge::Conflicted));
+
+        let (events, snapshot) = diff(&baseline.into(), merged);
+
+        assert_eq!(
+            events,
+            [Event {
+                detail: Detail::StateMerged,
+                url: poll(&[]).url,
+                at: Some(STATE_CHANGED_AT.to_owned()),
+                actor: Some(octocat()),
+                subject: None,
+            }],
+        );
+        assert_eq!(snapshot.reported.merge, Some(Merge::Clean));
+    }
+
+    #[test]
+    fn a_target_first_seen_closed_adopts_its_mergeability_on_reopening() {
+        let steps = steps(
+            standing(TargetState::Closed, Some(Merge::Clean)),
+            vec![standing(TargetState::Open, Some(Merge::Conflicted))],
+        );
+
+        assert_eq!(steps, [vec!["state.reopened"]]);
+    }
+
+    #[test]
+    fn a_conflict_that_arose_while_closed_fires_on_reopening() {
+        let steps = steps(
+            mergeability(Some(Merge::Clean)),
+            vec![
+                standing(TargetState::Closed, Some(Merge::Conflicted)),
+                standing(TargetState::Open, Some(Merge::Conflicted)),
+            ],
+        );
+
+        assert_eq!(
+            steps,
+            [
+                vec!["state.closed"],
+                vec!["state.reopened", "merge.conflicted"]
+            ],
+        );
     }
 }

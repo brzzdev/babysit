@@ -705,7 +705,7 @@ mod tests {
     use super::*;
     use crate::envelope::Forge;
     use crate::exec::{Output, Script};
-    use crate::forge::{Account, Poll, octocat, poll};
+    use crate::forge::{Account, Merge, Poll, TargetState, octocat, poll};
     use crate::reference::{self, Reference};
 
     const ENTERPRISE: &str = "https://ghe.example.com/o/r/pull/3";
@@ -1116,6 +1116,54 @@ mod tests {
         assert_eq!(
             saved(&sandbox.snapshot())["targets"][URL]["snapshot"],
             json!(poll(&["1", "2"]))
+        );
+    }
+
+    #[test]
+    fn the_summary_carries_the_reported_mergeability() {
+        let sandbox = Sandbox::new("merge-summary");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let conflicted = Poll {
+            merge: Some(Merge::Conflicted),
+            ..poll(&["1"])
+        };
+
+        let (code, envelope) = watch(
+            &args(&[URL], &sandbox.snapshot(), Some(0)),
+            vec![returns(URL, conflicted)],
+        );
+
+        let mut expected = summary(URL);
+        expected["merge"] = json!("conflicted");
+        assert_eq!(code, 3);
+        assert_eq!(envelope["targets"], json!([expected]));
+    }
+
+    #[test]
+    fn a_target_that_is_not_open_summarises_no_mergeability() {
+        let sandbox = Sandbox::new("merged-summary");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let conflicted = Poll {
+            merge: Some(Merge::Conflicted),
+            ..poll(&["1"])
+        };
+        let merged = Poll {
+            state: TargetState::Merged,
+            ..conflicted.clone()
+        };
+
+        let (code, envelope) = watch(
+            &args(&[URL], &sandbox.snapshot(), None),
+            vec![returns(URL, conflicted), returns(URL, merged)],
+        );
+
+        let mut expected = summary(URL);
+        expected["state"] = json!("merged");
+        assert_eq!(code, 0);
+        assert_eq!(envelope["targets"], json!([expected]));
+        assert_eq!(
+            saved(&sandbox.snapshot())["targets"][URL]["snapshot"]["reported"]["merge"],
+            "conflicted"
         );
     }
 

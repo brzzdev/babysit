@@ -15,6 +15,29 @@ query (
     ... on PullRequest {
       state
       headRefOid
+      mergeable
+      mergeStateStatus
+      mergedAt
+      mergedBy {
+        ...author
+      }
+      stateChanges: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, REOPENED_EVENT]) {
+        nodes {
+          __typename
+          ... on ClosedEvent {
+            actor {
+              ...author
+            }
+            createdAt
+          }
+          ... on ReopenedEvent {
+            actor {
+              ...author
+            }
+            createdAt
+          }
+        }
+      }
       commits(last: 1) {
         nodes {
           commit {
