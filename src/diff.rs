@@ -79,7 +79,16 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         .map(|comment| (None, comment))
         .chain(threaded)
     {
-        match (find_comment(baseline, &comment.id), thread) {
+        // Top-level and thread comment ids are separate namespaces, so each is looked up in its own.
+        let seen = match thread {
+            None => baseline.comments.iter().find(|seen| seen.id == comment.id),
+            Some(_) => baseline
+                .threads
+                .iter()
+                .flat_map(|thread| &thread.comments)
+                .find(|seen| seen.id == comment.id),
+        };
+        match (seen, thread) {
             (None, None) => events.push(comment_created(comment)),
             (None, Some(thread)) => events.push(thread_comment(thread, comment)),
             (Some(seen), _) if seen.body != comment.body => {
@@ -106,14 +115,6 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
         (a.at.is_none(), &a.at, &a.detail).cmp(&(b.at.is_none(), &b.at, &b.detail))
     });
     (events, poll)
-}
-
-fn find_comment<'a>(snapshot: &'a Snapshot, id: &str) -> Option<&'a Comment> {
-    snapshot
-        .comments
-        .iter()
-        .chain(snapshot.threads.iter().flat_map(|thread| &thread.comments))
-        .find(|comment| comment.id == id)
 }
 
 fn comment_created(comment: &Comment) -> Event {
@@ -380,6 +381,24 @@ mod tests {
                 reply_to: Some("10".to_owned()),
             }],
         );
+    }
+
+    #[test]
+    fn a_thread_comment_sharing_a_top_level_comments_id_is_its_own_comment() {
+        let baseline = poll(&["10"]);
+        let next = Poll {
+            threads: vec![thread(vec![reviewed("10", "500")], false)],
+            ..poll(&["10"])
+        };
+
+        let opened = details(&baseline, next.clone());
+        let unchanged = details(&next, next.clone());
+
+        assert!(
+            matches!(opened.as_slice(), [Detail::ThreadOpened { .. }]),
+            "{opened:?}"
+        );
+        assert_eq!(unchanged, []);
     }
 
     #[test]
