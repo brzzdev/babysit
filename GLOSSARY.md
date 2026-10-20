@@ -24,6 +24,11 @@ _Avoid_: Item, watch
 The forge account that caused an event.
 _Avoid_: Author, user, sender
 
+**Bot**:
+A forge account the forge itself flags as automated; an ordinary account driven by automation is
+not one.
+_Avoid_: App, machine user
+
 **Event**:
 Something babysit saw happen on a target between two snapshots.
 _Avoid_: Change, update, notification
@@ -31,6 +36,10 @@ _Avoid_: Change, update, notification
 **Event kind**:
 The closed category an event belongs to, such as `ci.settled` or `thread.opened`.
 _Avoid_: Event type, trigger
+
+**Rule**:
+A caller's condition on events, by kind and fields, that decides which events wake babysit.
+_Avoid_: Filter, matcher, predicate
 
 **Subject**:
 The forge account an event happened to, when that isn't the actor, such as the reviewer whose review
