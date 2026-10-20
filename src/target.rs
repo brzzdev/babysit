@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::{self, CALL_LIMIT, Exec, Limit, Output};
-use crate::forge::{Backend, Failure, Snapshot, Target};
+use crate::forge::{Failure, Snapshot, Target};
 use crate::reference::{self, Name, Reference};
 use crate::snapshot_file::SnapshotFile;
 
@@ -62,41 +62,21 @@ impl<'a, E: Exec> Locator<'a, E> {
         }
     }
 
-    /// Locates every name before resolving any, then merges names that resolve to the same URL,
-    /// in the order they first occur. An error carries the name as given.
-    pub fn resolve<'n>(
+    /// Locates every name, pairing each reference with the name as given. An error carries the
+    /// name as given.
+    pub fn locate_all<'n>(
         &mut self,
-        backend: &impl Backend,
         names: &'n [Name],
-    ) -> Result<Vec<Target>, (&'n str, Error)> {
-        let references = names
+    ) -> Result<Vec<(&'n str, Reference)>, (&'n str, Error)> {
+        names
             .iter()
-            .map(|name| self.locate(name).map_err(|error| (name.given(), error)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut targets: Vec<Target> = Vec::new();
-        for (name, reference) in names.iter().zip(&references) {
-            let given = name.given();
-            let target = backend
-                .resolve(reference, self.deadline)
-                .map_err(|failure| (given, failure.into()))?;
-            if !on_host(&target.url, &reference.host) {
-                let message = format!(
-                    "`{given}` resolves to {}, on another host, and babysit never takes a \
-                     redirect across hosts; pass that URL instead",
-                    target.url,
-                );
-                let error = Error::Fatal {
-                    forge: Some(Forge::GitHub),
-                    kind: ErrorKind::TargetNotFound,
-                    message,
-                };
-                return Err((given, error));
-            }
-            if targets.iter().all(|known| known.url != target.url) {
-                targets.push(target);
-            }
-        }
-        Ok(targets)
+            .map(|name| {
+                let given = name.given();
+                self.locate(name)
+                    .map(|reference| (given, reference))
+                    .map_err(|error| (given, error))
+            })
+            .collect()
     }
 
     pub fn locate(&mut self, name: &Name) -> Result<Reference, Error> {
@@ -262,19 +242,32 @@ pub fn baseline(file: &mut SnapshotFile, target: &Target) -> Option<Snapshot> {
     .map(|entry| entry.snapshot.clone())
 }
 
+/// Fails a resolution that followed a redirect onto another host.
+pub fn check_host(given: &str, reference: &Reference, target: &Target) -> Result<(), Failure> {
+    if on_host(&target.url, &reference.host) {
+        return Ok(());
+    }
+    let message = format!(
+        "`{given}` resolves to {}, on another host, and babysit never takes a redirect across \
+         hosts; pass that URL instead",
+        target.url,
+    );
+    Err(Failure::Fatal {
+        forge: Forge::GitHub,
+        kind: ErrorKind::TargetNotFound,
+        message,
+    })
+}
+
 impl From<Failure> for Error {
     fn from(failure: Failure) -> Self {
-        match failure {
-            Failure::Fatal {
-                forge,
-                kind,
-                message,
-            } => Self::Fatal {
+        match failure.into_error() {
+            Some((forge, kind, message)) => Self::Fatal {
                 forge: Some(forge),
                 kind,
                 message,
             },
-            Failure::TimedOut => Self::TimedOut,
+            None => Self::TimedOut,
         }
     }
 }
@@ -367,7 +360,6 @@ fn split_remote_url(url: &str) -> Option<(String, String)> {
 mod tests {
     use super::*;
     use crate::exec::Script;
-    use crate::github::GitHub;
 
     const GH_RESOLVED: &str = r"git config --get-regexp ^remote\..*\.gh-resolved$";
 
@@ -635,55 +627,21 @@ mod tests {
         );
     }
 
-    fn resolves_to(path: &str, html_url: &str) -> (String, Result<Output, exec::Error>) {
-        let body = format!(r#"{{"html_url":"{html_url}","node_id":"PR_{html_url}"}}"#);
-        (
-            format!("gh api -i --hostname {path}"),
-            Ok(Output::exited(0, &format!("HTTP/2.0 200 OK\r\n\r\n{body}"))),
-        )
-    }
-
-    fn urls(names: &[&str]) -> Vec<Name> {
-        names
-            .iter()
-            .map(|name| reference::parse_name(name).unwrap())
-            .collect()
-    }
-
-    #[test]
-    fn names_resolving_to_the_same_url_merge_in_first_occurrence_order() {
-        let renamed = "https://github.com/o/r/pull/12";
-        let other = "https://github.com/o/r/pull/3";
-        let script = Script::new([
-            resolves_to("github.com repos/old/r/pulls/12", renamed),
-            resolves_to("github.com repos/o/r/pulls/3", other),
-            resolves_to("github.com repos/o/r/pulls/12", renamed),
-        ]);
-        let names = urls(&["https://github.com/old/r/pull/12", other, renamed]);
-
-        let targets = Locator::new(&script, None)
-            .resolve(&GitHub::new(&script), &names)
-            .unwrap();
-
-        let resolved: Vec<_> = targets.iter().map(|target| target.url.as_str()).collect();
-        assert_eq!(resolved, [renamed, other]);
-    }
-
     #[test]
     fn a_redirect_to_another_host_is_not_followed() {
-        let script = Script::new([resolves_to(
-            "ghe.example.com repos/o/r/pulls/1",
-            "https://github.com/o/r/pull/1",
-        )]);
-        let names = urls(&["https://ghe.example.com/o/r/pull/1"]);
+        let given = "https://ghe.example.com/o/r/pull/1";
+        let redirected = Target {
+            forge_id: "PR_1".to_owned(),
+            host: "ghe.example.com".to_owned(),
+            url: "https://github.com/o/r/pull/1".to_owned(),
+        };
+        let reference = reference::parse(given).unwrap();
 
-        let Err((given, Error::Fatal { kind, message, .. })) =
-            Locator::new(&script, None).resolve(&GitHub::new(&script), &names)
+        let Err(Failure::Fatal { kind, message, .. }) = check_host(given, &reference, &redirected)
         else {
-            panic!("expected a fatal error");
+            panic!("expected a fatal failure");
         };
 
-        assert_eq!(given, "https://ghe.example.com/o/r/pull/1");
         assert_eq!(kind, ErrorKind::TargetNotFound);
         assert!(
             message.contains("https://github.com/o/r/pull/1"),
