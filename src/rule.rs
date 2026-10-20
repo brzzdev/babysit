@@ -1,10 +1,10 @@
 use crate::diff::{Detail, Event};
-use crate::forge::{Account, ReviewState};
+use crate::forge::Account;
 
 const COLOURS: [&str; 3] = ["amber", "green", "red"];
 
 /// Every event kind in v1 with the fields it carries, including kinds no backend reports yet.
-const KINDS: [(&str, &[Field]); 15] = [
+const KINDS: [Kind; 15] = [
     ("ci.settled", &[Field::Colour]),
     ("comment.created", &[Field::Actor]),
     ("comment.edited", &[Field::Actor]),
@@ -24,18 +24,13 @@ const KINDS: [(&str, &[Field]); 15] = [
 
 const STATES: [&str; 3] = ["approved", "changes_requested", "commented"];
 
-/// A caller's condition on events: an optional kind pattern, then terms that must all hold.
+type Kind = (&'static str, &'static [Field]);
+
+/// A caller's condition on events: the kinds its pattern covers, then terms that must all hold.
 #[derive(Clone, Debug)]
 pub struct Rule {
-    kinds: Option<Kinds>,
+    kinds: Vec<Kind>,
     terms: Vec<Term>,
-}
-
-#[derive(Clone, Debug)]
-enum Kinds {
-    Exact(&'static str),
-    /// A whole-noun wildcard such as `thread.*`, holding the noun with its dot.
-    Noun(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +48,7 @@ enum Term {
     Words(Field, Vec<&'static str>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Selector {
     Bot,
     Human,
@@ -64,7 +59,7 @@ enum Selector {
 pub fn parse(given: &str) -> Result<Rule, String> {
     let mut words = given.split_whitespace().peekable();
     let pattern = words.next_if(|word| !word.contains('='));
-    let kinds = pattern.map(kinds).transpose()?;
+    let kinds = kinds(pattern)?;
     let mut terms: Vec<Term> = Vec::new();
     for word in words {
         let term = term(word)?;
@@ -72,35 +67,37 @@ pub fn parse(given: &str) -> Result<Rule, String> {
         if terms.iter().any(|seen| seen.field() == field) {
             return Err(format!("`{}` appears twice in one rule", field.name()));
         }
-        let carried = KINDS
-            .iter()
-            .filter(|(kind, _)| kinds.as_ref().is_none_or(|kinds| kinds.covers(kind)))
-            .any(|(_, fields)| fields.contains(&field));
-        if let (false, Some(pattern)) = (carried, pattern) {
+        if let Some(pattern) = pattern
+            && !kinds.iter().any(|(_, fields)| fields.contains(&field))
+        {
             return Err(format!("no `{pattern}` event carries `{}`", field.name()));
         }
         terms.push(term);
     }
-    if kinds.is_none() && terms.is_empty() {
+    if pattern.is_none() && terms.is_empty() {
         return Err("a rule needs a kind pattern or a `field=value` term".to_owned());
     }
     Ok(Rule { kinds, terms })
 }
 
-fn kinds(pattern: &str) -> Result<Kinds, String> {
-    let unknown = || format!("`{pattern}` is not an event kind or a `field=value` term");
-    if let Some(noun) = pattern.strip_suffix(".*") {
-        let (kind, _) = KINDS
-            .iter()
-            .find(|(kind, _)| kind.split_once('.').is_some_and(|(seen, _)| seen == noun))
-            .ok_or_else(unknown)?;
-        return Ok(Kinds::Noun(&kind[..=noun.len()]));
+/// The kinds an exact or `noun.*` pattern covers; every kind when there is no pattern.
+fn kinds(pattern: Option<&str>) -> Result<Vec<Kind>, String> {
+    let Some(pattern) = pattern else {
+        return Ok(KINDS.to_vec());
+    };
+    let covered: Vec<Kind> = KINDS
+        .into_iter()
+        .filter(|(kind, _)| match pattern.strip_suffix(".*") {
+            Some(noun) => kind.split_once('.').is_some_and(|(seen, _)| seen == noun),
+            None => *kind == pattern,
+        })
+        .collect();
+    if covered.is_empty() {
+        return Err(format!(
+            "`{pattern}` is not an event kind or a `field=value` term"
+        ));
     }
-    let (kind, _) = KINDS
-        .iter()
-        .find(|(kind, _)| *kind == pattern)
-        .ok_or_else(unknown)?;
-    Ok(Kinds::Exact(kind))
+    Ok(covered)
 }
 
 fn term(word: &str) -> Result<Term, String> {
@@ -172,26 +169,16 @@ pub fn wakes(on: &[Rule], ignore: &[Rule], event: &Event, me: Option<&str>) -> b
 
 /// Whether any of `rules` matches `@me`, and so needs the viewer's account id.
 pub fn names_me<'a>(rules: impl IntoIterator<Item = &'a Rule>) -> bool {
-    rules.into_iter().flat_map(|rule| &rule.terms).any(|term| {
-        matches!(term, Term::Accounts(_, selectors) if selectors.iter().any(|selector| matches!(selector, Selector::Me)))
-    })
+    rules.into_iter().flat_map(|rule| &rule.terms).any(
+        |term| matches!(term, Term::Accounts(_, selectors) if selectors.contains(&Selector::Me)),
+    )
 }
 
 impl Rule {
     fn matches(&self, event: &Event, me: Option<&str>) -> bool {
-        self.kinds
-            .as_ref()
-            .is_none_or(|kinds| kinds.covers(kind(&event.detail)))
+        let kind = event.detail.kind();
+        self.kinds.iter().any(|(covered, _)| *covered == kind)
             && self.terms.iter().all(|term| term.matches(event, me))
-    }
-}
-
-impl Kinds {
-    fn covers(&self, kind: &str) -> bool {
-        match self {
-            Self::Exact(exact) => kind == *exact,
-            Self::Noun(noun) => kind.starts_with(noun),
-        }
     }
 }
 
@@ -221,7 +208,7 @@ impl Term {
                     .any(|selector| selector.matches(account, me))
             }),
             Self::Words(field, words) => {
-                word(&event.detail, *field).is_some_and(|word| words.contains(&word))
+                word(&event.detail, *field).is_some_and(|word| words.contains(&word.as_str()))
             }
         }
     }
@@ -246,34 +233,19 @@ fn account(event: &Event, field: Field) -> Option<&Account> {
     }
 }
 
-fn word(detail: &Detail, field: Field) -> Option<&'static str> {
-    match (field, detail) {
-        (Field::State, Detail::ReviewSubmitted { state, .. }) => Some(match state {
-            ReviewState::Approved => "approved",
-            ReviewState::ChangesRequested => "changes_requested",
-            ReviewState::Commented => "commented",
-            ReviewState::Dismissed => "dismissed",
-        }),
-        _ => None,
-    }
-}
-
-fn kind(detail: &Detail) -> &'static str {
-    match detail {
-        Detail::CommentCreated { .. } => "comment.created",
-        Detail::CommentEdited { .. } => "comment.edited",
-        Detail::ReviewSubmitted { .. } => "review.submitted",
-        Detail::ReviewWithdrawn { .. } => "review.withdrawn",
-        Detail::ThreadOpened { .. } => "thread.opened",
-        Detail::ThreadReplied { .. } => "thread.replied",
-        Detail::ThreadResolved { .. } => "thread.resolved",
-        Detail::ThreadUnresolved { .. } => "thread.unresolved",
-    }
+/// The field's value in its printed form.
+fn word(detail: &Detail, field: Field) -> Option<String> {
+    let value = match (field, detail) {
+        (Field::State, Detail::ReviewSubmitted { state, .. }) => serde_json::to_value(state),
+        _ => return None,
+    };
+    value.ok()?.as_str().map(str::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::ReviewState;
 
     fn event(detail: Detail) -> Event {
         Event {
@@ -305,6 +277,53 @@ mod tests {
 
     fn woken(on: &[&str], ignore: &[&str], event: &Event) -> bool {
         wakes(&rules(on), &rules(ignore), event, None)
+    }
+
+    #[test]
+    fn every_reported_kind_is_named_as_printed_and_known_to_rules() {
+        let thread_id = || "PRRT_1".to_owned();
+        let reply_to = || "10".to_owned();
+        for detail in [
+            created().detail,
+            Detail::CommentEdited {
+                comment_id: "1".to_owned(),
+                body: String::new(),
+                thread_id: None,
+                reply_to: None,
+            },
+            submitted(ReviewState::Approved).detail,
+            Detail::ReviewWithdrawn {
+                review_id: "500".to_owned(),
+            },
+            Detail::ThreadOpened {
+                thread_id: thread_id(),
+                comment_id: "10".to_owned(),
+                reply_to: reply_to(),
+                body: String::new(),
+                path: "src/run.rs".to_owned(),
+                line: None,
+                review_id: None,
+            },
+            Detail::ThreadReplied {
+                thread_id: thread_id(),
+                comment_id: "11".to_owned(),
+                reply_to: reply_to(),
+                body: String::new(),
+                review_id: None,
+            },
+            resolved().detail,
+            Detail::ThreadUnresolved {
+                thread_id: thread_id(),
+                reply_to: reply_to(),
+            },
+        ] {
+            let printed = serde_json::to_value(&detail).unwrap()["kind"].clone();
+            assert_eq!(printed, detail.kind());
+            assert!(
+                KINDS.iter().any(|(kind, _)| *kind == detail.kind()),
+                "{printed}"
+            );
+        }
     }
 
     #[test]

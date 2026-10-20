@@ -150,18 +150,8 @@ impl<E: Exec> Backend for GitHub<'_, E> {
     }
 
     fn viewer(&self, host: &str, deadline: Option<SystemTime>) -> Result<String, Failure> {
-        let query = format!("query={VIEWER_QUERY}");
-        let response = self.call(
-            &["api", "-i", "--hostname", host, "graphql", "-f", &query],
-            deadline,
-        )?;
-        let reply: Reply<ViewerData> = decode(&response.body)?;
-        if let Some(error) = reply.errors.first() {
-            return Err(fatal(ErrorKind::PollFailed, &error.message));
-        }
-        reply
-            .data
-            .map(|data| data.viewer.id)
+        let data: Option<ViewerData> = self.graphql(host, VIEWER_QUERY, &[], deadline)?;
+        data.map(|data| data.viewer.id)
             .ok_or_else(|| fatal(ErrorKind::PollFailed, "gh returned no viewer"))
     }
 }
@@ -202,30 +192,36 @@ impl<E: Exec> GitHub<'_, E> {
         node_kind: &str,
         deadline: Option<SystemTime>,
     ) -> Result<T, Failure> {
-        let query = format!("query={query}");
-        let mut args = vec![
-            "api",
-            "-i",
-            "--hostname",
-            &target.host,
-            "graphql",
-            "-f",
-            &query,
-        ];
-        for (flag, variable) in variables {
-            args.extend([*flag, variable.as_str()]);
-        }
-        let response = self.call(&args, deadline)?;
-        let reply: Reply<Data<T>> = decode(&response.body)?;
-        if let Some(error) = reply.errors.first() {
-            return Err(fatal(ErrorKind::PollFailed, &error.message));
-        }
-        reply.data.and_then(|data| data.node).ok_or_else(|| {
+        let data: Option<Data<T>> = self.graphql(&target.host, query, variables, deadline)?;
+        data.and_then(|data| data.node).ok_or_else(|| {
             fatal(
                 ErrorKind::PollFailed,
                 &format!("{} returned no {node_kind}", target.url),
             )
         })
+    }
+}
+
+impl<E: Exec> GitHub<'_, E> {
+    /// The reply's `data`, failing the call on any GraphQL `errors` entry.
+    fn graphql<T: DeserializeOwned>(
+        &self,
+        host: &str,
+        query: &str,
+        variables: &[(&str, String)],
+        deadline: Option<SystemTime>,
+    ) -> Result<Option<T>, Failure> {
+        let query = format!("query={query}");
+        let mut args = vec!["api", "-i", "--hostname", host, "graphql", "-f", &query];
+        for (flag, variable) in variables {
+            args.extend([*flag, variable.as_str()]);
+        }
+        let response = self.call(&args, deadline)?;
+        let reply: Reply<T> = decode(&response.body)?;
+        if let Some(error) = reply.errors.first() {
+            return Err(fatal(ErrorKind::PollFailed, &error.message));
+        }
+        Ok(reply.data)
     }
 }
 
@@ -851,8 +847,8 @@ mod tests {
             )
             .replace(
                 r#""nodes":[]},"reviews""#,
-                r#""nodes":[{"actor":{"__typename":"User","login":"brzzdev","id":"MDQ6VXNlcjE1Njg3NDUw"},
-                    "createdAt":"2026-10-20T19:30:00Z",
+                r#""nodes":[{"actor":{"__typename":"User","login":"brzzdev",
+                    "id":"MDQ6VXNlcjE1Njg3NDUw"},"createdAt":"2026-10-20T19:30:00Z",
                     "review":{"databaseId":5590011214,"state":"DISMISSED"}}]},"reviews""#,
             );
 
@@ -868,19 +864,16 @@ mod tests {
     #[test]
     fn an_app_resolving_a_thread_is_a_bot() {
         let resolved_by_app = include_str!("github/fixtures/poll.http").replace(
-            r#""resolvedBy":{"__typename":"User","login":"brzzdev","id":"MDQ6VXNlcjE1Njg3NDUw"}"#,
-            r#""resolvedBy":{"__typename":"User","login":"github-advanced-security[bot]","id":"BOT_kgDOghas"}"#,
+            r#""resolvedBy":{"__typename":"User","login":"brzzdev","#,
+            r#""resolvedBy":{"__typename":"User","login":"github-advanced-security[bot]","#,
         );
 
         let poll = poll_with([first_page(&resolved_by_app)]).unwrap();
 
+        let resolver = poll.threads[0].resolved_by.as_ref().unwrap();
         assert_eq!(
-            poll.threads[0].resolved_by,
-            Some(account(
-                "github-advanced-security[bot]",
-                true,
-                "BOT_kgDOghas"
-            ))
+            (resolver.login.as_str(), resolver.bot),
+            ("github-advanced-security[bot]", Some(true))
         );
     }
 

@@ -106,8 +106,8 @@ pub struct Thread {
 pub struct Account {
     /// `None` where the forge doesn't say.
     pub bot: Option<bool>,
-    /// The forge's permanent account id, which `@me` matches; only fresh polls are matched, so
-    /// snapshots leave it out.
+    /// The forge's permanent account id; snapshots leave it out, since events come only from
+    /// fresh polls.
     #[serde(skip)]
     pub id: Option<String>,
     pub login: String,
