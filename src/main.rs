@@ -7,6 +7,7 @@ mod forge;
 mod github;
 mod reference;
 mod response;
+mod rule;
 mod run;
 mod snapshot_file;
 mod target;

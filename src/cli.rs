@@ -4,10 +4,20 @@ use std::time::Duration;
 use clap::Parser;
 
 use crate::reference::{self, Name};
+use crate::rule::{self, Rule};
 
 #[derive(Debug, Parser)]
 #[command(name = "babysit", version, about, long_about = None)]
 pub struct Args {
+    /// Wake only on events matching at least one such rule, such as `'thread.* actor=@human'`;
+    /// repeatable
+    #[arg(long, value_name = "RULE", value_parser = rule::parse)]
+    pub on: Vec<Rule>,
+
+    /// Never wake on an event matching this rule, even one an `--on` rule matches; repeatable
+    #[arg(long, value_name = "RULE", value_parser = rule::parse)]
+    pub ignore: Vec<Rule>,
+
     /// The pull request to watch, as its GitHub web URL or `#<number>` inside a checkout
     #[arg(value_name = "TARGET", value_parser = reference::parse_name)]
     pub target: Name,

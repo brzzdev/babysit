@@ -2,6 +2,9 @@
 fragment author on Actor {
   __typename
   login
+  ... on Node {
+    id
+  }
 }
 
 fragment comment on Comment {

@@ -330,6 +330,7 @@ mod tests {
     fn a_changed_body_is_edited_by_its_editor() {
         let hubot = Account {
             bot: Some(false),
+            id: None,
             login: "hubot".to_owned(),
         };
         let mut next = poll(&["1"]);
@@ -475,6 +476,7 @@ mod tests {
         let baseline = with_reviews(vec![review(ReviewState::Approved)]);
         let hubot = Account {
             bot: Some(false),
+            id: None,
             login: "hubot".to_owned(),
         };
         let dismissed = Review {

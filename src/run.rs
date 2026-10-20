@@ -7,6 +7,7 @@ use crate::diff::diff;
 use crate::envelope::{self, EXIT_ERROR, Envelope, ErrorKind, Outcome, Summary};
 use crate::exec::Exec;
 use crate::forge::{Backend, Snapshot, Target};
+use crate::rule;
 use crate::snapshot_file::{Entry, OpenError, SnapshotFile};
 use crate::target::{self, Locator};
 
@@ -65,6 +66,10 @@ pub fn run(
             return Ok(report(stdout, &Envelope::from_failure(failure, given)));
         }
     };
+    let me = match viewer(args, backend, &target, call_deadline) {
+        Ok(me) => me,
+        Err(envelope) => return Ok(report(stdout, &envelope)),
+    };
     let stored = file.entry(&target.url).map(|entry| entry.snapshot.clone());
     let mut polled: Option<Snapshot> = None;
     let mut envelope = loop {
@@ -82,7 +87,8 @@ pub fn run(
                 polled = Some(poll);
             }
             Some(baseline) => {
-                let (events, next) = diff(baseline, poll);
+                let (mut events, next) = diff(baseline, poll);
+                events.retain(|event| rule::wakes(&args.on, &args.ignore, event, me.as_deref()));
                 polled = Some(next);
                 if !events.is_empty() {
                     let observed_at = rfc3339(clock.now());
@@ -116,6 +122,22 @@ pub fn run(
         return Ok(EXIT_ERROR);
     }
     Ok(envelope.exit_code())
+}
+
+/// The viewer's account id on the target's forge, fetched only when a rule names `@me`.
+fn viewer(
+    args: &Args,
+    backend: &impl Backend,
+    target: &Target,
+    deadline: Option<SystemTime>,
+) -> Result<Option<String>, Envelope> {
+    if !rule::names_me(args.on.iter().chain(&args.ignore)) {
+        return Ok(None);
+    }
+    backend
+        .viewer(&target.host, deadline)
+        .map(Some)
+        .map_err(|failure| Envelope::from_failure(failure, &target.url))
 }
 
 /// Sleeps until the next poll is due, returning `false` once the deadline has passed instead.
@@ -221,6 +243,10 @@ mod tests {
             let step = self.polls.borrow_mut().pop_front();
             step.expect("unexpected poll")()
         }
+
+        fn viewer(&self, _: &str, _: Option<SystemTime>) -> Result<String, Failure> {
+            Ok("U_1".to_owned())
+        }
     }
 
     impl Drop for FakeBackend {
@@ -273,6 +299,8 @@ mod tests {
 
     fn args(snapshot: &Path, timeout: Option<u64>) -> Args {
         Args {
+            ignore: Vec::new(),
+            on: Vec::new(),
             target: reference::parse_name(URL).unwrap(),
             snapshot: snapshot.to_owned(),
             interval: Duration::from_secs(30),
@@ -432,6 +460,24 @@ mod tests {
             saved(&sandbox.snapshot())["targets"][URL]["snapshot"],
             json!(poll(&["1", "2"]))
         );
+    }
+
+    #[test]
+    fn an_ignored_event_is_saved_as_seen_for_later_runs() {
+        let sandbox = Sandbox::new("ignored");
+        seed(&sandbox.snapshot(), &["1"]);
+        let every_event = args(&sandbox.snapshot(), Some(0));
+        let ignoring = Args {
+            ignore: vec![rule::parse("comment.created").unwrap()],
+            ..args(&sandbox.snapshot(), Some(0))
+        };
+
+        let (ignored, envelope) = watch(&ignoring, vec![returns(poll(&["1", "2"]))]);
+        let (later, _) = watch(&every_event, vec![returns(poll(&["1", "2"]))]);
+
+        assert_eq!(ignored, 3);
+        assert_eq!(envelope, timed_out(&[summary()]));
+        assert_eq!(later, 3);
     }
 
     #[test]
