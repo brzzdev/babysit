@@ -38,8 +38,8 @@ pub enum Failure {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Poll {
-    /// `None` when the head has no CI at all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `None` when the head has no CI at all; snapshots keep only the colour reported for it.
+    #[serde(skip)]
     pub ci: Option<Ci>,
     /// The comments outside any thread.
     pub comments: Vec<Comment>,
@@ -73,27 +73,15 @@ impl Reported {
     }
 }
 
-/// A first poll as baseline: whatever colour its head already shows counts as reported.
-impl From<Poll> for Snapshot {
-    fn from(poll: Poll) -> Self {
-        Self {
-            reported: Reported {
-                colour: poll.ci.as_ref().and_then(Ci::colour),
-            },
-            poll,
-        }
-    }
-}
-
 /// The current head's checks.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ci {
     pub checks: Vec<Check>,
     /// Whether every required check is visible, so a missing one can't pass for green.
     pub required_known: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Check {
     pub assessment: Assessment,
     /// The forge's own word for the check's outcome or status.
@@ -104,8 +92,7 @@ pub struct Check {
     pub url: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Assessment {
     Failed,
     Passed,
@@ -120,24 +107,6 @@ pub enum Colour {
     Amber,
     Green,
     Red,
-}
-
-impl Ci {
-    /// Red on the first deciding failure; green or amber only once every deciding check settles.
-    pub fn colour(&self) -> Option<Colour> {
-        let deciding: Vec<_> = self.checks.iter().filter(|check| check.deciding).collect();
-        let any = |assessment| deciding.iter().any(|check| check.assessment == assessment);
-        if any(Assessment::Failed) {
-            return Some(Colour::Red);
-        }
-        if deciding.is_empty() || any(Assessment::Pending) {
-            return None;
-        }
-        if any(Assessment::Waiting) {
-            return Some(Colour::Amber);
-        }
-        self.required_known.then_some(Colour::Green)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

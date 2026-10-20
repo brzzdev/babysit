@@ -103,6 +103,36 @@ impl Detail {
     }
 }
 
+impl Ci {
+    /// Red on the first deciding failure; green or amber only once every deciding check settles.
+    pub fn colour(&self) -> Option<Colour> {
+        let deciding: Vec<_> = self.checks.iter().filter(|check| check.deciding).collect();
+        let any = |assessment| deciding.iter().any(|check| check.assessment == assessment);
+        if any(Assessment::Failed) {
+            return Some(Colour::Red);
+        }
+        if deciding.is_empty() || any(Assessment::Pending) {
+            return None;
+        }
+        if any(Assessment::Waiting) {
+            return Some(Colour::Amber);
+        }
+        self.required_known.then_some(Colour::Green)
+    }
+}
+
+/// A first poll as baseline: whatever colour its head already shows counts as reported.
+impl From<Poll> for Snapshot {
+    fn from(poll: Poll) -> Self {
+        Self {
+            reported: Reported {
+                colour: poll.ci.as_ref().and_then(Ci::colour),
+            },
+            poll,
+        }
+    }
+}
+
 /// The events between `baseline` and `poll`, in report order, and the snapshot that follows.
 pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
     let reported = &baseline.reported;
@@ -173,11 +203,19 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
 }
 
 fn head_pushed(old_sha: &str, poll: &Poll) -> Event {
-    Event {
-        detail: Detail::HeadPushed {
+    on_target(
+        poll,
+        Detail::HeadPushed {
             old_sha: old_sha.to_owned(),
             new_sha: poll.head.clone(),
         },
+    )
+}
+
+/// An event about the target as a whole, which the forge neither times nor attributes.
+fn on_target(poll: &Poll, detail: Detail) -> Event {
+    Event {
+        detail,
         url: poll.url.clone(),
         at: None,
         actor: None,
@@ -199,8 +237,9 @@ fn ci_settled(poll: &Poll, ci: &Ci, colour: Colour) -> Event {
             })
             .collect()
     };
-    Event {
-        detail: Detail::CiSettled {
+    on_target(
+        poll,
+        Detail::CiSettled {
             colour,
             head_sha: poll.head.clone(),
             checks: reports(|check| {
@@ -209,11 +248,7 @@ fn ci_settled(poll: &Poll, ci: &Ci, colour: Colour) -> Event {
             }),
             warnings: reports(|check| !check.deciding && check.assessment == Assessment::Failed),
         },
-        url: poll.url.clone(),
-        at: None,
-        actor: None,
-        subject: None,
-    }
+    )
 }
 
 fn comment_created(comment: &Comment) -> Event {
@@ -711,7 +746,7 @@ mod tests {
                     }],
                     warnings: Vec::new(),
                 },
-                url: "https://github.com/o/r/pull/1".to_owned(),
+                url: poll(&[]).url,
                 at: None,
                 actor: None,
                 subject: None,

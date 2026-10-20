@@ -115,7 +115,8 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         let mut dismissals = Paged::new("dismissals");
         let mut reviews = Paged::new("reviews");
         let mut threads = Paged::new("threads");
-        let mut first: Option<(String, State, Option<String>)> = None;
+        let mut first: Option<(String, State)> = None;
+        let mut rollup_state = None;
         while !(checks.done()
             && comments.done()
             && dismissals.done()
@@ -133,7 +134,13 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             let commit = page.commits.nodes.into_iter().next().ok_or_else(|| {
                 fatal(ErrorKind::PollFailed, "the pull request has no head commit")
             })?;
-            same_head(&page.head_ref_oid, &commit.commit.oid)?;
+            if commit.commit.oid != page.head_ref_oid {
+                let message = format!(
+                    "the head is {} but its latest commit is {}",
+                    page.head_ref_oid, commit.commit.oid,
+                );
+                return Err(fatal(ErrorKind::PollFailed, &message));
+            }
             let rollup = commit.commit.status_check_rollup;
             match &first {
                 None => {
@@ -141,10 +148,10 @@ impl<E: Exec> Backend for GitHub<'_, E> {
                     if rollup.is_none() {
                         checks.page = Page::Done;
                     }
-                    let state = rollup.as_ref().map(|rollup| rollup.state.clone());
-                    first = Some((page.head_ref_oid, page.state, state));
+                    rollup_state = rollup.as_ref().map(|rollup| rollup.state.clone());
+                    first = Some((page.head_ref_oid, page.state));
                 }
-                Some((head, ..)) => same_head(head, &page.head_ref_oid)?,
+                Some((head, _)) => same_head(head, &page.head_ref_oid)?,
             }
             checks.take(rollup.and_then(|rollup| rollup.contexts))?;
             comments.take(page.comments)?;
@@ -152,7 +159,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             reviews.take(page.reviews)?;
             threads.take(page.review_threads)?;
         }
-        let (head, state, rollup) = first.expect("every poll fetches a first page");
+        let (head, state) = first.expect("every poll fetches a first page");
         let mut polled_threads = Vec::new();
         for node in threads.nodes {
             let comments =
@@ -160,7 +167,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             polled_threads.extend(thread(node.thread, comments));
         }
         Ok(Poll {
-            ci: rollup.map(|state| ci(&state, &checks.nodes)),
+            ci: rollup_state.map(|state| ci(&state, &checks.nodes)),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
             head,
             reviews: reviews
@@ -434,17 +441,12 @@ struct CheckRunNode {
     status: String,
 }
 
-#[derive(Deserialize, PartialEq, Eq)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckSuite {
     database_id: u64,
-    workflow_run: Option<WorkflowRun>,
-}
-
-#[derive(Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct WorkflowRun {
-    database_id: u64,
+    /// Present only for GitHub Actions, whose check run ids are job ids.
+    workflow_run: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -642,61 +644,66 @@ fn thread(node: ThreadFields, comments: Vec<CommentNode>) -> Option<Thread> {
     })
 }
 
+impl ContextNode {
+    fn is_required(&self) -> bool {
+        match self {
+            Self::CheckRun(run) => run.is_required,
+            Self::StatusContext(status) => status.is_required,
+        }
+    }
+}
+
 /// The head's checks at their latest attempts, deciding on the required ones when any exist.
 fn ci(rollup_state: &str, contexts: &[ContextNode]) -> Ci {
-    let any_required = contexts.iter().any(|context| match context {
-        ContextNode::CheckRun(run) => run.is_required,
-        ContextNode::StatusContext(status) => status.is_required,
-    });
-    let deciding = |is_required: bool| is_required || !any_required;
-    let runs: Vec<_> = contexts
-        .iter()
-        .filter_map(|context| match context {
-            ContextNode::CheckRun(run) => Some(run),
-            ContextNode::StatusContext(_) => None,
-        })
-        .collect();
+    let any_required = contexts.iter().any(ContextNode::is_required);
+    let suite = |run: &CheckRunNode| run.check_suite.as_ref().map(|suite| suite.database_id);
     let superseded = |run: &CheckRunNode| {
-        runs.iter().any(|other| {
-            other.name == run.name
-                && other.check_suite == run.check_suite
-                && other.database_id > run.database_id
+        contexts.iter().any(|other| match other {
+            ContextNode::CheckRun(other) => {
+                other.name == run.name
+                    && suite(other) == suite(run)
+                    && other.database_id > run.database_id
+            }
+            ContextNode::StatusContext(_) => false,
         })
     };
-    let mut expected_seen = false;
-    let mut checks = Vec::new();
-    for context in contexts {
-        match context {
-            ContextNode::CheckRun(run) if superseded(run) => {}
-            ContextNode::CheckRun(run) => checks.push(Check {
-                assessment: check_run_assessment(&run.status, run.conclusion.as_deref()),
-                conclusion: run
-                    .conclusion
-                    .as_ref()
-                    .unwrap_or(&run.status)
-                    .to_ascii_lowercase(),
-                deciding: deciding(run.is_required),
-                job_id: run
-                    .check_suite
-                    .as_ref()
-                    .and_then(|suite| suite.workflow_run.as_ref())
-                    .map(|_| run.database_id.to_string()),
-                name: run.name.clone(),
-                url: run.details_url.clone(),
-            }),
-            ContextNode::StatusContext(status) => {
-                expected_seen |= status.state == EXPECTED;
-                checks.push(Check {
+    let expected_seen = contexts.iter().any(|context| match context {
+        ContextNode::StatusContext(status) => status.state == EXPECTED,
+        ContextNode::CheckRun(_) => false,
+    });
+    let checks = contexts
+        .iter()
+        .filter_map(|context| {
+            let deciding = context.is_required() || !any_required;
+            match context {
+                ContextNode::CheckRun(run) if superseded(run) => None,
+                ContextNode::CheckRun(run) => Some(Check {
+                    assessment: check_run_assessment(&run.status, run.conclusion.as_deref()),
+                    conclusion: run
+                        .conclusion
+                        .as_ref()
+                        .unwrap_or(&run.status)
+                        .to_ascii_lowercase(),
+                    deciding,
+                    job_id: run
+                        .check_suite
+                        .as_ref()
+                        .and_then(|suite| suite.workflow_run.as_ref())
+                        .map(|_| run.database_id.to_string()),
+                    name: run.name.clone(),
+                    url: run.details_url.clone(),
+                }),
+                ContextNode::StatusContext(status) => Some(Check {
                     assessment: status_assessment(&status.state),
                     conclusion: status.state.to_ascii_lowercase(),
-                    deciding: deciding(status.is_required),
+                    deciding,
                     job_id: None,
                     name: status.context.clone(),
                     url: status.target_url.clone(),
-                });
+                }),
             }
-        }
-    }
+        })
+        .collect();
     Ci {
         checks,
         // The rollup expects a check that no context names.
@@ -714,7 +721,6 @@ fn check_run_assessment(status: &str, conclusion: Option<&str>) -> Assessment {
     }
 }
 
-/// `EXPECTED` is a required status that hasn't reported, amber once nothing else is unsettled.
 fn status_assessment(state: &str) -> Assessment {
     match state {
         "SUCCESS" => Assessment::Passed,
@@ -754,6 +760,8 @@ fn fatal(kind: ErrorKind, message: &str) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+
     use crate::exec::{Output, Script};
     use crate::reference;
 
@@ -1111,16 +1119,24 @@ mod tests {
     }
 
     /// The recorded poll with its head's `statusCheckRollup` replaced by `rollup`.
-    fn with_rollup(rollup: &str) -> String {
+    fn with_rollup(rollup: Value) -> String {
         let fixture = include_str!("github/fixtures/poll.http");
-        let start = fixture.find(r#""statusCheckRollup":"#).unwrap();
-        let end = fixture.find(r#","comments":{"#).unwrap();
-        let (before, after) = (&fixture[..start], &fixture[end..]);
-        format!(r#"{before}"statusCheckRollup":{rollup}}}}}]}}{after}"#)
+        let (headers, body) = fixture.split_once("\n\n").unwrap();
+        let mut body: Value = serde_json::from_str(body).unwrap();
+        *body
+            .pointer_mut("/data/node/commits/nodes/0/commit/statusCheckRollup")
+            .unwrap() = rollup;
+        format!("{headers}\n\n{body}")
     }
 
-    fn checks(nodes: &str) -> String {
-        format!(r#"{{"pageInfo":{{"hasNextPage":false,"endCursor":"MQ"}},"nodes":[{nodes}]}}"#)
+    fn rollup(state: &str, contexts: &Value) -> Value {
+        json!({
+            "state": state,
+            "contexts": {
+                "pageInfo": { "hasNextPage": false, "endCursor": "MQ" },
+                "nodes": contexts,
+            },
+        })
     }
 
     fn ci_of(stdout: &str) -> Option<Ci> {
@@ -1129,24 +1145,31 @@ mod tests {
 
     #[test]
     fn judges_each_check_on_its_latest_attempt_and_decides_on_the_required_ones() {
-        let actions = r#"{"databaseId":1,"workflowRun":{"databaseId":10}}"#;
-        let contexts = checks(&format!(
-            r#"{{"__typename":"CheckRun","checkSuite":{actions},"conclusion":"FAILURE",
-                "databaseId":100,"detailsUrl":"https://example.com/job/100","isRequired":true,
-                "name":"test","status":"COMPLETED"}},
-              {{"__typename":"CheckRun","checkSuite":{actions},"conclusion":null,
-                "databaseId":101,"detailsUrl":"https://example.com/job/101","isRequired":true,
-                "name":"test","status":"IN_PROGRESS"}},
-              {{"__typename":"CheckRun","checkSuite":{{"databaseId":2,"workflowRun":null}},
-                "conclusion":"FAILURE","databaseId":200,"detailsUrl":"https://codecov.io/1",
-                "isRequired":false,"name":"codecov","status":"COMPLETED"}},
-              {{"__typename":"StatusContext","context":"ci/deploy","isRequired":true,
-                "state":"EXPECTED","targetUrl":null}}"#
-        ));
+        let actions = json!({ "databaseId": 1, "workflowRun": { "databaseId": 10 } });
+        let run = |id: u64, conclusion: Option<&str>, status: &str| {
+            json!({
+                "__typename": "CheckRun", "checkSuite": actions, "conclusion": conclusion,
+                "databaseId": id, "detailsUrl": format!("https://example.com/job/{id}"),
+                "isRequired": true, "name": "test", "status": status,
+            })
+        };
+        let contexts = json!([
+            run(100, Some("FAILURE"), "COMPLETED"),
+            run(101, None, "IN_PROGRESS"),
+            {
+                "__typename": "CheckRun",
+                "checkSuite": { "databaseId": 2, "workflowRun": null },
+                "conclusion": "FAILURE", "databaseId": 200,
+                "detailsUrl": "https://codecov.io/1", "isRequired": false, "name": "codecov",
+                "status": "COMPLETED",
+            },
+            {
+                "__typename": "StatusContext", "context": "ci/deploy", "isRequired": true,
+                "state": "EXPECTED", "targetUrl": null,
+            },
+        ]);
 
-        let ci = ci_of(&with_rollup(&format!(
-            r#"{{"state":"FAILURE","contexts":{contexts}}}"#
-        )));
+        let ci = ci_of(&with_rollup(rollup("FAILURE", &contexts)));
 
         assert_eq!(
             ci,
@@ -1184,20 +1207,17 @@ mod tests {
 
     #[test]
     fn a_head_without_a_rollup_has_no_ci() {
-        assert_eq!(ci_of(&with_rollup("null")), None);
+        assert_eq!(ci_of(&with_rollup(Value::Null)), None);
     }
 
     #[test]
     fn an_expected_rollup_naming_no_check_leaves_the_required_set_unknown() {
-        let contexts = checks(
-            r#"{"__typename":"StatusContext","context":"lint","isRequired":false,
-                "state":"SUCCESS","targetUrl":null}"#,
-        );
+        let contexts = json!([{
+            "__typename": "StatusContext", "context": "lint", "isRequired": false,
+            "state": "SUCCESS", "targetUrl": null,
+        }]);
 
-        let ci = ci_of(&with_rollup(&format!(
-            r#"{{"state":"EXPECTED","contexts":{contexts}}}"#
-        )))
-        .unwrap();
+        let ci = ci_of(&with_rollup(rollup("EXPECTED", &contexts))).unwrap();
 
         assert!(!ci.required_known);
         assert!(ci.checks[0].deciding);
