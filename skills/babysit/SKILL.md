@@ -31,7 +31,7 @@ share one run.
    rules loses events, and one file allows one run at a time (`lock_held`).
 2. **Take stock.** The first poll of a target only records its **baseline**: red CI or an open
    thread that is already there never wakes. Run once with `--timeout 0`, which polls each target
-   once and exits 3, and read `targets[]`: `state`, `colour` (`null` while CI is unsettled), `merge`
+   once and exits 3 (on a resumed snapshot it can wake instead: act on its events too), and read `targets[]`: `state`, `colour` (`null` while CI is unsettled), `merge`
    and `unresolved_threads`. Each red or amber `colour`, `conflicted` `merge` and nonzero
    `unresolved_threads` it shows is yours to deal with: none of them will wake you.
 3. **Wait.** Start the same command without `--timeout` as a background job, before you deal with
@@ -39,9 +39,11 @@ share one run.
    - **Claude Code**: `run_in_background`. The harness re-invokes you when it exits, however long
      that takes.
    - **Codex**: the command keeps running in its session but nothing re-invokes you, so poll it
-     with an empty `write_stdin` until it exits. `codex exec` kills it when the turn ends.
+     with an empty `write_stdin` until it exits. `codex exec` kills it when the turn ends, so keep
+     polling within the turn.
 
-   Add a `--timeout` only to recheck something babysit can't wake on, and recheck it on every exit.
+   Add a `--timeout` only when you wait on a condition babysit can't wake on, and recheck that
+   condition on every exit.
 4. **Act on the exit status** and, on a wake, on every event in `events` (both below).
 5. **Run the identical command again.** The baseline carries over, so only what happened since the
    last wake can wake the next run. Stop when a run wakes on `state.merged` or `state.closed`, or
@@ -55,7 +57,7 @@ share one run.
 | 0    | `woke`      | Act on `events`, then re-run                                                    |
 | 1    | `error`     | Read `error.kind` (below). Exit 1 with `outcome: "woke"` means the save failed after printing: act on the events, and expect them again |
 | 2    | none        | A usage error: no envelope on stdout, the reason on stderr. Fix the command     |
-| 3    | `timed_out` | Nothing matched before `--timeout`: check `targets[].state`, then re-run without reporting |
+| 3    | `timed_out` | No wake before `--timeout`: step 2's usual exit, or recheck what the timeout was for, then re-run |
 
 | `error.kind`       | Do                                                                              |
 | ------------------ | ------------------------------------------------------------------------------- |
@@ -106,10 +108,11 @@ What bites:
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
-  until every required check has reported. `ci.settled` fires when the colour changes, so a second
+  until every required check has reported. `ci.settled` is reported when the colour changes, so a second
   check failing while CI is red wakes nothing.
-- **Some changes have no event:** a conflict clearing, or a non-deciding job finishing, such as a
-  GitLab `when: manual` job, which defaults to `allow_failure: true`.
+- **Nothing reports** a conflict clearing, or a job that isn't a deciding check finishing while
+  other jobs decide. A GitLab `when: manual` job outside `rules:` is one: it defaults to
+  `allow_failure: true`, while inside `rules:` it decides and holds CI amber.
 - Issues report only `comment.*` and `state.*`.
 
 ## Acting on a wake
