@@ -122,7 +122,7 @@ resolve from the current directory's repo. Elsewhere, take the host from the tar
 
 - **Red or amber CI:** `checks` lists the deciding checks that failed or wait; `warnings` lists
   failed checks that don't decide. A check's `job_id` reaches its log: `gh run view --job <job_id>
-  --log-failed`, or `glab ci trace <job_id>`.
+  --log-failed`, or `glab ci trace <job_id>`, adding `--repo <project URL>` outside the checkout.
 - **Answer a thread** with its `reply_to`, which is the first comment's id on GitHub and the
   discussion id on GitLab:
   ```sh
