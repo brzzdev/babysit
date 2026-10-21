@@ -574,7 +574,7 @@ impl BaseRef {
     fn classic(&self) -> Vec<Requirement> {
         let full = self.branch_protection_rule.iter().flat_map(|rule| {
             rule.required_status_checks.iter().map(|check| Requirement {
-                app: RequiredApp::named(check.app.as_ref().map(|app| app.database_id)),
+                app: check.app.as_ref().map(|app| app.database_id).into(),
                 context: check.context.clone(),
             })
         });
@@ -613,19 +613,17 @@ struct RulesetCheck {
 impl From<RulesetCheck> for Requirement {
     fn from(check: RulesetCheck) -> Self {
         Self {
-            app: RequiredApp::named(check.integration_id),
+            app: check.integration_id.into(),
             context: check.context,
         }
     }
 }
 
-/// A check the base branch requires.
 struct Requirement {
     app: RequiredApp,
     context: String,
 }
 
-/// Which app's check meets a requirement.
 enum RequiredApp {
     Any,
     Only(u64),
@@ -633,8 +631,9 @@ enum RequiredApp {
     Unknown,
 }
 
-impl RequiredApp {
-    fn named(app: Option<u64>) -> Self {
+/// An app id where the requirement names one, any app where it names none.
+impl From<Option<u64>> for RequiredApp {
+    fn from(app: Option<u64>) -> Self {
         app.map_or(Self::Any, Self::Only)
     }
 }
@@ -908,27 +907,28 @@ impl ContextNode {
         }
     }
 
-    /// Where the app can't be matched, GitHub's own `isRequired` flag says whether it was.
+    /// Where the apps can't be compared, GitHub's own `isRequired` flag says whether it was.
     fn meets(&self, requirement: &Requirement) -> bool {
-        let (name, app) = match self {
-            Self::CheckRun(run) => {
-                let app = run
-                    .check_suite
-                    .as_ref()
-                    .and_then(|suite| suite.app.as_ref())
-                    .map(|app| app.database_id);
-                (&run.name, app)
-            }
-            // A status names no app.
-            Self::StatusContext(status) => (&status.context, None),
+        let name = match self {
+            Self::CheckRun(run) => &run.name,
+            Self::StatusContext(status) => &status.context,
         };
         if *name != requirement.context {
             return false;
         }
-        match (&requirement.app, app) {
+        match (&requirement.app, self) {
             (RequiredApp::Any, _) => true,
-            (RequiredApp::Only(required), Some(app)) => *required == app,
-            (RequiredApp::Only(_), None) | (RequiredApp::Unknown, _) => self.is_required(),
+            (RequiredApp::Only(required), Self::CheckRun(run)) => {
+                let app = run
+                    .check_suite
+                    .as_ref()
+                    .and_then(|suite| suite.app.as_ref());
+                app.is_some_and(|app| app.database_id == *required)
+            }
+            // A status names no app.
+            (RequiredApp::Only(_), Self::StatusContext(_)) | (RequiredApp::Unknown, _) => {
+                self.is_required()
+            }
         }
     }
 }
@@ -2153,21 +2153,27 @@ mod tests {
     /// A non-admin sees classic requirements without their apps, as `refUpdateRule` names none.
     #[test]
     fn a_classic_check_from_another_app_has_not_reported_for_a_non_admin() {
-        let contexts = json!([
-            check_run("build", "COMPLETED", Some("SUCCESS"), CODECOV_APP_ID),
-            required(check_run(
-                "test",
-                "COMPLETED",
-                Some("SUCCESS"),
-                ACTIONS_APP_ID
-            )),
-        ]);
-        let base = protected(&["build", "test"], &json!([]));
+        let test = required(check_run(
+            "test",
+            "COMPLETED",
+            Some("SUCCESS"),
+            ACTIONS_APP_ID,
+        ));
+        let run = check_run("build", "COMPLETED", Some("SUCCESS"), CODECOV_APP_ID);
+        let status = json!({
+            "__typename": "StatusContext", "context": "build", "isRequired": false,
+            "state": "SUCCESS", "targetUrl": null,
+        });
 
-        let ci = ci_of(&with_ci(base, rollup("SUCCESS", &contexts))).unwrap();
+        for build in [run, status] {
+            let contexts = json!([build, test]);
+            let base = protected(&["build", "test"], &json!([]));
 
-        assert!(!ci.required_known);
-        assert_eq!(ci.colour(), None);
+            let ci = ci_of(&with_ci(base, rollup("SUCCESS", &contexts))).unwrap();
+
+            assert!(!ci.required_known);
+            assert_eq!(ci.colour(), None);
+        }
     }
 
     /// As vercel/vercel requires its `Vercel` status, posted by the Vercel app.
