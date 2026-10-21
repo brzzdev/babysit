@@ -243,7 +243,8 @@ impl<E: Exec> GitHub<'_, E> {
                     .nodes
                     .into_iter()
                     .filter_map(|rule| rule.parameters)
-                    .flat_map(|parameters| parameters.required_status_checks);
+                    .flat_map(|parameters| parameters.required_status_checks)
+                    .map(Requirement::from);
                 let required =
                     classic.map(|classic| classic.into_iter().chain(rulesets).collect::<Vec<_>>());
                 ci(&state, &checks.nodes, required.as_deref())
@@ -573,16 +574,16 @@ impl BaseRef {
     fn classic(&self) -> Vec<Requirement> {
         let full = self.branch_protection_rule.iter().flat_map(|rule| {
             rule.required_status_checks.iter().map(|check| Requirement {
+                app: RequiredApp::named(check.app.as_ref().map(|app| app.database_id)),
                 context: check.context.clone(),
-                integration_id: check.app.as_ref().map(|app| app.database_id),
             })
         });
         let binding = self.ref_update_rule.iter().flat_map(|rule| {
             rule.required_status_check_contexts
                 .iter()
                 .map(|context| Requirement {
+                    app: RequiredApp::Unknown,
                     context: context.clone(),
-                    integration_id: None,
                 })
         });
         full.chain(binding).collect()
@@ -599,15 +600,43 @@ struct RulesetRule {
 #[serde(rename_all = "camelCase")]
 struct RulesetParameters {
     #[serde(default)]
-    required_status_checks: Vec<Requirement>,
+    required_status_checks: Vec<RulesetCheck>,
 }
 
-/// A check the base branch requires; one naming an app is met only by that app's checks.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Requirement {
+struct RulesetCheck {
     context: String,
     integration_id: Option<u64>,
+}
+
+impl From<RulesetCheck> for Requirement {
+    fn from(check: RulesetCheck) -> Self {
+        Self {
+            app: RequiredApp::named(check.integration_id),
+            context: check.context,
+        }
+    }
+}
+
+/// A check the base branch requires.
+struct Requirement {
+    app: RequiredApp,
+    context: String,
+}
+
+/// Which app's check meets a requirement.
+enum RequiredApp {
+    Any,
+    Only(u64),
+    /// The requirement may name an app the source doesn't show, as `refUpdateRule` never does.
+    Unknown,
+}
+
+impl RequiredApp {
+    fn named(app: Option<u64>) -> Self {
+        app.map_or(Self::Any, Self::Only)
+    }
 }
 
 #[derive(Deserialize)]
@@ -879,22 +908,27 @@ impl ContextNode {
         }
     }
 
+    /// Where the app can't be matched, GitHub's own `isRequired` flag says whether it was.
     fn meets(&self, requirement: &Requirement) -> bool {
-        match self {
+        let (name, app) = match self {
             Self::CheckRun(run) => {
                 let app = run
                     .check_suite
                     .as_ref()
                     .and_then(|suite| suite.app.as_ref())
                     .map(|app| app.database_id);
-                run.name == requirement.context
-                    && requirement.integration_id.is_none_or(|id| app == Some(id))
+                (&run.name, app)
             }
-            // A status names no app, but GitHub flags one posted by the required app as required.
-            Self::StatusContext(status) => {
-                status.context == requirement.context
-                    && (requirement.integration_id.is_none() || status.is_required)
-            }
+            // A status names no app.
+            Self::StatusContext(status) => (&status.context, None),
+        };
+        if *name != requirement.context {
+            return false;
+        }
+        match (&requirement.app, app) {
+            (RequiredApp::Any, _) => true,
+            (RequiredApp::Only(required), Some(app)) => *required == app,
+            (RequiredApp::Only(_), None) | (RequiredApp::Unknown, _) => self.is_required(),
         }
     }
 }
@@ -2109,6 +2143,26 @@ mod tests {
             &[],
             &json!([{ "context": "check", "integrationId": ACTIONS_APP_ID }]),
         );
+
+        let ci = ci_of(&with_ci(base, rollup("SUCCESS", &contexts))).unwrap();
+
+        assert!(!ci.required_known);
+        assert_eq!(ci.colour(), None);
+    }
+
+    /// A non-admin sees classic requirements without their apps, as `refUpdateRule` names none.
+    #[test]
+    fn a_classic_check_from_another_app_has_not_reported_for_a_non_admin() {
+        let contexts = json!([
+            check_run("build", "COMPLETED", Some("SUCCESS"), CODECOV_APP_ID),
+            required(check_run(
+                "test",
+                "COMPLETED",
+                Some("SUCCESS"),
+                ACTIONS_APP_ID
+            )),
+        ]);
+        let base = protected(&["build", "test"], &json!([]));
 
         let ci = ci_of(&with_ci(base, rollup("SUCCESS", &contexts))).unwrap();
 
