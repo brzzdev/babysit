@@ -63,7 +63,8 @@ terms, separated by spaces.
 - **`--ignore` wins**: an event matching any `--ignore` rule never wakes, whatever `--on` says.
 - **A missing field never matches.** `actor=@human` doesn't match an event with no actor, and with
   no kind pattern, `colour=red` matches only `ci.settled`. A pattern whose kinds can't carry the
-  field is a usage error: `thread.opened colour=red`.
+  field is a usage error: `thread.opened colour=red`. The exception is `head.pushed`, which accepts
+  `actor` but never has one, so `head.pushed actor=…` parses and never matches.
 
 | Field     | Carried by                            | Values                                     |
 | --------- | ------------------------------------- | ------------------------------------------ |
@@ -90,7 +91,7 @@ Examples:
 --on 'thread.* actor=@human'                            # any thread activity by a person
 --on 'review.submitted state=changes_requested'
 --on 'review.withdrawn subject=@me'                     # my review was dismissed or lapsed
---ignore 'actor=gitar-bot[bot]'                         # never wake on this app
+--ignore 'actor=gitar-bot[bot]'                         # never wake on this bot
 ```
 
 ## Events
@@ -135,8 +136,8 @@ present.
 id on GitLab. A check in `checks` or `warnings` is `name`; `conclusion`, the forge's own word in
 lowercase; `url` (nullable); and `job_id` (optional: a GitHub Actions job or a GitLab job).
 
-Issues report only `comment.*` and `state.*` events. Merge state is news only on an open target, and
-an event about the target as a whole (`ci.settled`, `head.pushed`, `merge.*`) has no `at` or
+Issues report only `comment.*` and `state.*` events. `merge.*` events come only from an open target,
+and an event about the target as a whole (`ci.settled`, `head.pushed`, `merge.*`) has no `at` or
 `actor`. Within one target, events are ordered by `at`, untimed ones last; targets follow the order
 they were given in.
 
