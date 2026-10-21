@@ -464,22 +464,28 @@ fn resolution(thread: &Thread) -> Event {
     }
 }
 
-/// The events each poll yields against the one before, by kind, with a settled colour appended.
 #[cfg(test)]
-pub fn kinds_across(polls: impl IntoIterator<Item = Poll>) -> Vec<Vec<String>> {
-    let mut polls = polls.into_iter();
-    let mut snapshot = Snapshot::from(polls.next().expect("a baseline poll"));
-    let mut kinds = Vec::new();
-    for poll in polls {
-        let (events, next) = diff(&snapshot, poll);
-        let kind = |event: &Event| match &event.detail {
-            Detail::CiSettled { colour, .. } => format!("ci.settled {colour:?}"),
-            detail => detail.kind().to_owned(),
-        };
-        kinds.push(events.iter().map(kind).collect());
-        snapshot = next;
+fn label(event: &Event) -> String {
+    match &event.detail {
+        Detail::CiSettled { colour, .. } => format!("ci.settled {colour:?}"),
+        detail => detail.kind().to_owned(),
     }
-    kinds
+}
+
+/// The events of each poll after `first`, reloading each snapshot as a restart would.
+#[cfg(test)]
+pub fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
+    let reload = |snapshot: &Snapshot| {
+        serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap()
+    };
+    let mut snapshot = reload(&Snapshot::from(first));
+    rest.into_iter()
+        .map(|next| {
+            let (events, next) = diff(&snapshot, next);
+            snapshot = reload(&next);
+            events.iter().map(label).collect()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -949,28 +955,6 @@ mod tests {
             head: Some(head.to_owned()),
             ..poll(&[])
         }
-    }
-
-    fn label(event: &Event) -> String {
-        match &event.detail {
-            Detail::CiSettled { colour, .. } => format!("ci.settled {colour:?}"),
-            detail => detail.kind().to_owned(),
-        }
-    }
-
-    /// The events of each poll after `first`, reloading each snapshot as a restart would.
-    fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
-        let reload = |snapshot: &Snapshot| {
-            serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap()
-        };
-        let mut snapshot = reload(&Snapshot::from(first));
-        rest.into_iter()
-            .map(|next| {
-                let (events, next) = diff(&snapshot, next);
-                snapshot = reload(&next);
-                events.iter().map(label).collect()
-            })
-            .collect()
     }
 
     #[test]

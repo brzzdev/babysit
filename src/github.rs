@@ -1920,25 +1920,26 @@ mod tests {
         }
     }
 
-    /// The events each recorded poll of the sandbox PR yields against the poll before it.
-    fn kinds_across(stdouts: &[&str]) -> Vec<Vec<String>> {
-        diff::kinds_across(
-            stdouts
-                .iter()
-                .map(|stdout| poll_with([first_page(stdout)]).unwrap()),
+    fn replay(first: &str, rest: &[&str]) -> Vec<Vec<String>> {
+        let poll = |stdout| poll_with([first_page(stdout)]).unwrap();
+        diff::steps(
+            poll(first),
+            rest.iter().map(|stdout| poll(stdout)).collect(),
         )
     }
 
     #[test]
-    fn a_live_review_conversation_wakes_on_each_step_but_not_on_a_minimise() {
-        let kinds = kinds_across(&[
+    fn a_live_review_conversation_wakes_on_each_step_and_a_minimise_is_invisible() {
+        let kinds = replay(
             include_str!("github/fixtures/poll_green.http"),
-            include_str!("github/fixtures/poll_commented.http"),
-            include_str!("github/fixtures/poll_comment_minimised.http"),
-            include_str!("github/fixtures/poll_bot_approved.http"),
-            include_str!("github/fixtures/poll_thread_opened.http"),
-            include_str!("github/fixtures/poll_thread_resolved.http"),
-        ]);
+            &[
+                include_str!("github/fixtures/poll_commented.http"),
+                include_str!("github/fixtures/poll_comment_minimised.http"),
+                include_str!("github/fixtures/poll_bot_approved.http"),
+                include_str!("github/fixtures/poll_thread_opened.http"),
+                include_str!("github/fixtures/poll_thread_resolved.http"),
+            ],
+        );
 
         assert_eq!(
             kinds,
@@ -1950,17 +1951,27 @@ mod tests {
                 vec!["thread.resolved"],
             ],
         );
+        let stdout = include_str!("github/fixtures/poll_bot_approved.http");
+        let approver = poll_with([first_page(stdout)]).unwrap().reviews[0]
+            .actor
+            .clone();
+        assert_eq!(
+            approver.map(|actor| (actor.login, actor.bot)),
+            Some(("github-actions[bot]".to_owned(), Some(true))),
+        );
     }
 
     #[test]
     fn a_pull_request_settles_red_then_green_across_pushes() {
-        let kinds = kinds_across(&[
+        let kinds = replay(
             include_str!("github/fixtures/poll_thread_resolved.http"),
-            include_str!("github/fixtures/poll_red_pending.http"),
-            include_str!("github/fixtures/poll_red.http"),
-            include_str!("github/fixtures/poll_green_pending.http"),
-            include_str!("github/fixtures/poll_green_again.http"),
-        ]);
+            &[
+                include_str!("github/fixtures/poll_red_pending.http"),
+                include_str!("github/fixtures/poll_red.http"),
+                include_str!("github/fixtures/poll_green_pending.http"),
+                include_str!("github/fixtures/poll_green_again.http"),
+            ],
+        );
 
         assert_eq!(
             kinds,

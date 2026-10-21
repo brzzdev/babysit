@@ -789,6 +789,7 @@ mod tests {
     const RESET: u64 = 1_792_533_720;
     const RESOLVE: &str = "glab api -i --hostname gitlab.com \
                            projects/gitlab-org%2Fcli/merge_requests/4157";
+    const SANDBOX_MR_ID: &str = "552635815";
     const URL: &str = "https://gitlab.com/gitlab-org/cli/-/merge_requests/4157";
 
     fn target() -> Target {
@@ -1434,37 +1435,38 @@ mod tests {
     fn a_draft_still_reports_the_conflict_it_outranks() {
         let stdout = include_str!("gitlab/fixtures/poll_draft_conflict.http");
 
-        let poll = poll_one(&merge_request("552635815"), POLL_QUERY, stdout);
+        let poll = poll_one(&merge_request(SANDBOX_MR_ID), POLL_QUERY, stdout);
 
         assert_eq!(poll.merge, Some(Merge::Conflicted));
     }
 
-    /// The events each recorded poll of MR !3 yields against the poll before it.
-    fn kinds_across(stdouts: &[&str]) -> Vec<Vec<String>> {
-        let target = merge_request("552635815");
-        diff::kinds_across(
-            stdouts
-                .iter()
-                .map(|stdout| poll_one(&target, POLL_QUERY, stdout)),
+    fn replay(first: &str, rest: &[&str]) -> Vec<Vec<String>> {
+        let target = merge_request(SANDBOX_MR_ID);
+        let poll = |stdout| poll_one(&target, POLL_QUERY, stdout);
+        diff::steps(
+            poll(first),
+            rest.iter().map(|stdout| poll(stdout)).collect(),
         )
     }
 
     #[test]
     fn resolving_a_thread_reports_only_the_resolution_though_it_bumps_the_edit_time() {
-        let kinds = kinds_across(&[
+        let kinds = replay(
             include_str!("gitlab/fixtures/poll_thread_open.http"),
-            include_str!("gitlab/fixtures/poll_thread_resolved.http"),
-        ]);
+            &[include_str!("gitlab/fixtures/poll_thread_resolved.http")],
+        );
 
         assert_eq!(kinds, [["thread.resolved"]]);
     }
 
     #[test]
     fn a_published_draft_note_batch_reports_each_note_and_the_thread_its_reply_reopened() {
-        let kinds = kinds_across(&[
+        let kinds = replay(
             include_str!("gitlab/fixtures/poll_pipeline_passed.http"),
-            include_str!("gitlab/fixtures/poll_draft_notes_published.http"),
-        ]);
+            &[include_str!(
+                "gitlab/fixtures/poll_draft_notes_published.http"
+            )],
+        );
 
         assert_eq!(
             kinds,
@@ -1474,12 +1476,14 @@ mod tests {
 
     #[test]
     fn a_pipeline_settles_red_then_green_on_the_next_head() {
-        let kinds = kinds_across(&[
+        let kinds = replay(
             include_str!("gitlab/fixtures/poll_pipeline_running.http"),
-            include_str!("gitlab/fixtures/poll_pipeline_failed.http"),
-            include_str!("gitlab/fixtures/poll_pipeline_rerunning.http"),
-            include_str!("gitlab/fixtures/poll_pipeline_passed.http"),
-        ]);
+            &[
+                include_str!("gitlab/fixtures/poll_pipeline_failed.http"),
+                include_str!("gitlab/fixtures/poll_pipeline_rerunning.http"),
+                include_str!("gitlab/fixtures/poll_pipeline_passed.http"),
+            ],
+        );
 
         assert_eq!(
             kinds,
