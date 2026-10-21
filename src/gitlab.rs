@@ -776,9 +776,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::diff::{self, Detail};
+    use crate::diff;
     use crate::exec::{self, Output, Script};
-    use crate::forge::{Colour, Snapshot};
+    use crate::forge::Colour;
     use crate::reference;
 
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
@@ -1439,22 +1439,14 @@ mod tests {
         assert_eq!(poll.merge, Some(Merge::Conflicted));
     }
 
-    /// The events each recorded poll of MR !3 yields against the poll before it, by kind.
+    /// The events each recorded poll of MR !3 yields against the poll before it.
     fn kinds_across(stdouts: &[&str]) -> Vec<Vec<String>> {
         let target = merge_request("552635815");
-        let poll = |stdout| poll_one(&target, POLL_QUERY, stdout);
-        let mut snapshot = Snapshot::from(poll(stdouts[0]));
-        let mut kinds = Vec::new();
-        for stdout in &stdouts[1..] {
-            let (events, next) = diff::diff(&snapshot, poll(stdout));
-            let kind = |event: &diff::Event| match &event.detail {
-                Detail::CiSettled { colour, .. } => format!("ci.settled {colour:?}"),
-                detail => detail.kind().to_owned(),
-            };
-            kinds.push(events.iter().map(kind).collect());
-            snapshot = next;
-        }
-        kinds
+        diff::kinds_across(
+            stdouts
+                .iter()
+                .map(|stdout| poll_one(&target, POLL_QUERY, stdout)),
+        )
     }
 
     #[test]

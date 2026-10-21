@@ -464,6 +464,24 @@ fn resolution(thread: &Thread) -> Event {
     }
 }
 
+/// The events each poll yields against the one before, by kind, with a settled colour appended.
+#[cfg(test)]
+pub fn kinds_across(polls: impl IntoIterator<Item = Poll>) -> Vec<Vec<String>> {
+    let mut polls = polls.into_iter();
+    let mut snapshot = Snapshot::from(polls.next().expect("a baseline poll"));
+    let mut kinds = Vec::new();
+    for poll in polls {
+        let (events, next) = diff(&snapshot, poll);
+        let kind = |event: &Event| match &event.detail {
+            Detail::CiSettled { colour, .. } => format!("ci.settled {colour:?}"),
+            detail => detail.kind().to_owned(),
+        };
+        kinds.push(events.iter().map(kind).collect());
+        snapshot = next;
+    }
+    kinds
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

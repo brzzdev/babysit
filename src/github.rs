@@ -947,6 +947,7 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
+    use crate::diff;
     use crate::exec::{self, Limit, Output, Script};
     use crate::forge::Colour;
     use crate::reference;
@@ -1917,5 +1918,58 @@ mod tests {
         ] {
             assert_eq!(status_assessment(state), assessment, "{state}");
         }
+    }
+
+    /// The events each recorded poll of the sandbox PR yields against the poll before it.
+    fn kinds_across(stdouts: &[&str]) -> Vec<Vec<String>> {
+        diff::kinds_across(
+            stdouts
+                .iter()
+                .map(|stdout| poll_with([first_page(stdout)]).unwrap()),
+        )
+    }
+
+    #[test]
+    fn a_live_review_conversation_wakes_on_each_step_but_not_on_a_minimise() {
+        let kinds = kinds_across(&[
+            include_str!("github/fixtures/poll_green.http"),
+            include_str!("github/fixtures/poll_commented.http"),
+            include_str!("github/fixtures/poll_comment_minimised.http"),
+            include_str!("github/fixtures/poll_bot_approved.http"),
+            include_str!("github/fixtures/poll_thread_opened.http"),
+            include_str!("github/fixtures/poll_thread_resolved.http"),
+        ]);
+
+        assert_eq!(
+            kinds,
+            [
+                vec!["comment.created"],
+                vec![],
+                vec!["review.submitted"],
+                vec!["review.submitted", "thread.opened"],
+                vec!["thread.resolved"],
+            ],
+        );
+    }
+
+    #[test]
+    fn a_pull_request_settles_red_then_green_across_pushes() {
+        let kinds = kinds_across(&[
+            include_str!("github/fixtures/poll_thread_resolved.http"),
+            include_str!("github/fixtures/poll_red_pending.http"),
+            include_str!("github/fixtures/poll_red.http"),
+            include_str!("github/fixtures/poll_green_pending.http"),
+            include_str!("github/fixtures/poll_green_again.http"),
+        ]);
+
+        assert_eq!(
+            kinds,
+            [
+                vec!["head.pushed"],
+                vec!["ci.settled Red"],
+                vec!["head.pushed"],
+                vec!["ci.settled Green"],
+            ],
+        );
     }
 }
