@@ -1,0 +1,31 @@
+HTTP/2.0 200 OK
+Cache-Control: max-age=0, private, must-revalidate
+Cf-Cache-Status: DYNAMIC
+Cf-Ray: a4df20120c8f220a-MAN
+Content-Security-Policy: base-uri 'self'; child-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ 'self' https://gitlab.com/assets/ blob: data:; connect-src 'self' https://gitlab.com wss://gitlab.com https://sentry.gitlab.net https://new-sentry.gitlab.net https://customers.gitlab.com https://snowplow.trx.gitlab.net https://sourcegraph.com https://collector.prd-278964.gl-product-analytics.com https://analytics.gitlab.com snowplowprd.trx.gitlab.net; default-src 'self'; font-src 'self'; form-action 'self' https: http:; frame-ancestors 'self'; frame-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/; img-src 'self' data: blob: http: https:; manifest-src 'self'; media-src 'self' data: blob: http: https:; object-src 'none'; report-uri https://new-sentry.gitlab.net/api/4/security/?sentry_key=f5573e26de8f4293b285e556c35dfd6e&sentry_environment=gprd; script-src 'strict-dynamic' 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://www.recaptcha.net/ https://apis.google.com https://*.zuora.com/apps/PublicHostedPageLite.do 'nonce-zKSu8rzqlQAlm47BQPELyg=='; style-src 'self' 'unsafe-inline'; worker-src 'self' https://gitlab.com/assets/ blob: data:
+Content-Type: application/json; charset=utf-8
+Date: Wed, 21 Oct 2026 09:09:46 GMT
+Etag: W/"3805d13f7fc6e8470c724f5768de4f19"
+Gitlab-Lb: haproxy-main-23-lb-gprd
+Gitlab-Sv: api-gke-us-east1-c
+Nel: {"max_age": 0}
+Permissions-Policy: interest-cohort=()
+Ratelimit-Limit: 100
+Ratelimit-Name: burst_traffic_per_user_free_plan
+Ratelimit-Observed: 13
+Ratelimit-Remaining: 87
+Ratelimit-Reset: 1792573800
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a4df20120c8f220a-MAN","version":"1"}
+X-Permitted-Cross-Domain-Policies: none
+X-Request-Id: a4df20120c8f220a-MAN
+X-Runtime: 0.243889
+X-Ua-Compatible: IE=edge
+X-Xss-Protection: 1; mode=block
+
+{"data":{"mergeRequest":{"closedAt":null,"conflicts":false,"detailedMergeStatus":"MERGEABLE","diffHeadSha":"f807feb03622539615f181960330d5fe94cdc3e2","headPipeline":{"id":"gid://gitlab/Ci::Pipeline/2971146222","jobs":{"pageInfo":{"hasNextPage":false,"endCursor":"eyJpZCI6IjE3MzQyNDAyNTg2In0"},"nodes":[{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17342402587","name":"blocking-manual","status":"MANUAL","webPath":"/brzz/babysit-sandbox/-/jobs/17342402587"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17342402586","name":"check","status":"SUCCESS","webPath":"/brzz/babysit-sandbox/-/jobs/17342402586"}]},"mergeRequestEventType":"DETACHED","path":"/brzz/babysit-sandbox/-/pipelines/2971146222","sha":"f807feb03622539615f181960330d5fe94cdc3e2","status":"MANUAL"},"mergeUser":null,"mergedAt":null,"project":{"allowMergeOnSkippedPipeline":null},"projectId":87900204,"shouldBeRebased":false,"state":"opened","approvedBy":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"notes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewers":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}
