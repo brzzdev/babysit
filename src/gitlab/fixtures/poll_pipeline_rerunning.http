@@ -1,0 +1,31 @@
+HTTP/2.0 200 OK
+Cache-Control: max-age=0, private, must-revalidate
+Cf-Cache-Status: DYNAMIC
+Cf-Ray: a4df250a781ea5d0-MAN
+Content-Security-Policy: base-uri 'self'; child-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ 'self' https://gitlab.com/assets/ blob: data:; connect-src 'self' https://gitlab.com wss://gitlab.com https://sentry.gitlab.net https://new-sentry.gitlab.net https://customers.gitlab.com https://snowplow.trx.gitlab.net https://sourcegraph.com https://collector.prd-278964.gl-product-analytics.com https://analytics.gitlab.com snowplowprd.trx.gitlab.net; default-src 'self'; font-src 'self'; form-action 'self' https: http:; frame-ancestors 'self'; frame-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/; img-src 'self' data: blob: http: https:; manifest-src 'self'; media-src 'self' data: blob: http: https:; object-src 'none'; report-uri https://new-sentry.gitlab.net/api/4/security/?sentry_key=f5573e26de8f4293b285e556c35dfd6e&sentry_environment=gprd; script-src 'strict-dynamic' 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://www.recaptcha.net/ https://apis.google.com https://*.zuora.com/apps/PublicHostedPageLite.do 'nonce-LQYG7QzzwrB8StHmIitCmA=='; style-src 'self' 'unsafe-inline'; worker-src 'self' https://gitlab.com/assets/ blob: data:
+Content-Type: application/json; charset=utf-8
+Date: Wed, 21 Oct 2026 09:13:09 GMT
+Etag: W/"39a212b765537ed712e459893e85e5ea"
+Gitlab-Lb: haproxy-main-43-lb-gprd
+Gitlab-Sv: api-gke-us-east1-b
+Nel: {"max_age": 0}
+Permissions-Policy: interest-cohort=()
+Ratelimit-Limit: 100
+Ratelimit-Name: burst_traffic_per_user_free_plan
+Ratelimit-Observed: 6
+Ratelimit-Remaining: 94
+Ratelimit-Reset: 1792574040
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a4df250a781ea5d0-MAN","version":"1"}
+X-Permitted-Cross-Domain-Policies: none
+X-Request-Id: a4df250a781ea5d0-MAN
+X-Runtime: 0.276080
+X-Ua-Compatible: IE=edge
+X-Xss-Protection: 1; mode=block
+
+{"data":{"mergeRequest":{"closedAt":null,"conflicts":false,"detailedMergeStatus":"CI_STILL_RUNNING","diffHeadSha":"1e2706197ed4bed0b4c3e16b073c910f273bf88d","headPipeline":{"id":"gid://gitlab/Ci::Pipeline/2971159601","jobs":{"pageInfo":{"hasNextPage":false,"endCursor":"eyJpZCI6IjE3MzQyNTE2MTkzIn0"},"nodes":[{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17342516193","name":"check","status":"RUNNING","webPath":"/brzz/babysit-sandbox/-/jobs/17342516193"}]},"mergeRequestEventType":"DETACHED","path":"/brzz/babysit-sandbox/-/pipelines/2971159601","sha":"1e2706197ed4bed0b4c3e16b073c910f273bf88d","status":"RUNNING"},"mergeUser":null,"mergedAt":null,"project":{"allowMergeOnSkippedPipeline":null},"projectId":87900204,"shouldBeRebased":false,"state":"opened","approvedBy":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"notes":{"pageInfo":{"hasNextPage":false,"endCursor":"eyJjcmVhdGVkX2F0IjoiMjAyNi0xMC0yMSAwOToxMDoxMC43NDA0MjUwMDAgKzAwMDAiLCJpZCI6IjQwNTY4MTA0MzMifQ"},"nodes":[{"author":{"bot":false,"id":"gid://gitlab/User/11178598","username":"brzz"},"body":"An unresolved thread","createdAt":"2026-10-21T09:10:10Z","discussion":{"id":"gid://gitlab/Discussion/4c29888c53daac3665cdbbba03dabbfaa8fcecb1","resolvable":true,"resolved":true,"resolvedBy":{"bot":false,"id":"gid://gitlab/User/11178598","username":"brzz"}},"id":"gid://gitlab/DiscussionNote/4056810433","lastEditedAt":"2026-10-21T09:11:26Z","lastEditedBy":null,"position":null,"url":"https://gitlab.com/brzz/babysit-sandbox/-/merge_requests/3#note_4056810433"}]},"reviewers":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}

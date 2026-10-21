@@ -947,6 +947,7 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
+    use crate::diff;
     use crate::exec::{self, Limit, Output, Script};
     use crate::forge::Colour;
     use crate::reference;
@@ -1639,6 +1640,16 @@ mod tests {
     }
 
     #[test]
+    fn a_head_the_base_requires_to_be_up_to_date_is_behind() {
+        let stdout = include_str!("github/fixtures/poll_behind.http");
+
+        assert_eq!(
+            poll_with([first_page(stdout)]).unwrap().merge,
+            Some(Merge::Behind)
+        );
+    }
+
+    #[test]
     fn closing_and_reopening_are_attributed_to_their_timeline_events() {
         let read = |state: &str, event: &str| {
             let fixture = include_str!("github/fixtures/poll.http")
@@ -1811,8 +1822,13 @@ mod tests {
     }
 
     #[test]
-    fn a_head_without_a_rollup_has_no_ci() {
-        assert_eq!(ci_of(&with_rollup(Value::Null)), None);
+    fn a_fresh_head_has_no_ci_yet_reads_clean() {
+        let stdout = include_str!("github/fixtures/poll_fresh_head.http");
+
+        let poll = poll_with([first_page(stdout)]).unwrap();
+
+        assert_eq!(poll.ci, None);
+        assert_eq!(poll.merge, Some(Merge::Clean));
     }
 
     #[test]
@@ -1902,5 +1918,69 @@ mod tests {
         ] {
             assert_eq!(status_assessment(state), assessment, "{state}");
         }
+    }
+
+    fn replay(first: &str, rest: &[&str]) -> Vec<Vec<String>> {
+        let poll = |stdout| poll_with([first_page(stdout)]).unwrap();
+        diff::steps(
+            poll(first),
+            rest.iter().map(|stdout| poll(stdout)).collect(),
+        )
+    }
+
+    #[test]
+    fn a_live_review_conversation_wakes_on_each_step_and_a_minimise_is_invisible() {
+        let kinds = replay(
+            include_str!("github/fixtures/poll_green.http"),
+            &[
+                include_str!("github/fixtures/poll_commented.http"),
+                include_str!("github/fixtures/poll_comment_minimised.http"),
+                include_str!("github/fixtures/poll_bot_approved.http"),
+                include_str!("github/fixtures/poll_thread_opened.http"),
+                include_str!("github/fixtures/poll_thread_resolved.http"),
+            ],
+        );
+
+        assert_eq!(
+            kinds,
+            [
+                vec!["comment.created"],
+                vec![],
+                vec!["review.submitted"],
+                vec!["review.submitted", "thread.opened"],
+                vec!["thread.resolved"],
+            ],
+        );
+        let stdout = include_str!("github/fixtures/poll_bot_approved.http");
+        let approver = poll_with([first_page(stdout)]).unwrap().reviews[0]
+            .actor
+            .clone();
+        assert_eq!(
+            approver.map(|actor| (actor.login, actor.bot)),
+            Some(("github-actions[bot]".to_owned(), Some(true))),
+        );
+    }
+
+    #[test]
+    fn a_pull_request_settles_red_then_green_across_pushes() {
+        let kinds = replay(
+            include_str!("github/fixtures/poll_thread_resolved.http"),
+            &[
+                include_str!("github/fixtures/poll_red_pending.http"),
+                include_str!("github/fixtures/poll_red.http"),
+                include_str!("github/fixtures/poll_green_pending.http"),
+                include_str!("github/fixtures/poll_green_again.http"),
+            ],
+        );
+
+        assert_eq!(
+            kinds,
+            [
+                vec!["head.pushed"],
+                vec!["ci.settled Red"],
+                vec!["head.pushed"],
+                vec!["ci.settled Green"],
+            ],
+        );
     }
 }

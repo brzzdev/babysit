@@ -776,14 +776,17 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::diff;
     use crate::exec::{self, Output, Script};
     use crate::forge::Colour;
     use crate::reference;
 
+    const BLOCKERS_MR_ID: &str = "552635815";
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
     const HEAD: &str = "25892092f1db0711fcea689c27db39f6d928d2eb";
     /// The recorded head pipeline's merge commit.
     const MERGE_SHA: &str = "d29dd22357102fba3709a18e01c6a96e025174a3";
+    const PLAIN_MR_ID: &str = "552726042";
     /// The fixture's `Ratelimit-Reset`.
     const RESET: u64 = 1_792_533_720;
     const RESOLVE: &str = "glab api -i --hostname gitlab.com \
@@ -1129,6 +1132,26 @@ mod tests {
     }
 
     #[test]
+    fn an_unplayed_manual_job_holds_the_pipeline_only_when_it_decides() {
+        let colour = |id, stdout| {
+            let poll = poll_one(&merge_request(id), POLL_QUERY, stdout);
+            poll.ci.and_then(|ci| ci.colour())
+        };
+
+        let optional = colour(
+            "552635132",
+            include_str!("gitlab/fixtures/poll_optional_manual.http"),
+        );
+        let blocking = colour(
+            "552635421",
+            include_str!("gitlab/fixtures/poll_blocking_manual.http"),
+        );
+
+        assert_eq!(optional, Some(Colour::Green));
+        assert_eq!(blocking, Some(Colour::Amber));
+    }
+
+    #[test]
     fn failures_that_do_not_decide_warn_and_a_deciding_manual_job_holds_the_pipeline_amber() {
         let pipeline = pipeline(
             "MANUAL",
@@ -1405,6 +1428,87 @@ mod tests {
                 None,
                 None,
                 Some(Merge::Clean),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_draft_still_reports_the_conflict_it_outranks() {
+        let stdout = include_str!("gitlab/fixtures/poll_draft_conflict.http");
+
+        let poll = poll_one(&merge_request(BLOCKERS_MR_ID), POLL_QUERY, stdout);
+
+        assert_eq!(poll.merge, Some(Merge::Conflicted));
+    }
+
+    fn replay(id: &str, first: &str, rest: &[&str]) -> Vec<Vec<String>> {
+        let target = merge_request(id);
+        let poll = |stdout| poll_one(&target, POLL_QUERY, stdout);
+        diff::steps(
+            poll(first),
+            rest.iter().map(|stdout| poll(stdout)).collect(),
+        )
+    }
+
+    #[test]
+    fn a_plain_note_is_a_comment_and_an_approval_a_review_without_a_time() {
+        let unreviewed = include_str!("gitlab/fixtures/poll_unreviewed.http");
+        let commented = include_str!("gitlab/fixtures/poll_commented.http");
+        let approved = include_str!("gitlab/fixtures/poll_approved.http");
+
+        let kinds = replay(PLAIN_MR_ID, unreviewed, &[commented, approved]);
+        let review = &poll_one(&merge_request(PLAIN_MR_ID), POLL_QUERY, approved).reviews[0];
+
+        assert_eq!(kinds, [["comment.created"], ["review.submitted"]]);
+        assert_eq!(review.state, ReviewState::Approved);
+        assert_eq!(review.at, None);
+    }
+
+    #[test]
+    fn resolving_a_thread_reports_only_the_resolution_though_it_bumps_the_edit_time() {
+        let kinds = replay(
+            BLOCKERS_MR_ID,
+            include_str!("gitlab/fixtures/poll_thread_open.http"),
+            &[include_str!("gitlab/fixtures/poll_thread_resolved.http")],
+        );
+
+        assert_eq!(kinds, [["thread.resolved"]]);
+    }
+
+    #[test]
+    fn a_published_draft_note_batch_reports_each_note_and_the_thread_its_reply_reopened() {
+        let kinds = replay(
+            BLOCKERS_MR_ID,
+            include_str!("gitlab/fixtures/poll_pipeline_passed.http"),
+            &[include_str!(
+                "gitlab/fixtures/poll_draft_notes_published.http"
+            )],
+        );
+
+        assert_eq!(
+            kinds,
+            [["thread.opened", "thread.replied", "thread.unresolved"]],
+        );
+    }
+
+    #[test]
+    fn a_pipeline_settles_red_then_green_on_the_next_head() {
+        let kinds = replay(
+            BLOCKERS_MR_ID,
+            include_str!("gitlab/fixtures/poll_pipeline_running.http"),
+            &[
+                include_str!("gitlab/fixtures/poll_pipeline_failed.http"),
+                include_str!("gitlab/fixtures/poll_pipeline_rerunning.http"),
+                include_str!("gitlab/fixtures/poll_pipeline_passed.http"),
+            ],
+        );
+
+        assert_eq!(
+            kinds,
+            [
+                vec!["ci.settled Red"],
+                vec!["head.pushed"],
+                vec!["ci.settled Green"],
             ],
         );
     }
