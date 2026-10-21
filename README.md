@@ -78,11 +78,12 @@ GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab.
 ### From a release
 
 Each [release](https://github.com/brzzdev/babysit/releases) has an archive for macOS and Linux on
-arm64 and x86-64. Set `target` to yours, then download the latest archive and put `babysit` in
-`~/.local/bin`, which must be on `PATH`:
+arm64 and x86-64. Set `target` to yours (`aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`aarch64-unknown-linux-gnu` or `x86_64-unknown-linux-gnu`), then download the latest archive and
+put `babysit` in `~/.local/bin`, which must be on `PATH`:
 
 ```sh
-target=aarch64-apple-darwin # or x86_64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu
+target=aarch64-apple-darwin
 latest_url="$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/brzzdev/babysit/releases/latest)"
 version="${latest_url##*/v}"
 curl -fsSL "https://github.com/brzzdev/babysit/releases/download/v$version/babysit-$version-$target.tar.gz" |
