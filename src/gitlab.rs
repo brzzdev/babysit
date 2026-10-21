@@ -1506,6 +1506,41 @@ mod tests {
     }
 
     #[test]
+    fn a_deleted_head_pipeline_reports_ci_from_the_pipeline_surviving_on_the_head() {
+        let target = merge_request("552882785");
+        let jobs = " -F approvers=false -F notes=false -F reviewers=false -F fallback=true \
+                    -f fallbackPipeline=gid://gitlab/Ci::Pipeline/2972592330";
+
+        let poll = poll_target(
+            &target,
+            [
+                query_call(
+                    POLL_QUERY,
+                    &target.forge_id,
+                    "",
+                    include_str!("gitlab/fixtures/poll_head_pipeline_deleted.http"),
+                ),
+                query_call(
+                    POLL_QUERY,
+                    &target.forge_id,
+                    jobs,
+                    include_str!("gitlab/fixtures/poll_head_pipeline_deleted_jobs.http"),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let ci = poll.ci.unwrap();
+        let checks: Vec<_> = ci
+            .checks
+            .iter()
+            .map(|check| (check.name.as_str(), check.job_id.as_deref()))
+            .collect();
+        assert_eq!(checks, [("test", Some("17353736186"))]);
+        assert_eq!(ci.colour(), Some(Colour::Red));
+    }
+
+    #[test]
     fn a_lost_head_pipeline_falls_back_to_the_newest_pipeline_on_the_head_paging_its_jobs() {
         let candidates = [
             candidate(8, "0ther", "SUCCESS"),
