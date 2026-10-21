@@ -10,6 +10,8 @@ Serves the `babysit` skill. Forgejo is planned, not in v1.
   exit codes, snapshot file). Change it in the same commit as the behaviour it describes, its
   `checked` blocks included.
 - [`GLOSSARY.md`](GLOSSARY.md): the domain terms. Name things in code, tests and docs with them.
+- [`skills/babysit/SKILL.md`](skills/babysit/SKILL.md): the skill agents load to call babysit,
+  distilled from `docs/usage.md`. Update it in the same commit as a usage change it covers.
 
 ## Style
 

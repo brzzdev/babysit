@@ -103,3 +103,12 @@ just install
 ```
 
 This builds a release binary and installs it to `~/.local/bin`, which must be on `PATH`.
+
+## Agent skill
+
+[`skills/babysit`](skills/babysit/SKILL.md) teaches a coding agent to drive babysit: choosing rules,
+waiting in the background, and acting on what wakes it. Install it with the `skills` CLI:
+
+```sh
+npx skills add brzzdev/babysit --skill babysit --global
+```
