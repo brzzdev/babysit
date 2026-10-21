@@ -169,13 +169,16 @@ impl<E: Exec> GitHub<'_, E> {
         let mut comments = Paged::new(Forge::GitHub, "comments");
         let mut dismissals = Paged::new(Forge::GitHub, "dismissals");
         let mut reviews = Paged::new(Forge::GitHub, "reviews");
+        let mut rules = Paged::new(Forge::GitHub, "rules");
         let mut threads = Paged::new(Forge::GitHub, "threads");
+        let mut classic = None;
         let mut first: Option<(String, Standing)> = None;
         let mut rollup_state = None;
         while !(checks.done()
             && comments.done()
             && dismissals.done()
             && reviews.done()
+            && rules.done()
             && threads.done())
         {
             let mut variables = vec![("-f", format!("id={}", target.forge_id))];
@@ -183,6 +186,7 @@ impl<E: Exec> GitHub<'_, E> {
             variables.extend(comments.variable());
             variables.extend(dismissals.variable());
             variables.extend(reviews.variable());
+            variables.extend(rules.variable());
             variables.extend(threads.variable());
             let page: PullRequestPage = self
                 .query(target, POLL_QUERY, &variables, deadline, hints)?
@@ -201,7 +205,11 @@ impl<E: Exec> GitHub<'_, E> {
                     if rollup.is_none() {
                         checks.finish();
                     }
+                    if page.base_ref.is_none() {
+                        rules.finish();
+                    }
                     rollup_state = rollup.as_ref().map(|rollup| rollup.state.clone());
+                    classic = page.base_ref.as_ref().map(BaseRef::classic);
                     first = Some((page.head_ref_oid, page.standing));
                 }
                 Some((head, _)) => same_head(Forge::GitHub, head, &page.head_ref_oid)?,
@@ -210,6 +218,7 @@ impl<E: Exec> GitHub<'_, E> {
             comments.take(page.comments)?;
             dismissals.take(page.dismissals)?;
             reviews.take(page.reviews)?;
+            rules.take(page.base_ref.and_then(|base| base.rules))?;
             threads.take(page.review_threads)?;
         }
         let (head, standing) = first.expect("every poll fetches a first page");
@@ -229,7 +238,17 @@ impl<E: Exec> GitHub<'_, E> {
         let state = standing.lifecycle.state.into();
         let (state_changed_at, state_changed_by) = standing.change();
         Ok(Poll {
-            ci: rollup_state.map(|state| ci(&state, &checks.nodes)),
+            ci: rollup_state.map(|state| {
+                let rulesets = rules
+                    .nodes
+                    .into_iter()
+                    .filter_map(|rule| rule.parameters)
+                    .flat_map(|parameters| parameters.required_status_checks)
+                    .map(Requirement::from);
+                let required =
+                    classic.map(|classic| classic.into_iter().chain(rulesets).collect::<Vec<_>>());
+                ci(&state, &checks.nodes, required.as_deref())
+            }),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
             head: Some(head),
             merge,
@@ -456,6 +475,8 @@ struct Viewer {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PullRequestPage {
+    /// `None` once the base branch is deleted.
+    base_ref: Option<BaseRef>,
     commits: Nodes<CommitNode>,
     comments: Option<Connection<CommentNode>>,
     dismissals: Option<Connection<DismissalNode>>,
@@ -517,6 +538,104 @@ struct ThreadPage {
 #[serde(rename_all = "camelCase")]
 struct PullRequestHead {
     head_ref_oid: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BaseRef {
+    /// Classic branch protection in full, `None` unless the viewer administers the repository.
+    branch_protection_rule: Option<BranchProtectionRule>,
+    /// Classic branch protection as it binds the viewer, so empty for an admin it doesn't bind.
+    ref_update_rule: Option<RefUpdateRule>,
+    rules: Option<Connection<RulesetRule>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BranchProtectionRule {
+    #[serde(default)]
+    required_status_checks: Vec<ProtectionCheck>,
+}
+
+#[derive(Deserialize)]
+struct ProtectionCheck {
+    app: Option<DatabaseId>,
+    context: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefUpdateRule {
+    #[serde(default)]
+    required_status_check_contexts: Vec<String>,
+}
+
+impl BaseRef {
+    fn classic(&self) -> Vec<Requirement> {
+        let full = self.branch_protection_rule.iter().flat_map(|rule| {
+            rule.required_status_checks.iter().map(|check| Requirement {
+                app: check.app.as_ref().map(|app| app.database_id).into(),
+                context: check.context.clone(),
+            })
+        });
+        let binding = self.ref_update_rule.iter().flat_map(|rule| {
+            rule.required_status_check_contexts
+                .iter()
+                .map(|context| Requirement {
+                    app: RequiredApp::Unknown,
+                    context: context.clone(),
+                })
+        });
+        full.chain(binding).collect()
+    }
+}
+
+/// One rule of a ruleset, which lists checks only when it requires them.
+#[derive(Deserialize)]
+struct RulesetRule {
+    parameters: Option<RulesetParameters>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RulesetParameters {
+    #[serde(default)]
+    required_status_checks: Vec<RulesetCheck>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RulesetCheck {
+    context: String,
+    integration_id: Option<u64>,
+}
+
+impl From<RulesetCheck> for Requirement {
+    fn from(check: RulesetCheck) -> Self {
+        Self {
+            app: check.integration_id.into(),
+            context: check.context,
+        }
+    }
+}
+
+struct Requirement {
+    app: RequiredApp,
+    context: String,
+}
+
+enum RequiredApp {
+    Any,
+    Only(u64),
+    /// The requirement may name an app the source doesn't show, as `refUpdateRule` never does.
+    Unknown,
+}
+
+/// An app id where the requirement names one, any app where it names none.
+impl From<Option<u64>> for RequiredApp {
+    fn from(app: Option<u64>) -> Self {
+        app.map_or(Self::Any, Self::Only)
+    }
 }
 
 #[derive(Deserialize)]
@@ -787,11 +906,45 @@ impl ContextNode {
             Self::StatusContext(status) => status.is_required,
         }
     }
+
+    /// Where the apps can't be compared, GitHub's own `isRequired` flag says whether it was.
+    fn meets(&self, requirement: &Requirement) -> bool {
+        let name = match self {
+            Self::CheckRun(run) => &run.name,
+            Self::StatusContext(status) => &status.context,
+        };
+        if *name != requirement.context {
+            return false;
+        }
+        match (&requirement.app, self) {
+            (RequiredApp::Any, _) => true,
+            (RequiredApp::Only(required), Self::CheckRun(run)) => {
+                let app = run
+                    .check_suite
+                    .as_ref()
+                    .and_then(|suite| suite.app.as_ref());
+                app.is_some_and(|app| app.database_id == *required)
+            }
+            // A status names no app.
+            (RequiredApp::Only(_), Self::StatusContext(_)) | (RequiredApp::Unknown, _) => {
+                self.is_required()
+            }
+        }
+    }
 }
 
 /// The head's checks at their latest attempts, deciding on the required ones when any exist.
-fn ci(rollup_state: &str, contexts: &[ContextNode]) -> Ci {
-    let any_required = contexts.iter().any(ContextNode::is_required);
+/// `required` is `None` where the base branch's required set couldn't be read.
+fn ci(rollup_state: &str, contexts: &[ContextNode], required: Option<&[Requirement]>) -> Ci {
+    let any_required = required.is_some_and(|required| !required.is_empty())
+        || contexts.iter().any(ContextNode::is_required);
+    // A required check yet to report holds green back but not amber: GitHub doesn't list the
+    // jobs held behind an approval.
+    let all_reported = required.is_some_and(|required| {
+        required
+            .iter()
+            .all(|requirement| contexts.iter().any(|context| context.meets(requirement)))
+    });
     // Attempts of one check share its name and workflow, or its app outside Actions.
     let source = |run: &CheckRunNode| {
         let suite = run.check_suite.as_ref()?;
@@ -851,8 +1004,9 @@ fn ci(rollup_state: &str, contexts: &[ContextNode]) -> Ci {
         .collect();
     Ci {
         checks,
-        // An expecting rollup with no expected context awaits a check it doesn't name.
-        required_known: expected_seen || rollup_state != EXPECTED,
+        // An expecting rollup with no expected context awaits a required check the base's
+        // protection doesn't show.
+        required_known: all_reported && (expected_seen || rollup_state != EXPECTED),
     }
 }
 
@@ -1118,7 +1272,7 @@ mod tests {
         let call = format!(
             "gh api -i --hostname github.com graphql -f query={POLL_QUERY} -f id={POLLED_ID} \
              -F checks=false -F comments=false -F dismissals=false -f reviewsAfter=REVIEWS_1 \
-             -F threads=false"
+             -F rules=false -F threads=false"
         );
         (call, Ok(gh(code, stdout, "")))
     }
@@ -1131,7 +1285,7 @@ mod tests {
                 POLL_QUERY,
                 &format!(
                     "-f id={POLLED_ID} -F checks=false -F comments=false -F dismissals=false -f reviewsAfter=REVIEWS_1 \
-                     -F threads=false"
+                     -F rules=false -F threads=false"
                 ),
                 include_str!("github/fixtures/poll_page_2.http"),
             ),
@@ -1731,15 +1885,69 @@ mod tests {
         assert_eq!(kind(&failure), ErrorKind::CliMissing);
     }
 
-    /// The recorded poll with its head's `statusCheckRollup` replaced by `rollup`.
-    fn with_rollup(rollup: Value) -> String {
-        let fixture = include_str!("github/fixtures/poll.http");
-        let (headers, body) = fixture.split_once("\n\n").unwrap();
+    /// The recorded poll `fixture` with the value at each JSON pointer replaced.
+    fn replaced<'a>(
+        fixture: &str,
+        replacements: impl IntoIterator<Item = (&'a str, Value)>,
+    ) -> String {
+        let (headers, body) = fixture.trim_end().rsplit_once('\n').unwrap();
         let mut body: Value = serde_json::from_str(body).unwrap();
-        *body
-            .pointer_mut("/data/node/commits/nodes/0/commit/statusCheckRollup")
-            .unwrap() = rollup;
-        format!("{headers}\n\n{body}")
+        for (pointer, value) in replacements {
+            *body.pointer_mut(pointer).unwrap() = value;
+        }
+        format!("{headers}\n{body}")
+    }
+
+    /// The recorded poll with its base's required set replaced by `base`, and its head's
+    /// `statusCheckRollup` by `rollup`.
+    fn with_ci(base: Value, rollup: Value) -> String {
+        replaced(
+            include_str!("github/fixtures/poll.http"),
+            [
+                ("/data/node/baseRef", base),
+                (
+                    "/data/node/commits/nodes/0/commit/statusCheckRollup",
+                    rollup,
+                ),
+            ],
+        )
+    }
+
+    /// The recorded poll on an unprotected base, with its head's rollup replaced by `rollup`.
+    fn with_rollup(rollup: Value) -> String {
+        with_ci(protected(&[], &json!([])), rollup)
+    }
+
+    /// A base requiring `classic` through branch protection and `ruleset` through a ruleset.
+    fn protected(classic: &[&str], ruleset: &Value) -> Value {
+        json!({
+            "refUpdateRule": { "requiredStatusCheckContexts": classic },
+            "rules": {
+                "pageInfo": { "hasNextPage": false, "endCursor": "MQ" },
+                "nodes": [
+                    { "parameters": null },
+                    { "parameters": { "requiredStatusChecks": ruleset } },
+                ],
+            },
+        })
+    }
+
+    const ACTIONS_APP_ID: u64 = 15_368;
+    const CODECOV_APP_ID: u64 = 254;
+
+    fn check_run(name: &str, status: &str, conclusion: Option<&str>, app: u64) -> Value {
+        json!({
+            "__typename": "CheckRun",
+            "checkSuite": { "app": { "databaseId": app }, "workflowRun": null },
+            "conclusion": conclusion, "databaseId": 1, "detailsUrl": null,
+            "isRequired": false, "name": name, "status": status,
+        })
+    }
+
+    /// `run` flagged required, as GitHub flags a check the base requires.
+    fn required(mut run: Value) -> Value {
+        run["isRequired"] = json!(true);
+        run
     }
 
     fn rollup(state: &str, contexts: &Value) -> Value {
@@ -1759,7 +1967,7 @@ mod tests {
     #[test]
     fn judges_each_check_on_its_latest_attempt_and_decides_on_the_required_ones() {
         let actions = json!({
-            "app": { "databaseId": 15_368 },
+            "app": { "databaseId": ACTIONS_APP_ID },
             "workflowRun": { "workflow": { "databaseId": 390_459_010 } },
         });
         let run = |id: u64, conclusion: Option<&str>, status: &str| {
@@ -1774,7 +1982,7 @@ mod tests {
             run(101, None, "IN_PROGRESS"),
             {
                 "__typename": "CheckRun",
-                "checkSuite": { "app": { "databaseId": 254 }, "workflowRun": null },
+                "checkSuite": { "app": { "databaseId": CODECOV_APP_ID }, "workflowRun": null },
                 "conclusion": "FAILURE", "databaseId": 200,
                 "detailsUrl": "https://codecov.io/1", "isRequired": false, "name": "codecov",
                 "status": "COMPLETED",
@@ -1852,6 +2060,183 @@ mod tests {
         assert!(ci.checks[0].deciding);
     }
 
+    const SANDBOX_ID: &str = "PR_kwDOVSJOoc8AAAABJxuGIQ";
+
+    /// The sandbox's CI, where `check` passed and the required `never-reports` never reported.
+    fn sandbox_ci(stdout: &str) -> Ci {
+        let exec = Script::new([graphql(POLL_QUERY, &format!("-f id={SANDBOX_ID}"), stdout)]);
+        let target = Target {
+            forge_id: SANDBOX_ID.to_owned(),
+            url: "https://github.com/brzzdev/babysit-sandbox/pull/1".to_owned(),
+            ..polled()
+        };
+        GitHub::new(&exec)
+            .poll(&target, None)
+            .unwrap()
+            .0
+            .ci
+            .unwrap()
+    }
+
+    #[test]
+    fn a_required_check_that_never_reports_holds_green_back_under_a_ruleset() {
+        let ci = sandbox_ci(include_str!("github/fixtures/poll_required_ruleset.http"));
+
+        assert!(!ci.required_known);
+        assert_eq!(ci.colour(), None);
+    }
+
+    /// Recorded as an admin the protection doesn't bind, so only `branchProtectionRule` lists it.
+    #[test]
+    fn a_required_check_that_never_reports_holds_green_back_under_classic_protection() {
+        let admin = include_str!("github/fixtures/poll_required_classic.http");
+        let member = replaced(
+            admin,
+            [
+                ("/data/node/baseRef/branchProtectionRule", Value::Null),
+                (
+                    "/data/node/baseRef/refUpdateRule/requiredStatusCheckContexts",
+                    json!(["check", "never-reports"]),
+                ),
+            ],
+        );
+
+        for stdout in [admin, &member] {
+            let ci = sandbox_ci(stdout);
+            assert!(!ci.required_known);
+            assert_eq!(ci.colour(), None);
+        }
+    }
+
+    #[test]
+    fn a_required_check_missing_from_either_source_holds_green_back() {
+        let passed = json!([required(check_run(
+            "check",
+            "COMPLETED",
+            Some("SUCCESS"),
+            ACTIONS_APP_ID
+        ))]);
+        let colour = |base| {
+            ci_of(&with_ci(base, rollup("SUCCESS", &passed)))
+                .unwrap()
+                .colour()
+        };
+        let check = json!([{ "context": "check", "integrationId": ACTIONS_APP_ID }]);
+        let never_reports = json!([{ "context": "never-reports", "integrationId": null }]);
+
+        assert_eq!(colour(protected(&[], &check)), Some(Colour::Green));
+        assert_eq!(colour(protected(&[], &never_reports)), None);
+        assert_eq!(colour(protected(&["never-reports"], &json!([]))), None);
+        assert_eq!(colour(protected(&["check"], &never_reports)), None);
+        assert_eq!(colour(protected(&["never-reports"], &check)), None);
+    }
+
+    #[test]
+    fn a_required_check_from_another_app_has_not_reported() {
+        let contexts = json!([check_run(
+            "check",
+            "COMPLETED",
+            Some("SUCCESS"),
+            CODECOV_APP_ID
+        )]);
+        let base = protected(
+            &[],
+            &json!([{ "context": "check", "integrationId": ACTIONS_APP_ID }]),
+        );
+
+        let ci = ci_of(&with_ci(base, rollup("SUCCESS", &contexts))).unwrap();
+
+        assert!(!ci.required_known);
+        assert_eq!(ci.colour(), None);
+    }
+
+    /// A non-admin sees classic requirements without their apps, as `refUpdateRule` names none.
+    #[test]
+    fn a_classic_check_from_another_app_has_not_reported_for_a_non_admin() {
+        let test = required(check_run(
+            "test",
+            "COMPLETED",
+            Some("SUCCESS"),
+            ACTIONS_APP_ID,
+        ));
+        let run = check_run("build", "COMPLETED", Some("SUCCESS"), CODECOV_APP_ID);
+        let status = json!({
+            "__typename": "StatusContext", "context": "build", "isRequired": false,
+            "state": "SUCCESS", "targetUrl": null,
+        });
+
+        for build in [run, status] {
+            let contexts = json!([build, test]);
+            let base = protected(&["build", "test"], &json!([]));
+
+            let ci = ci_of(&with_ci(base, rollup("SUCCESS", &contexts))).unwrap();
+
+            assert!(!ci.required_known);
+            assert_eq!(ci.colour(), None);
+        }
+    }
+
+    /// As vercel/vercel requires its `Vercel` status, posted by the Vercel app.
+    #[test]
+    fn a_status_meets_an_app_pinned_requirement_once_github_flags_it_required() {
+        let colour = |is_required: bool| {
+            let contexts = json!([{
+                "__typename": "StatusContext", "context": "Vercel", "isRequired": is_required,
+                "state": "SUCCESS", "targetUrl": null,
+            }]);
+            let base = protected(
+                &[],
+                &json!([{ "context": "Vercel", "integrationId": 8329 }]),
+            );
+            ci_of(&with_ci(base, rollup("SUCCESS", &contexts)))
+                .unwrap()
+                .colour()
+        };
+
+        assert_eq!(colour(true), Some(Colour::Green));
+        assert_eq!(colour(false), None);
+    }
+
+    #[test]
+    fn with_every_required_check_missing_a_failed_check_only_warns() {
+        let contexts = json!([check_run(
+            "codecov",
+            "COMPLETED",
+            Some("FAILURE"),
+            CODECOV_APP_ID
+        )]);
+        let base = protected(&["never-reports"], &json!([]));
+
+        let ci = ci_of(&with_ci(base, rollup("FAILURE", &contexts))).unwrap();
+
+        assert!(!ci.checks[0].deciding);
+        assert_eq!(ci.colour(), None);
+    }
+
+    #[test]
+    fn a_required_check_yet_to_report_leaves_an_approval_gates_amber() {
+        let contexts = json!([required(check_run("gate", "WAITING", None, ACTIONS_APP_ID))]);
+        let base = protected(&["gate", "after"], &json!([]));
+
+        let ci = ci_of(&with_ci(base, rollup("PENDING", &contexts))).unwrap();
+
+        assert_eq!(ci.colour(), Some(Colour::Amber));
+    }
+
+    #[test]
+    fn a_deleted_base_leaves_the_required_set_unknown() {
+        let passed = json!([check_run(
+            "test",
+            "COMPLETED",
+            Some("SUCCESS"),
+            ACTIONS_APP_ID
+        )]);
+
+        let ci = ci_of(&with_ci(Value::Null, rollup("SUCCESS", &passed))).unwrap();
+
+        assert!(!ci.required_known);
+    }
+
     /// Recorded while `gate` awaited approval: `after` (`needs: gate`) is absent from the rollup.
     #[test]
     fn a_job_held_behind_an_approval_is_not_listed_so_amber_settles() {
@@ -1859,7 +2244,7 @@ mod tests {
             json!({
                 "__typename": "CheckRun",
                 "checkSuite": {
-                    "app": { "databaseId": 15_368 },
+                    "app": { "databaseId": ACTIONS_APP_ID },
                     "workflowRun": {
                         "databaseId": 39_494_970_229_u64,
                         "workflow": { "databaseId": 391_007_203 },

@@ -8,12 +8,43 @@ query (
   $dismissalsAfter: String
   $reviews: Boolean = true
   $reviewsAfter: String
+  $rules: Boolean = true
+  $rulesAfter: String
   $threads: Boolean = true
   $threadsAfter: String
 ) {
   node(id: $id) {
     ... on PullRequest {
       state
+      baseRef {
+        branchProtectionRule {
+          requiredStatusChecks {
+            app {
+              databaseId
+            }
+            context
+          }
+        }
+        refUpdateRule {
+          requiredStatusCheckContexts
+        }
+        rules(first: 100, after: $rulesAfter) @include(if: $rules) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            parameters {
+              ... on RequiredStatusChecksParameters {
+                requiredStatusChecks {
+                  context
+                  integrationId
+                }
+              }
+            }
+          }
+        }
+      }
       headRefOid
       mergeable
       mergeStateStatus
