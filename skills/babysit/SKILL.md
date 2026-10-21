@@ -65,7 +65,7 @@ share one run.
 
 A rule is one quoted argument: an optional kind pattern (`ci.settled`, or a whole noun like
 `thread.*`), then `field=value` terms that must all hold. Commas are alternatives within a term,
-and a double-quoted value keeps its spaces and commas, with `\"` for a literal quote.
+and a double-quoted value keeps its spaces and commas, with `\"` and `\\` for a literal quote and backslash.
 Repeated `--on` rules are ORed, and `--ignore` beats `--on`. With no `--on`, every event wakes,
 including your own pushes.
 

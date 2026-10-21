@@ -55,7 +55,7 @@ terms, separated by spaces.
 [<kind pattern>] [<field><op><value>[,<value>…]]…
 ```
 
-`<op>` is `=`, or `^=` for `body`, which takes only `^=`.
+`<op>` is `^=` for `body` and `=` for every other field.
 
 - **Kind pattern**: an exact event kind (`review.submitted`) or a whole noun (`thread.*`). It comes
   first. Without one, the rule covers every kind.

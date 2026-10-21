@@ -3,8 +3,6 @@ use crate::forge::Account;
 
 const COLOURS: [&str; 3] = ["amber", "green", "red"];
 
-const QUOTE: char = '"';
-
 /// Every event kind in v1 with the fields it carries, including kinds no backend reports yet.
 const KINDS: [Kind; 15] = [
     ("ci.settled", &[Field::Colour]),
@@ -26,6 +24,8 @@ const KINDS: [Kind; 15] = [
     ("thread.resolved", &[Field::Actor]),
     ("thread.unresolved", &[]),
 ];
+
+const QUOTE: char = '"';
 
 const STATES: [&str; 3] = ["approved", "changes_requested", "commented"];
 
@@ -144,13 +144,17 @@ fn split(given: &str) -> Result<Vec<&str>, String> {
 }
 
 fn term(word: &str) -> Result<Term, String> {
-    if word.split('=').next().unwrap_or(word).contains(QUOTE) {
+    if word
+        .split_once('=')
+        .map_or(word, |(name, _)| name)
+        .contains(QUOTE)
+    {
         return Err(outside_a_value(word));
     }
     let (name, given) = word.split_once('=').ok_or_else(|| {
         format!("`{word}` is not a `field=value` term; a kind pattern comes first")
     })?;
-    let (name, prefix) = name
+    let (name, is_prefix) = name
         .strip_suffix('^')
         .map_or((name, false), |name| (name, true));
     let field = match name {
@@ -165,7 +169,7 @@ fn term(word: &str) -> Result<Term, String> {
             ));
         }
     };
-    match (field == Field::Body, prefix) {
+    match (field == Field::Body, is_prefix) {
         (false, true) => return Err(format!("`{name}` takes `=`; only `body` takes `^=`")),
         (true, false) => return Err("`body` takes `^=`, a prefix, not `=`".to_owned()),
         _ => {}
@@ -176,7 +180,7 @@ fn term(word: &str) -> Result<Term, String> {
         Field::Actor | Field::Subject => {
             Term::Accounts(field, values.map(selector).collect::<Result<_, _>>()?)
         }
-        Field::Body => Term::BodyPrefixes(values.map(prefix_of).collect::<Result<_, _>>()?),
+        Field::Body => Term::BodyPrefixes(values.map(body_prefix).collect::<Result<_, _>>()?),
         Field::Colour => Term::Words(field, words(values, &COLOURS, field)?),
         Field::State => Term::Words(field, words(values, &STATES, field)?),
     })
@@ -229,7 +233,7 @@ fn outside_a_value(word: &str) -> String {
     format!("`{word}` has a quote outside a value; quote a whole value after `=`")
 }
 
-fn prefix_of(value: &str) -> Result<String, String> {
+fn body_prefix(value: &str) -> Result<String, String> {
     if value.is_empty() {
         return Err("a body prefix is empty".to_owned());
     }
@@ -619,18 +623,26 @@ mod tests {
 
     #[test]
     fn a_body_prefix_tells_apart_two_agents_sharing_an_account() {
-        let ignore = [r#"thread.* actor=octocat body^="Paul's Claude:""#];
-        let claude = by(
-            account("octocat", Some(false)),
-            replied("Paul's Claude: done"),
-        );
+        let ignore = rules(&[r#"thread.* actor=@me body^="Paul's Claude:""#]);
+        let me = || Account {
+            id: Some("U_1".to_owned()),
+            ..account("octocat", Some(false))
+        };
+        let claude = by(me(), replied("Paul's Claude: done"));
         let codex = by(
-            account("octocat", Some(false)),
-            replied("Paul's Codex: found"),
+            me(),
+            event(Detail::ThreadOpened {
+                thread_id: "PRRT_2".to_owned(),
+                comment_id: "20".to_owned(),
+                reply_to: "20".to_owned(),
+                body: "Paul's Codex: found".to_owned(),
+                position: None,
+                review_id: None,
+            }),
         );
 
-        assert!(!woken(&[], &ignore, &claude));
-        assert!(woken(&[], &ignore, &codex));
+        assert!(!wakes(&[], &ignore, &claude, Some("U_1")));
+        assert!(wakes(&[], &ignore, &codex, Some("U_1")));
     }
 
     #[test]
@@ -643,6 +655,10 @@ mod tests {
         assert!(!woken(&either, &[], &replied("C3")));
         assert!(woken(&literal, &[], &replied(r#"a, b "c" \ \d!"#)));
         assert!(!woken(&literal, &[], &replied("a")));
+    }
+
+    #[test]
+    fn a_body_prefix_never_matches_an_empty_or_missing_body() {
         assert!(!woken(&["body^=x"], &[], &replied("")));
         assert!(!woken(&["body^=x"], &[], &resolved()));
     }
