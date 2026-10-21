@@ -144,21 +144,15 @@ fn split(given: &str) -> Result<Vec<&str>, String> {
 }
 
 fn term(word: &str) -> Result<Term, String> {
-    let Some((name, values)) = word.split_once('=') else {
-        if word.contains(QUOTE) {
-            return Err(outside_a_value(word));
-        }
-        return Err(format!(
-            "`{word}` is not a `field=value` term; a kind pattern comes first"
-        ));
-    };
-    if name.contains(QUOTE) {
+    if word.split('=').next().unwrap_or(word).contains(QUOTE) {
         return Err(outside_a_value(word));
     }
-    let (name, prefix) = match name.strip_suffix('^') {
-        Some(name) => (name, true),
-        None => (name, false),
-    };
+    let (name, given) = word.split_once('=').ok_or_else(|| {
+        format!("`{word}` is not a `field=value` term; a kind pattern comes first")
+    })?;
+    let (name, prefix) = name
+        .strip_suffix('^')
+        .map_or((name, false), |name| (name, true));
     let field = match name {
         "actor" => Field::Actor,
         "body" => Field::Body,
@@ -171,12 +165,12 @@ fn term(word: &str) -> Result<Term, String> {
             ));
         }
     };
-    match (field, prefix) {
-        (Field::Body, false) => return Err("`body` takes `^=`, a prefix, not `=`".to_owned()),
-        (Field::Body, true) | (_, false) => {}
-        (_, true) => return Err(format!("`{name}` takes `=`; only `body` takes `^=`")),
+    match (field == Field::Body, prefix) {
+        (false, true) => return Err(format!("`{name}` takes `=`; only `body` takes `^=`")),
+        (true, false) => return Err("`body` takes `^=`, a prefix, not `=`".to_owned()),
+        _ => {}
     }
-    let values = self::values(word, values)?;
+    let values = values(word, given)?;
     let values = values.iter().map(String::as_str);
     Ok(match field {
         Field::Actor | Field::Subject => {
@@ -194,7 +188,7 @@ fn values(word: &str, given: &str) -> Result<Vec<String>, String> {
     let mut rest = given;
     loop {
         let (value, after) = if let Some(quoted) = rest.strip_prefix(QUOTE) {
-            unquote(quoted).ok_or_else(|| format!("`{word}` has an unterminated quote"))?
+            unquote(quoted)
         } else {
             let end = rest.find(',').unwrap_or(rest.len());
             let (value, after) = rest.split_at(end);
@@ -213,13 +207,13 @@ fn values(word: &str, given: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// The quoted value opening `given`, with what follows its closing quote.
-fn unquote(given: &str) -> Option<(String, &str)> {
+/// The quoted value opening `given`, with what follows its closing quote, which `split` ensures.
+fn unquote(given: &str) -> (String, &str) {
     let mut value = String::new();
     let mut chars = given.char_indices().peekable();
     while let Some((at, char)) = chars.next() {
         match char {
-            QUOTE => return Some((value, &given[at + 1..])),
+            QUOTE => return (value, &given[at + 1..]),
             '\\' => value.push(
                 chars
                     .next_if(|(_, next)| matches!(*next, QUOTE | '\\'))
@@ -228,7 +222,7 @@ fn unquote(given: &str) -> Option<(String, &str)> {
             _ => value.push(char),
         }
     }
-    None
+    (value, "")
 }
 
 fn outside_a_value(word: &str) -> String {

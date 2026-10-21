@@ -64,7 +64,8 @@ share one run.
 ## Rules
 
 A rule is one quoted argument: an optional kind pattern (`ci.settled`, or a whole noun like
-`thread.*`), then `field=value` terms that must all hold. Commas are alternatives within a term.
+`thread.*`), then `field=value` terms that must all hold. Commas are alternatives within a term,
+and a double-quoted value keeps its spaces and commas, with `\"` for a literal quote.
 Repeated `--on` rules are ORed, and `--ignore` beats `--on`. With no `--on`, every event wakes,
 including your own pushes.
 
@@ -98,8 +99,8 @@ What bites:
 - **`@me` is whoever `gh` or `glab` is signed in as.** When you post through the user's CLI, that is
   the user too, so ignoring `@me` also hides their own comments, and on `state.*` it hides the merge
   or close they make. Scope it to `comment.*` and `thread.*`, and drop it when they review through
-  the same account. Where another agent posts from that account too, `@me` hides its posts as
-  well: add the prefix that starts your own posts, double-quoting a value with spaces or commas,
+  the same account. Where another agent posts from that account too, ignoring `@me` hides its posts
+  as well, so add the prefix your own posts start with:
   `--ignore "thread.* actor=@me body^=\"Paul's Claude:\""`.
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
