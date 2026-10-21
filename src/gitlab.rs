@@ -1129,6 +1129,26 @@ mod tests {
     }
 
     #[test]
+    fn an_unplayed_manual_job_holds_the_pipeline_only_when_it_decides() {
+        let colour = |id, stdout| {
+            let poll = poll_one(&merge_request(id), POLL_QUERY, stdout);
+            poll.ci.and_then(|ci| ci.colour())
+        };
+
+        let optional = colour(
+            "552635132",
+            include_str!("gitlab/fixtures/poll_optional_manual.http"),
+        );
+        let blocking = colour(
+            "552635421",
+            include_str!("gitlab/fixtures/poll_blocking_manual.http"),
+        );
+
+        assert_eq!(optional, Some(Colour::Green));
+        assert_eq!(blocking, Some(Colour::Amber));
+    }
+
+    #[test]
     fn failures_that_do_not_decide_warn_and_a_deciding_manual_job_holds_the_pipeline_amber() {
         let pipeline = pipeline(
             "MANUAL",
@@ -1416,25 +1436,5 @@ mod tests {
         let poll = poll_one(&merge_request("552635815"), POLL_QUERY, stdout);
 
         assert_eq!(poll.merge, Some(Merge::Conflicted));
-    }
-
-    #[test]
-    fn an_unplayed_manual_job_holds_the_pipeline_only_when_it_decides() {
-        let colour = |id, stdout| {
-            let poll = poll_one(&merge_request(id), POLL_QUERY, stdout);
-            poll.ci.and_then(|ci| ci.colour())
-        };
-
-        let optional = colour(
-            "552635132",
-            include_str!("gitlab/fixtures/poll_optional_manual.http"),
-        );
-        let blocking = colour(
-            "552635421",
-            include_str!("gitlab/fixtures/poll_blocking_manual.http"),
-        );
-
-        assert_eq!(optional, Some(Colour::Green));
-        assert_eq!(blocking, Some(Colour::Amber));
     }
 }

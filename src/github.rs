@@ -1821,11 +1821,13 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_head_has_no_rollup_and_so_no_ci() {
-        assert_eq!(
-            ci_of(include_str!("github/fixtures/poll_fresh_head.http")),
-            None
-        );
+    fn a_fresh_head_has_no_ci_yet_reads_clean() {
+        let stdout = include_str!("github/fixtures/poll_fresh_head.http");
+
+        let poll = poll_with([first_page(stdout)]).unwrap();
+
+        assert_eq!(poll.ci, None);
+        assert_eq!(poll.merge, Some(Merge::Clean));
     }
 
     #[test]
