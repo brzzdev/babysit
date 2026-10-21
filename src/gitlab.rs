@@ -1515,7 +1515,7 @@ mod tests {
     }
 
     #[test]
-    fn the_search_passes_a_merged_results_pipeline_on_another_head_for_an_older_one_on_this_head() {
+    fn the_search_skips_a_merged_results_pipeline_on_another_head_for_an_older_one_on_this_head() {
         let mut merged = candidate(8, MERGE_SHA, "SUCCESS");
         merged["mergeRequestEventType"] = json!("MERGED_RESULT");
         let candidates = [merged, candidate(7, HEAD, "SUCCESS")];
