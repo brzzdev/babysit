@@ -13,7 +13,7 @@ approval can stay silent.
 
 ## Example
 
-Wake on a person's review thread, red CI, or the pull request merging or closing:
+Wake on a human's thread activity, red CI, or the pull request merging or closing:
 
 ```sh
 babysit --snapshot .babysit.json \
@@ -21,9 +21,8 @@ babysit --snapshot .babysit.json \
   https://github.com/brzzdev/babysit-sandbox/pull/1
 ```
 
-The first run against a fresh `--snapshot` only records a baseline: red CI or an open thread that
-was already there never wakes it. It then keeps polling. When someone opens a line thread, it prints
-one JSON envelope and exits 0:
+The first run against a fresh `--snapshot` only records a baseline, then keeps polling. When a
+human opens a line thread, it prints one JSON envelope and exits 0:
 
 ```json
 {
@@ -62,15 +61,14 @@ one JSON envelope and exits 0:
 }
 ```
 
-The agent acts on the events, then runs the same command again. The snapshot carries over, so only
-what happens next can wake it.
+The agent acts on the events, then runs the same command again.
 
 Rules, event kinds, the envelope, exit codes and the snapshot file are all in the
 [usage reference](docs/usage.md).
 
 ## Forges
 
-GitHub and GitLab, including GitHub Enterprise and self-managed GitLab. Forgejo is planned.
+GitHub and GitLab. Forgejo is planned.
 
 babysit calls the forge's own CLI, so it needs an authenticated [`gh`](https://cli.github.com) for
 GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab.
@@ -85,8 +83,8 @@ arm64 and x86-64. Set `target` to yours, then download the latest archive and pu
 
 ```sh
 target=aarch64-apple-darwin # or x86_64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu
-tag="$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/brzzdev/babysit/releases/latest)"
-version="${tag##*/v}"
+latest_url="$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/brzzdev/babysit/releases/latest)"
+version="${latest_url##*/v}"
 curl -fsSL "https://github.com/brzzdev/babysit/releases/download/v$version/babysit-$version-$target.tar.gz" |
   tar -xzf - babysit
 mkdir -p ~/.local/bin && install babysit ~/.local/bin/babysit && rm babysit
