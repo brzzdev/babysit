@@ -1,6 +1,6 @@
 ---
 name: babysit
-description: Wait on a GitHub pull request, GitLab merge request or issue with the `babysit` CLI, which blocks until CI settles, a review, thread or comment lands, or the target merges or closes, then prints one JSON envelope. Use whenever you must wait for something to happen on a PR, MR or issue instead of polling or sleeping, or when the `babysit` command comes up.
+description: Wait on a GitHub pull request, GitLab merge request or issue with the `babysit` CLI, which blocks until CI settles, a review, thread or comment lands, or the target merges or closes. Use whenever you must wait for something to happen on a PR, MR or issue instead of polling or sleeping, or when the `babysit` command comes up.
 metadata:
   author: Paul Breeze
 ---
@@ -9,8 +9,7 @@ metadata:
 
 Checked against babysit 0.1.0. Run `babysit --version` first; the caller's contract,
 [`docs/usage.md`](https://github.com/brzzdev/babysit/blob/main/docs/usage.md), is the authority
-when something here doesn't match. babysit drives `gh` (GitHub) or `glab` (GitLab), so the
-forge's CLI must be signed in.
+when something here doesn't match.
 
 ```sh
 babysit --snapshot <PATH> [--on RULE]... [--ignore RULE]... [--timeout DURATION] TARGET...
@@ -33,11 +32,12 @@ share one run.
 2. **Take stock.** The first poll of a target only records its **baseline**: red CI or an open
    thread that is already there never wakes. Run once with `--timeout 0`, which polls each target
    once and exits 3, and read `targets[]`: `state`, `colour` (`null` while CI is unsettled), `merge`
-   and `unresolved_threads`. Deal with what is already true before you wait.
+   and `unresolved_threads`. Before you wait, deal with each red or amber `colour`, `conflicted`
+   `merge` and nonzero `unresolved_threads` it shows: none of them will wake you.
 3. **Wait.** Run the same command as a background job, so its exit re-invokes you. Set `--timeout`
    below your shell tool's cap on a command (`--timeout 9m` under a 10-minute cap), so babysit ends
    itself and saves its baseline rather than being killed.
-4. **Act on the exit status** (below). On a wake, do the work the events ask for.
+4. **Act on the exit status** and, on a wake, on every event in `events` (both below).
 5. **Run the identical command again.** The baseline carries over, so only what happened since the
    last wake can wake the next run. Stop when a run wakes on `state.merged` or `state.closed`, when
    the goal you were waiting for is reached, or on an error you can't fix.
@@ -47,9 +47,9 @@ share one run.
 | Exit | `outcome`   | Do                                                                              |
 | ---- | ----------- | ------------------------------------------------------------------------------- |
 | 0    | `woke`      | Act on `events`, then re-run                                                    |
-| 3    | `timed_out` | Nothing matched before `--timeout`: re-run without reporting                    |
 | 1    | `error`     | Read `error.kind` (below). Exit 1 with `outcome: "woke"` means the save failed after printing: act on the events, and expect them again |
 | 2    | none        | A usage error: no envelope on stdout, the reason on stderr. Fix the command     |
+| 3    | `timed_out` | Nothing matched before `--timeout`: re-run without reporting                    |
 
 | `error.kind`       | Do                                                                              |
 | ------------------ | ------------------------------------------------------------------------------- |
@@ -59,9 +59,6 @@ share one run.
 | `poll_failed`      | The forge failed 10 calls in a row. Report it before starting another run       |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |
 | `target_not_found` | The target is wrong, gone, or not visible to the CLI's account                  |
-
-stdout carries only the envelope. Lines on stderr prefixed `babysit:` (retries, rate-limit waits)
-are progress for humans.
 
 ## Rules
 
@@ -107,6 +104,9 @@ What bites:
 
 ## Acting on a wake
 
+stdout carries only the envelope, so pipe it straight to `jq`; lines on stderr prefixed `babysit:`
+(retries, rate-limit waits) are progress for humans.
+
 ```sh
 babysit … | jq '.events[] | {kind, url, body, reply_to, colour, checks}'
 ```
@@ -124,5 +124,4 @@ babysit … | jq '.events[] | {kind, url, body, reply_to, colour, checks}'
   `gh issue comment <n>`.
 - **`merge.conflicted`** means the head conflicts with its base. **`merge.behind`** means the forge
   wants the head updated before merging; ask before rebasing for it.
-- Events print in `at` order per target, and `url` links each one on the web, for the line you
-  report to the user.
+- Each event's `url` links it on the web, for the line you report to the user.
