@@ -1270,15 +1270,20 @@ mod tests {
     }
 
     #[test]
-    fn resolves_an_issue_to_its_web_url_and_global_id() {
-        let resolved = resolve_url(
+    fn resolves_an_issue_by_either_url_to_its_web_url_and_global_id() {
+        for url in [
             "https://gitlab.com/gitlab-org/cli/-/issues/8510",
-            "glab api -i --hostname gitlab.com projects/gitlab-org%2Fcli/issues/8510",
-            include_str!("gitlab/fixtures/resolve_issue.http"),
-            0,
-        );
+            "https://gitlab.com/gitlab-org/cli/-/work_items/8510",
+        ] {
+            let resolved = resolve_url(
+                url,
+                "glab api -i --hostname gitlab.com projects/gitlab-org%2Fcli/issues/8510",
+                include_str!("gitlab/fixtures/resolve_issue.http"),
+                0,
+            );
 
-        assert_eq!(resolved.unwrap(), issue());
+            assert_eq!(resolved.unwrap(), issue(), "{url}");
+        }
     }
 
     #[test]
