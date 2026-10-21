@@ -63,9 +63,7 @@ terms, separated by spaces.
 - **`--ignore` wins**: an event matching any `--ignore` rule never wakes, whatever `--on` says.
 - **A missing field never matches.** `actor=@human` doesn't match an event with no actor, and with
   no kind pattern, `colour=red` matches only `ci.settled`. A pattern whose kinds can't carry the
-  field is a usage error: `thread.opened colour=red`. The exceptions are `head.pushed` and
-  `thread.unresolved`, which accept `actor` but never have one, so such a term parses and never
-  matches.
+  field is a usage error: `thread.opened colour=red`.
 
 | Field     | Carried by                            | Values                                     |
 | --------- | ------------------------------------- | ------------------------------------------ |

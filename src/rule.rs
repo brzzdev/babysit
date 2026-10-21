@@ -8,7 +8,7 @@ const KINDS: [Kind; 15] = [
     ("ci.settled", &[Field::Colour]),
     ("comment.created", &[Field::Actor]),
     ("comment.edited", &[Field::Actor]),
-    ("head.pushed", &[Field::Actor]),
+    ("head.pushed", &[]),
     ("merge.behind", &[]),
     ("merge.conflicted", &[]),
     ("review.submitted", &[Field::Actor, Field::State]),
@@ -19,7 +19,7 @@ const KINDS: [Kind; 15] = [
     ("thread.opened", &[Field::Actor]),
     ("thread.replied", &[Field::Actor]),
     ("thread.resolved", &[Field::Actor]),
-    ("thread.unresolved", &[Field::Actor]),
+    ("thread.unresolved", &[]),
 ];
 
 const STATES: [&str; 3] = ["approved", "changes_requested", "commented"];
@@ -521,7 +521,10 @@ mod tests {
             ("actor=@bot actor=@human", "`actor` appears twice"),
             ("thread.opened colour=red", "`thread.opened`"),
             ("thread.* state=approved", "`thread.*`"),
+            ("head.* actor=@me", "`head.*`"),
+            ("head.pushed actor=@me", "`head.pushed`"),
             ("merge.behind actor=@me", "`merge.behind`"),
+            ("thread.unresolved actor=@human", "`thread.unresolved`"),
         ] {
             let error = parse(given).expect_err(given);
             assert!(error.contains(culprit), "{given}: {error}");
