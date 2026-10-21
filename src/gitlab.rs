@@ -215,7 +215,11 @@ impl<E: Exec> GitLab<'_, E> {
                 }
                 Some((first_head, first_page)) => {
                     same_head(Forge::GitLab, first_head, &head)?;
-                    if first_page.ci_source() != page.ci_source() {
+                    if first_page.pipeline_id() != page.pipeline_id()
+                        || fallback.is_some()
+                            && (first_page.candidate_ids() != page.candidate_ids()
+                                || first_page.retargeted() != page.retargeted())
+                    {
                         return Err(transient("the head pipeline changed between pages"));
                     }
                 }
@@ -339,8 +343,8 @@ impl<E: Exec> GitLab<'_, E> {
         Ok(fallback)
     }
 
-    /// The newest of the merge request's own pipelines that ran `head`, for a head pipeline
-    /// GitLab cleared on retargeting or lost to deletion.
+    /// The newest merge request pipeline that ran `head`, giving up at the first merged-results
+    /// one that didn't: an older pipeline won't have run a newer head.
     fn fallback(
         &self,
         head: &str,
@@ -355,6 +359,9 @@ impl<E: Exec> GitLab<'_, E> {
         for (index, candidate) in candidates.nodes.iter().enumerate() {
             if self.built_on(head, candidate, page.project_id, host, deadline, hints)? {
                 return Ok(Some(index));
+            }
+            if candidate.merged() {
+                return Ok(None);
             }
         }
         Ok(None)
@@ -432,7 +439,7 @@ impl<E: Exec> GitLab<'_, E> {
     }
 }
 
-/// The head pipeline's jobs at their latest attempts, deciding unless their failure is a warning,
+/// The pipeline's jobs at their latest attempts, deciding unless their failure is a warning,
 /// and the pipeline itself where it was skipped or no job decides.
 fn ci(pipeline: &Pipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: bool) -> Ci {
     let origin = web_origin(target_url);
@@ -711,19 +718,18 @@ impl MergeRequestPage {
         self.pipelines.as_ref()?.nodes.get(index)
     }
 
-    /// What decides where CI comes from: the head pipeline, the candidates and retargeting.
-    fn ci_source(&self) -> (Option<&str>, Vec<&str>, bool) {
-        let head_pipeline = self
-            .head_pipeline
-            .as_ref()
-            .map(|pipeline| pipeline.id.as_str());
-        let candidates = self
-            .pipelines
+    fn candidate_ids(&self) -> Vec<&str> {
+        self.pipelines
             .iter()
             .flat_map(|pipelines| &pipelines.nodes)
             .map(|pipeline| pipeline.id.as_str())
-            .collect();
-        (head_pipeline, candidates, self.retargeted())
+            .collect()
+    }
+
+    fn pipeline_id(&self) -> Option<&str> {
+        self.head_pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.id.as_str())
     }
 
     /// Whether GitLab cleared the head pipeline on retargeting and hasn't recorded one since.
@@ -1426,22 +1432,29 @@ mod tests {
     }
 
     /// The recorded poll's merge request with no head pipeline and its own pipelines `candidates`.
-    fn headless(retargeted: bool, candidates: &[Value]) -> String {
-        edited(|merge_request| behead(merge_request, retargeted, candidates))
+    fn headless(cleared: Cleared, candidates: &[Value]) -> String {
+        edited(|merge_request| behead(merge_request, cleared, candidates))
     }
 
     /// `headless` but answering the query for `fallback`'s jobs.
     fn headless_with(candidates: &[Value], fallback: Value) -> String {
         edited(|merge_request| {
-            behead(merge_request, false, candidates);
+            behead(merge_request, Cleared::Deleted, candidates);
             merge_request["project"]["fallbackPipeline"] = fallback;
         })
     }
 
-    fn behead(merge_request: &mut Value, retargeted: bool, candidates: &[Value]) {
+    fn behead(merge_request: &mut Value, cleared: Cleared, candidates: &[Value]) {
         merge_request["headPipeline"] = Value::Null;
         merge_request["pipelines"] = json!({ "nodes": candidates });
-        merge_request["retargeted"] = json!(retargeted);
+        merge_request["retargeted"] = json!(matches!(cleared, Cleared::Retargeted));
+    }
+
+    /// How GitLab came to clear the head pipeline.
+    #[derive(Clone, Copy, Debug)]
+    enum Cleared {
+        Deleted,
+        Retargeted,
     }
 
     fn candidate(id: u64, sha: &str, status: &str) -> Value {
@@ -1471,7 +1484,7 @@ mod tests {
 
     #[test]
     fn a_retargeted_merge_request_waits_amber_on_a_new_run_once_its_old_pipeline_finishes() {
-        let running = headless(true, &[candidate(7, HEAD, "RUNNING")]);
+        let running = headless(Cleared::Retargeted, &[candidate(7, HEAD, "RUNNING")]);
         let retargeted = include_str!("gitlab/fixtures/poll_retargeted.http");
 
         let running = poll_with([graphql("", &running)]).unwrap().ci.unwrap();
@@ -1496,13 +1509,45 @@ mod tests {
 
     #[test]
     fn without_a_merge_request_pipeline_on_the_head_there_is_no_ci() {
-        for retargeted in [false, true] {
-            let stdout = headless(retargeted, &[candidate(7, "0ther", "SUCCESS")]);
+        for cleared in [Cleared::Deleted, Cleared::Retargeted] {
+            let stdout = headless(cleared, &[candidate(7, "0ther", "SUCCESS")]);
 
             let poll = poll_with([graphql("", &stdout)]).unwrap();
 
-            assert_eq!(poll.ci, None, "retargeted: {retargeted}");
+            assert_eq!(poll.ci, None, "{cleared:?}");
         }
+    }
+
+    #[test]
+    fn the_search_gives_up_at_the_first_merged_results_pipeline_on_another_head() {
+        let mut merged = candidate(8, MERGE_SHA, "SUCCESS");
+        merged["mergeRequestEventType"] = json!("MERGED_RESULT");
+        let stdout = headless(Cleared::Deleted, &[merged, candidate(7, HEAD, "SUCCESS")]);
+        let other = include_str!("gitlab/fixtures/commit.http").replace(HEAD, "0ther");
+
+        let poll = poll_with([graphql("", &stdout), commit_lookup(&other)]).unwrap();
+
+        assert_eq!(poll.ci, None);
+    }
+
+    #[test]
+    fn a_new_pipeline_between_pages_leaves_a_poll_with_a_head_pipeline_alone() {
+        let created = include_str!("gitlab/fixtures/poll_page_2.http").replace(
+            r#""mergeRequest":{"#,
+            &format!(
+                r#""mergeRequest":{{"pipelines":{{"nodes":[{}]}},"#,
+                candidate(9, HEAD, "RUNNING")
+            ),
+        );
+        let one_page = poll_with(recorded(include_str!("gitlab/fixtures/commit.http")));
+
+        let stitched = poll_with(
+            paged(&created)
+                .into_iter()
+                .chain([commit_lookup(include_str!("gitlab/fixtures/commit.http"))]),
+        );
+
+        assert_eq!(stitched.unwrap(), one_page.unwrap());
     }
 
     #[test]
@@ -1558,7 +1603,7 @@ mod tests {
         second_jobs["jobs"] = jobs(None, json!([job(2, "lint", "FAILED", false)]));
 
         let poll = poll_with([
-            graphql("", &headless(false, &candidates)),
+            graphql("", &headless(Cleared::Deleted, &candidates)),
             fallback_page(None, &headless_with(&candidates, first_jobs)),
             fallback_page(Some("JOBS_1"), &headless_with(&candidates, second_jobs)),
         ])
@@ -1581,7 +1626,7 @@ mod tests {
             headless_with(&candidates, Value::Null),
         ] {
             let failure = poll_with([
-                graphql("", &headless(false, &candidates)),
+                graphql("", &headless(Cleared::Deleted, &candidates)),
                 fallback_page(None, &second),
             ])
             .unwrap_err();
@@ -1599,9 +1644,9 @@ mod tests {
 
         let kinds = replay(
             rest_id(FORGE_ID),
-            &headless(true, &[candidate(7, HEAD, "RUNNING")]),
+            &headless(Cleared::Retargeted, &[candidate(7, HEAD, "RUNNING")]),
             &[
-                &headless(true, &[candidate(7, HEAD, "SUCCESS")]),
+                &headless(Cleared::Retargeted, &[candidate(7, HEAD, "SUCCESS")]),
                 &reselected,
             ],
         );

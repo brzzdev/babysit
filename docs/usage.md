@@ -174,12 +174,13 @@ green.
 The **deciding checks** are, on GitHub, the base branch's required checks when it has any and every
 check when it has none; on GitLab, every job not allowed to fail, or the pipeline itself when no
 job decides or the pipeline was skipped. A retargeted merge request's one deciding check is
-`pipeline`, with `conclusion` `retargeted` and the merge request's pipelines page as its `url`. A failed check that doesn't decide is a **warning**:
-`checks` lists the deciding checks that failed or wait, and `warnings` the warnings.
+`pipeline`, with `conclusion` `retargeted` and the merge request's pipelines page as its `url`. A
+failed check that doesn't decide is a **warning**: `checks` lists the deciding checks that failed or
+wait, and `warnings` the warnings.
 
 GitLab CI comes from the merge request's head pipeline. While GitLab names none, as after a
-retarget or a deleted head pipeline, it comes from the newest of the merge request's own pipelines
-that ran the head.
+retarget or a deleted head pipeline, it comes from the newest merge request pipeline that ran the
+head; a branch pipeline never stands in.
 
 Each colour is reported once per head. A push starts the new head uncoloured, and a re-run that
 unsettles CI and settles it again reports again, even in the same colour.
