@@ -116,8 +116,9 @@ jq '.events[] | {kind, target, url, body, reply_to, path, line, colour, checks, 
 ```
 
 Run the forge commands below from the target's checkout: `{owner}`, `{repo}` and `:fullpath`
-resolve from the current directory's repo. Elsewhere, set `GH_REPO=<owner>/<repo>` for `gh`, and
-put the URL-encoded project path in place of `:fullpath` for `glab api`.
+resolve from the current directory's repo. Elsewhere, take the host from the target's URL: for
+`gh`, set `GH_HOST=<host>` and `GH_REPO=<host>/<owner>/<repo>`; for `glab api`, pass
+`--hostname <host>` and put the URL-encoded project path in place of `:fullpath`.
 
 - **Red or amber CI:** `checks` lists the deciding checks that failed or wait; `warnings` lists
   failed checks that don't decide. A check's `job_id` reaches its log: `gh run view --job <job_id>
