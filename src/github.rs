@@ -173,7 +173,7 @@ impl<E: Exec> GitHub<'_, E> {
         let mut threads = Paged::new(Forge::GitHub, "threads");
         let mut first: Option<(String, Standing)> = None;
         let mut rollup_state = None;
-        let mut protection = None;
+        let mut classic = None;
         while !(checks.done()
             && comments.done()
             && dismissals.done()
@@ -210,10 +210,7 @@ impl<E: Exec> GitHub<'_, E> {
                         rules.finish();
                     }
                     rollup_state = rollup.as_ref().map(|rollup| rollup.state.clone());
-                    protection = page
-                        .base_ref
-                        .as_ref()
-                        .map(|base| base.ref_update_rule.clone());
+                    classic = page.base_ref.as_ref().map(BaseRef::classic);
                     first = Some((page.head_ref_oid, page.standing));
                 }
                 Some((head, _)) => same_head(Forge::GitHub, head, &page.head_ref_oid)?,
@@ -243,7 +240,7 @@ impl<E: Exec> GitHub<'_, E> {
         let (state_changed_at, state_changed_by) = standing.change();
         Ok(Poll {
             ci: rollup_state.map(|state| {
-                let required = protection.map(|classic| requirements(classic, rules.nodes));
+                let required = classic.map(|classic| requirements(classic, rules.nodes));
                 ci(&state, &checks.nodes, required.as_deref())
             }),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
@@ -540,15 +537,52 @@ struct PullRequestHead {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BaseRef {
-    /// Classic branch protection, `None` where only rulesets apply.
+    /// Classic branch protection in full, `None` unless the viewer administers the repository.
+    branch_protection_rule: Option<BranchProtectionRule>,
+    /// Classic branch protection as it binds the viewer, so empty for an admin it doesn't bind.
     ref_update_rule: Option<RefUpdateRule>,
     rules: Option<Connection<RuleNode>>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BranchProtectionRule {
+    #[serde(default)]
+    required_status_checks: Vec<ProtectionCheck>,
+}
+
+#[derive(Deserialize)]
+struct ProtectionCheck {
+    app: Option<DatabaseId>,
+    context: String,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RefUpdateRule {
-    required_status_check_contexts: Option<Vec<String>>,
+    #[serde(default)]
+    required_status_check_contexts: Vec<String>,
+}
+
+impl BaseRef {
+    /// The checks classic branch protection requires.
+    fn classic(&self) -> Vec<Requirement> {
+        let full = self.branch_protection_rule.iter().flat_map(|rule| {
+            rule.required_status_checks.iter().map(|check| Requirement {
+                context: check.context.clone(),
+                integration_id: check.app.as_ref().map(|app| app.database_id),
+            })
+        });
+        let binding = self.ref_update_rule.iter().flat_map(|rule| {
+            rule.required_status_check_contexts
+                .iter()
+                .map(|context| Requirement {
+                    context: context.clone(),
+                    integration_id: None,
+                })
+        });
+        full.chain(binding).collect()
+    }
 }
 
 /// A ruleset rule, which lists checks only when it requires them.
@@ -860,21 +894,14 @@ impl ContextNode {
     }
 }
 
-/// The base branch's required set: classic protection's contexts and its rulesets' checks.
-fn requirements(classic: Option<RefUpdateRule>, rules: Vec<RuleNode>) -> Vec<Requirement> {
-    let classic = classic
-        .and_then(|rule| rule.required_status_check_contexts)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|context| Requirement {
-            context,
-            integration_id: None,
-        });
+/// The base branch's required set: classic protection's checks and its rulesets'.
+fn requirements(mut classic: Vec<Requirement>, rules: Vec<RuleNode>) -> Vec<Requirement> {
     let rulesets = rules
         .into_iter()
         .filter_map(|rule| rule.parameters)
         .flat_map(|parameters| parameters.required_status_checks);
-    classic.chain(rulesets).collect()
+    classic.extend(rulesets);
+    classic
 }
 
 /// The head's checks at their latest attempts, deciding on the required ones when any exist.
@@ -1982,8 +2009,56 @@ mod tests {
         assert!(ci.checks[0].deciding);
     }
 
+    const SANDBOX_ID: &str = "PR_kwDOVSJOoc8AAAABJxuGIQ";
+
+    /// The sandbox's CI, where `check` passed and the required `never-reports` never reported.
+    fn sandbox_ci(stdout: &str) -> Ci {
+        let exec = Script::new([graphql(POLL_QUERY, &format!("-f id={SANDBOX_ID}"), stdout)]);
+        let target = Target {
+            forge_id: SANDBOX_ID.to_owned(),
+            url: "https://github.com/brzzdev/babysit-sandbox/pull/1".to_owned(),
+            ..polled()
+        };
+        GitHub::new(&exec)
+            .poll(&target, None)
+            .unwrap()
+            .0
+            .ci
+            .unwrap()
+    }
+
     #[test]
-    fn a_required_check_yet_to_report_holds_green_back_from_either_source() {
+    fn a_required_check_that_never_reports_holds_green_back_under_a_ruleset() {
+        let ci = sandbox_ci(include_str!("github/fixtures/poll_required_ruleset.http"));
+
+        assert!(!ci.required_known);
+        assert_eq!(ci.colour(), None);
+    }
+
+    /// Recorded as an admin the protection doesn't bind, so only `branchProtectionRule` lists it.
+    #[test]
+    fn a_required_check_that_never_reports_holds_green_back_under_classic_protection() {
+        let admin = include_str!("github/fixtures/poll_required_classic.http");
+        let member = admin
+            .replace(
+                r#""branchProtectionRule":{"requiredStatusChecks":[{"app":{"databaseId":15368},"context":"check"},{"app":null,"context":"never-reports"}]}"#,
+                r#""branchProtectionRule":null"#,
+            )
+            .replace(
+                r#""requiredStatusCheckContexts":[]"#,
+                r#""requiredStatusCheckContexts":["check","never-reports"]"#,
+            );
+        assert_ne!(admin, member);
+
+        for stdout in [admin, &member] {
+            let ci = sandbox_ci(stdout);
+            assert!(!ci.required_known);
+            assert_eq!(ci.colour(), None);
+        }
+    }
+
+    #[test]
+    fn a_required_check_missing_from_either_source_holds_green_back() {
         let passed = json!([completed("check", "SUCCESS", ACTIONS_APP_ID, true)]);
         let colour = |base| {
             ci_of(&with_ci(base, rollup("SUCCESS", &passed)))

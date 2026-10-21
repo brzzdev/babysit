@@ -1,0 +1,26 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Wed, 21 Oct 2026 11:54:51 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Oauth-Scopes: repo
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Edge-Region: uksouth
+X-Github-Media-Type: github.v4; format=json
+X-Github-Request-Id: C73B:2A98D8:55E36F:78CB77:6AD8A80A
+X-Oauth-Client-Id: 178c6fc778ccc68e1d6a
+X-Oauth-Scopes: delete_repo, gist, read:org, repo, workflow
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4821
+X-Ratelimit-Reset: 1792586286
+X-Ratelimit-Resource: graphql
+X-Ratelimit-Used: 179
+X-Xss-Protection: 0
+
+{"data":{"node":{"state":"OPEN","baseRef":{"branchProtectionRule":null,"refUpdateRule":null,"rules":{"pageInfo":{"hasNextPage":false,"endCursor":"MQ"},"nodes":[{"parameters":{"requiredStatusChecks":[{"context":"check","integrationId":15368},{"context":"never-reports","integrationId":null}]}}]}},"headRefOid":"4a7b45a8488c9df2928a69cdf5c5c84e5837a8d5","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","mergedAt":null,"mergedBy":null,"stateChanges":{"nodes":[]},"commits":{"nodes":[{"commit":{"oid":"4a7b45a8488c9df2928a69cdf5c5c84e5837a8d5","statusCheckRollup":{"state":"SUCCESS","contexts":{"pageInfo":{"hasNextPage":false,"endCursor":"MQ"},"nodes":[{"__typename":"CheckRun","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":391649391}}},"conclusion":"SUCCESS","databaseId":119205438995,"detailsUrl":"https://github.com/brzzdev/babysit-sandbox/actions/runs/39595129986/job/119205438995","isRequired":true,"name":"check","status":"COMPLETED"}]}}}}]},"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"dismissals":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}

@@ -17,6 +17,14 @@ query (
     ... on PullRequest {
       state
       baseRef {
+        branchProtectionRule {
+          requiredStatusChecks {
+            app {
+              databaseId
+            }
+            context
+          }
+        }
         refUpdateRule {
           requiredStatusCheckContexts
         }
