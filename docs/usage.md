@@ -52,13 +52,19 @@ A rule is one argument, so quote it: an optional kind pattern, then any number o
 terms, separated by spaces.
 
 ```text
-[<kind pattern>] [<field>=<value>[,<value>…]]…
+[<kind pattern>] [<field><op><value>[,<value>…]]…
 ```
+
+`<op>` is `^=` for `body` and `=` for every other field.
 
 - **Kind pattern**: an exact event kind (`review.submitted`) or a whole noun (`thread.*`). It comes
   first. Without one, the rule covers every kind.
 - **Terms** are ANDed: every term must hold. **Commas** are alternatives within a term:
   `state=approved,changes_requested`. A field appears at most once per rule.
+- **Quoting**: a value may be double-quoted, and inside the quotes spaces and commas are literal,
+  with `\"` and `\\` as the only escapes. A quoted value is a whole value: `body^="a, b","c"` has
+  two. `actor="some-bot[bot]"` matches as `actor=some-bot[bot]` does. An unterminated quote, or one
+  anywhere else in the rule, is a usage error.
 - **Repeated `--on`** rules are ORed: an event wakes when any one matches.
 - **`--ignore` wins**: an event matching any `--ignore` rule never wakes, whatever `--on` says.
 - **A missing field never matches.** `actor=@human` doesn't match an event with no actor, and with
@@ -68,6 +74,7 @@ terms, separated by spaces.
 | Field     | Carried by                            | Values                                     |
 | --------- | ------------------------------------- | ------------------------------------------ |
 | `actor`   | every kind with an actor, below       | an account selector                        |
+| `body`    | every kind with a `body`, below       | a prefix the body starts with              |
 | `subject` | `review.withdrawn`                    | an account selector                        |
 | `colour`  | `ci.settled`                          | `amber`, `green`, `red`                    |
 | `state`   | `review.submitted`                    | `approved`, `changes_requested`, `commented` |
@@ -82,6 +89,15 @@ An account selector is a login, matched case-insensitively (a GitHub app is `<na
 Where the forge doesn't say whether an account is a bot (its `bot` prints `null`), it matches
 neither `@bot` nor `@human`: `--on 'actor=@human'` won't wake on it, and `--ignore 'actor=@bot'`
 won't drop it.
+
+`body^=` matches the body as the forge returns it, exactly and case-sensitively, with no trimming:
+`comment.edited` matches its new text. A prefix can't be empty, and an empty body, such as GitLab's
+on every `review.submitted`, matches no prefix. It tells apart agents that post from one account
+by the prefix each starts its posts with:
+
+```sh
+--ignore "thread.* actor=@me body^=\"Paul's Claude:\""  # my own replies, not my other agent's
+```
 
 Examples:
 

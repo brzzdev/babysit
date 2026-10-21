@@ -71,13 +71,15 @@ share one run.
 ## Rules
 
 A rule is one quoted argument: an optional kind pattern (`ci.settled`, or a whole noun like
-`thread.*`), then `field=value` terms that must all hold. Commas are alternatives within a term.
+`thread.*`), then `field=value` terms that must all hold. Commas are alternatives within a term,
+and a double-quoted value keeps its spaces and commas, with `\"` and `\\` for a literal quote and backslash.
 Repeated `--on` rules are ORed, and `--ignore` beats `--on`. With no `--on`, every event wakes,
 including your own pushes.
 
 | Field     | Carried by         | Values                                           |
 | --------- | ------------------ | ------------------------------------------------ |
 | `actor`   | most kinds         | a login (`name[bot]` for a GitHub app), `@bot`, `@human`, `@me` |
+| `body`    | `comment.*`, `review.submitted`, `thread.opened`, `thread.replied` | `body^=<prefix>` only: the body starts with it, case-sensitively |
 | `colour`  | `ci.settled`       | `amber`, `green`, `red`                          |
 | `state`   | `review.submitted` | `approved`, `changes_requested`, `commented`     |
 | `subject` | `review.withdrawn` | an account selector, as for `actor`              |
@@ -104,7 +106,9 @@ What bites:
 - **`@me` is whoever `gh` or `glab` is signed in as.** When you post through the user's CLI, that is
   the user too, so ignoring `@me` also hides their own comments, and on `state.*` it hides the merge
   or close they make. Scope it to `comment.*` and `thread.*`, and drop it when they review through
-  the same account.
+  the same account. Where another agent posts from that account too, ignoring `@me` hides its posts
+  as well, so add the prefix your own posts start with:
+  `--ignore "thread.* actor=@me body^=\"Paul's Claude:\""`.
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
