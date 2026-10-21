@@ -781,15 +781,16 @@ mod tests {
     use crate::forge::Colour;
     use crate::reference;
 
+    const BLOCKERS_MR_ID: &str = "552635815";
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
     const HEAD: &str = "25892092f1db0711fcea689c27db39f6d928d2eb";
     /// The recorded head pipeline's merge commit.
     const MERGE_SHA: &str = "d29dd22357102fba3709a18e01c6a96e025174a3";
     /// The fixture's `Ratelimit-Reset`.
+    const PLAIN_MR_ID: &str = "552726042";
     const RESET: u64 = 1_792_533_720;
     const RESOLVE: &str = "glab api -i --hostname gitlab.com \
                            projects/gitlab-org%2Fcli/merge_requests/4157";
-    const SANDBOX_MR_ID: &str = "552635815";
     const URL: &str = "https://gitlab.com/gitlab-org/cli/-/merge_requests/4157";
 
     fn target() -> Target {
@@ -1435,13 +1436,13 @@ mod tests {
     fn a_draft_still_reports_the_conflict_it_outranks() {
         let stdout = include_str!("gitlab/fixtures/poll_draft_conflict.http");
 
-        let poll = poll_one(&merge_request(SANDBOX_MR_ID), POLL_QUERY, stdout);
+        let poll = poll_one(&merge_request(BLOCKERS_MR_ID), POLL_QUERY, stdout);
 
         assert_eq!(poll.merge, Some(Merge::Conflicted));
     }
 
-    fn replay(first: &str, rest: &[&str]) -> Vec<Vec<String>> {
-        let target = merge_request(SANDBOX_MR_ID);
+    fn replay(id: &str, first: &str, rest: &[&str]) -> Vec<Vec<String>> {
+        let target = merge_request(id);
         let poll = |stdout| poll_one(&target, POLL_QUERY, stdout);
         diff::steps(
             poll(first),
@@ -1450,8 +1451,26 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_note_is_a_comment_and_an_approval_a_review_without_a_time() {
+        let commented = include_str!("gitlab/fixtures/poll_commented.http");
+        let approved = include_str!("gitlab/fixtures/poll_approved.http");
+
+        let kinds = replay(
+            PLAIN_MR_ID,
+            include_str!("gitlab/fixtures/poll_unreviewed.http"),
+            &[commented, approved],
+        );
+        let review = &poll_one(&merge_request(PLAIN_MR_ID), POLL_QUERY, approved).reviews[0];
+
+        assert_eq!(kinds, [["comment.created"], ["review.submitted"]]);
+        assert_eq!(review.state, ReviewState::Approved);
+        assert_eq!(review.at, None);
+    }
+
+    #[test]
     fn resolving_a_thread_reports_only_the_resolution_though_it_bumps_the_edit_time() {
         let kinds = replay(
+            BLOCKERS_MR_ID,
             include_str!("gitlab/fixtures/poll_thread_open.http"),
             &[include_str!("gitlab/fixtures/poll_thread_resolved.http")],
         );
@@ -1462,6 +1481,7 @@ mod tests {
     #[test]
     fn a_published_draft_note_batch_reports_each_note_and_the_thread_its_reply_reopened() {
         let kinds = replay(
+            BLOCKERS_MR_ID,
             include_str!("gitlab/fixtures/poll_pipeline_passed.http"),
             &[include_str!(
                 "gitlab/fixtures/poll_draft_notes_published.http"
@@ -1477,6 +1497,7 @@ mod tests {
     #[test]
     fn a_pipeline_settles_red_then_green_on_the_next_head() {
         let kinds = replay(
+            BLOCKERS_MR_ID,
             include_str!("gitlab/fixtures/poll_pipeline_running.http"),
             &[
                 include_str!("gitlab/fixtures/poll_pipeline_failed.http"),
