@@ -32,11 +32,16 @@ share one run.
 2. **Take stock.** The first poll of a target only records its **baseline**: red CI or an open
    thread that is already there never wakes. Run once with `--timeout 0`, which polls each target
    once and exits 3, and read `targets[]`: `state`, `colour` (`null` while CI is unsettled), `merge`
-   and `unresolved_threads`. Before you wait, deal with each red or amber `colour`, `conflicted`
-   `merge` and nonzero `unresolved_threads` it shows: none of them will wake you.
-3. **Wait.** Run the same command as a background job, so its exit re-invokes you. Set `--timeout`
-   below your shell tool's cap on a command (`--timeout 9m` under a 10-minute cap), so babysit ends
-   itself and saves its baseline rather than being killed.
+   and `unresolved_threads`. Each red or amber `colour`, `conflicted` `merge` and nonzero
+   `unresolved_threads` it shows is yours to deal with: none of them will wake you.
+3. **Wait.** Start the same command without `--timeout` as a background job, before you deal with
+   what step 2 showed, so anything landing meanwhile wakes it. It runs until a wake or an error:
+   - **Claude Code**: `run_in_background`. The harness re-invokes you when it exits, however long
+     that takes.
+   - **Codex**: the command keeps running in its session but nothing re-invokes you, so poll it
+     with an empty `write_stdin` until it exits. `codex exec` kills it when the turn ends.
+
+   Add a `--timeout` only to recheck something babysit can't wake on, and recheck it on every exit.
 4. **Act on the exit status** and, on a wake, on every event in `events` (both below).
 5. **Run the identical command again.** The baseline carries over, so only what happened since the
    last wake can wake the next run. Stop when a run wakes on `state.merged` or `state.closed`, or
@@ -56,7 +61,7 @@ share one run.
 | ------------------ | ------------------------------------------------------------------------------- |
 | `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, or both hold a token for the remote's host |
 | `cli_missing`      | Tell the user which of `gh`, `glab` or `git` is missing                         |
-| `lock_held`        | Another run owns this snapshot file. Wait for it, or watch with another file    |
+| `lock_held`        | Another run owns this snapshot file. Wait for it, or use another file; the `.lock` file stays, so leave it |
 | `poll_failed`      | The forge failed 10 calls in a row, or once under `--timeout 0`. Report it before starting another run |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |
 | `target_not_found` | The target is wrong, gone, or not visible to the CLI's account                  |
@@ -101,7 +106,10 @@ What bites:
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
-  until every required check has reported. A loop that waits for green alone needs `--timeout`.
+  until every required check has reported. `ci.settled` fires when the colour changes, so a second
+  check failing while CI is red wakes nothing.
+- **Some changes have no event:** a conflict clearing, or a non-deciding job finishing, such as a
+  GitLab `when: manual` job, which defaults to `allow_failure: true`.
 - Issues report only `comment.*` and `state.*`.
 
 ## Acting on a wake
