@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Match tag to Cargo.toml version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
+
+  build:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, runner: macos-latest }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, runner: macos-15-intel }
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-latest }
+    runs-on: ${{ matrix.runner }}
+    env:
+      ARCHIVE: babysit-${{ needs.check.outputs.version }}-${{ matrix.target }}.tar.gz
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --locked --release --target "$TARGET"
+      - name: Check version
+        run: |
+          printed="$("target/$TARGET/release/babysit" --version)"
+          echo "$printed"
+          if [ "$printed" != "babysit $VERSION" ]; then
+            echo "::error::Expected babysit $VERSION, got $printed"
+            exit 1
+          fi
+      - name: Package
+        run: tar -czf "$ARCHIVE" LICENSE -C "target/$TARGET/release" babysit
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check the tag still points at the built commit
+        run: |
+          tagged="$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG now points at $tagged, not the built commit $GITHUB_SHA"
+            exit 1
+          fi
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum -- *.tar.gz > SHA256SUMS
+      - name: Refuse to replace a published release
+        run: |
+          if ! draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            # gh exits non-zero both when no release exists and when the lookup itself fails
+            [ "$draft" = "release not found" ] || { echo "$draft"; exit 1; }
+            exit 0
+          fi
+          if [ "$draft" != "true" ]; then
+            echo "::error::Release $TAG is already published"
+            exit 1
+          fi
+          gh release delete "$TAG" --yes
+      - name: Publish release
+        working-directory: dist
+        run: |
+          gh release create "$TAG" --draft --generate-notes --title "$TAG" --verify-tag \
+            -- *.tar.gz SHA256SUMS
+          gh release edit "$TAG" --draft=false
