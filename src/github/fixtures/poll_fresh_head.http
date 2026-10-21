@@ -1,0 +1,26 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+Date: Wed, 21 Oct 2026 10:31:04 GMT
+Referrer-Policy: origin-when-cross-origin, strict-origin-when-cross-origin
+Server: github.com
+Strict-Transport-Security: max-age=31536000; includeSubdomains; preload
+Vary: Accept-Encoding, Accept, X-Requested-With
+X-Accepted-Oauth-Scopes: repo
+X-Content-Type-Options: nosniff
+X-Frame-Options: deny
+X-Github-Edge-Region: uksouth
+X-Github-Media-Type: github.v4; format=json
+X-Github-Request-Id: F240:373D75:2B465F:3C5218:6AD89467
+X-Oauth-Client-Id: 178c6fc778ccc68e1d6a
+X-Oauth-Scopes: delete_repo, gist, read:org, repo, workflow
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4652
+X-Ratelimit-Reset: 1792579075
+X-Ratelimit-Resource: graphql
+X-Ratelimit-Used: 348
+X-Xss-Protection: 0
+
+{"data":{"node":{"state":"OPEN","headRefOid":"a1ecd25ff992c3a6e9e16f73ecd17f8ee8bd28d5","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","mergedAt":null,"mergedBy":null,"stateChanges":{"nodes":[]},"commits":{"nodes":[{"commit":{"oid":"a1ecd25ff992c3a6e9e16f73ecd17f8ee8bd28d5","statusCheckRollup":null}}]},"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"dismissals":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}

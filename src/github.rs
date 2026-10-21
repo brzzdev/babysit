@@ -1639,6 +1639,16 @@ mod tests {
     }
 
     #[test]
+    fn a_head_the_base_requires_to_be_up_to_date_is_behind() {
+        let stdout = include_str!("github/fixtures/poll_behind.http");
+
+        assert_eq!(
+            poll_with([first_page(stdout)]).unwrap().merge,
+            Some(Merge::Behind)
+        );
+    }
+
+    #[test]
     fn closing_and_reopening_are_attributed_to_their_timeline_events() {
         let read = |state: &str, event: &str| {
             let fixture = include_str!("github/fixtures/poll.http")
@@ -1811,8 +1821,11 @@ mod tests {
     }
 
     #[test]
-    fn a_head_without_a_rollup_has_no_ci() {
-        assert_eq!(ci_of(&with_rollup(Value::Null)), None);
+    fn a_fresh_head_has_no_rollup_and_so_no_ci() {
+        assert_eq!(
+            ci_of(include_str!("github/fixtures/poll_fresh_head.http")),
+            None
+        );
     }
 
     #[test]
