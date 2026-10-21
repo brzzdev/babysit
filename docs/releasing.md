@@ -17,8 +17,7 @@ and publishes a GitHub Release with one archive per target, a `SHA256SUMS` file 
    git push origin vX.Y.Z
    ```
 
-4. Watch the run with `gh run watch`. The release turns public only once every archive and the
-   checksums file are attached.
+4. Watch the run with `gh run watch`.
 
 ## When the run fails
 
