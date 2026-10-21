@@ -2,6 +2,8 @@ query (
   $id: MergeRequestID!
   $approvers: Boolean = true
   $approversAfter: String
+  $fallback: Boolean = false
+  $fallbackPipeline: [ID!]
   $jobs: Boolean = true
   $jobsAfter: String
   $notes: Boolean = true
@@ -14,34 +16,32 @@ query (
     conflicts
     detailedMergeStatus
     diffHeadSha
-    headPipeline {
-      id
-      jobs(first: 100, after: $jobsAfter, retried: false) @include(if: $jobs) {
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-        nodes {
-          allowFailure
-          id
-          name
-          status
-          webPath
-        }
+    fallbackPipeline: pipelines(ids: $fallbackPipeline, first: 1) @include(if: $fallback) {
+      nodes {
+        ...pipeline
       }
-      mergeRequestEventType
-      path
-      sha
-      status
+    }
+    headPipeline {
+      ...pipeline
     }
     mergeUser {
       ...user
     }
     mergedAt
+    pipelines(first: 10, source: "merge_request_event") {
+      nodes {
+        id
+        mergeRequestEventType
+        path
+        sha
+        status
+      }
+    }
     project {
       allowMergeOnSkippedPipeline
     }
     projectId
+    retargeted
     shouldBeRebased
     state
     approvedBy(first: 100, after: $approversAfter) @include(if: $approvers) {
@@ -98,6 +98,27 @@ query (
       }
     }
   }
+}
+
+fragment pipeline on Pipeline {
+  id
+  jobs(first: 100, after: $jobsAfter, retried: false) @include(if: $jobs) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      allowFailure
+      id
+      name
+      status
+      webPath
+    }
+  }
+  mergeRequestEventType
+  path
+  sha
+  status
 }
 
 fragment user on User {

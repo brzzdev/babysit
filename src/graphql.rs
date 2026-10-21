@@ -11,6 +11,11 @@ pub struct Connection<T> {
 }
 
 #[derive(Deserialize)]
+pub struct Nodes<T> {
+    pub nodes: Vec<T>,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageInfo {
     pub end_cursor: Option<String>,

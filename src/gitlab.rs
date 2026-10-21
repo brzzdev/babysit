@@ -9,7 +9,7 @@ use crate::forge::{
     Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Merge, Poll, Position,
     Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
-use crate::graphql::{Connection, Paged, same_head};
+use crate::graphql::{Connection, Nodes, Paged, same_head};
 use crate::reference::Reference;
 use crate::response::{self, Response};
 
@@ -28,6 +28,7 @@ const MERGE_REQUEST_GID: &str = "gid://gitlab/MergeRequest/";
 const MERGE_TRAIN: &str = "MERGE_TRAIN";
 const PIPELINE_CHECK: &str = "pipeline";
 const POLL_QUERY: &str = include_str!("gitlab/poll.graphql");
+const RETARGETED: &str = "retargeted";
 const REVIEW_STATE_REQUESTED_CHANGES: &str = "REQUESTED_CHANGES";
 const REVIEW_STATE_REVIEWED: &str = "REVIEWED";
 const STATUS_FORBIDDEN: u16 = 403;
@@ -174,7 +175,7 @@ impl<E: Exec> Backend for GitLab<'_, E> {
 }
 
 impl<E: Exec> GitLab<'_, E> {
-    /// Pages every connection to its end, failing the poll if the head moves between pages.
+    /// Pages every connection to its end, failing the poll if the head or its CI source changes.
     fn poll_pages(
         &self,
         target: &Target,
@@ -185,6 +186,7 @@ impl<E: Exec> GitLab<'_, E> {
         let mut jobs = Paged::new(Forge::GitLab, "jobs");
         let mut notes = Paged::new(Forge::GitLab, "notes");
         let mut reviewers = Paged::new(Forge::GitLab, "reviewers");
+        let mut fallback = None;
         let mut first: Option<(String, MergeRequestPage)> = None;
         while !(approvers.done() && jobs.done() && notes.done() && reviewers.done()) {
             let mut variables = vec![("-f", format!("id={}", target.forge_id))];
@@ -192,6 +194,13 @@ impl<E: Exec> GitLab<'_, E> {
             variables.extend(jobs.variable());
             variables.extend(notes.variable());
             variables.extend(reviewers.variable());
+            if let Some((_, first_page)) = &first
+                && let Some(pipeline) = fallback.and_then(|index| first_page.candidate(index))
+                && !jobs.done()
+            {
+                variables.push(("-F", "fallback=true".to_owned()));
+                variables.push(("-f", format!("fallbackPipeline={}", pipeline.id)));
+            }
             let data: Data = self.graphql(&target.host, POLL_QUERY, &variables, deadline, hints)?;
             let Some(mut page) = data.merge_request else {
                 return Err(gone(target));
@@ -201,24 +210,30 @@ impl<E: Exec> GitLab<'_, E> {
             };
             match &first {
                 None => {
-                    let pipeline = page.head_pipeline.as_ref();
-                    if !pipeline.is_some_and(|pipeline| pipeline.sha == head || pipeline.merged()) {
-                        jobs.finish();
-                    }
+                    fallback =
+                        self.choose_pipeline(target, &head, &page, &mut jobs, deadline, hints)?;
                 }
                 Some((first_head, first_page)) => {
                     same_head(Forge::GitLab, first_head, &head)?;
-                    if first_page.pipeline_id() != page.pipeline_id() {
+                    if first_page.pipeline_id() != page.pipeline_id()
+                        || fallback.is_some()
+                            && (first_page.candidate_ids() != page.candidate_ids()
+                                || first_page.retargeted() != page.retargeted())
+                    {
                         return Err(transient("the head pipeline changed between pages"));
                     }
                 }
             }
             approvers.take(page.approved_by.take())?;
-            jobs.take(
-                page.head_pipeline
+            // The fallback's jobs are only asked for from the second page.
+            if first.is_some() || fallback.is_none() {
+                let fallback_pipeline = page
+                    .fallback_pipeline
                     .as_mut()
-                    .and_then(|pipeline| pipeline.jobs.take()),
-            )?;
+                    .and_then(|pipelines| pipelines.nodes.first_mut());
+                let pipeline = page.head_pipeline.as_mut().or(fallback_pipeline);
+                jobs.take(pipeline.and_then(|pipeline| pipeline.jobs.take()))?;
+            }
             notes.take(page.notes.take())?;
             reviewers.take(page.reviewers.take())?;
             if first.is_none() {
@@ -226,24 +241,17 @@ impl<E: Exec> GitLab<'_, E> {
             }
         }
         let (head, page) = first.expect("every poll fetches a first page");
-        let skipped_accepted = page
-            .project
-            .and_then(|project| project.allow_merge_on_skipped_pipeline)
-            .unwrap_or(false);
-        let ci = match page.head_pipeline {
-            Some(pipeline)
-                if self.built_on(
-                    &head,
-                    &pipeline,
-                    page.project_id,
-                    &target.host,
-                    deadline,
-                    hints,
-                )? =>
-            {
-                Some(ci(&pipeline, jobs.nodes, &target.url, skipped_accepted))
+        let ci = match fallback.and_then(|index| page.candidate(index)) {
+            Some(pipeline) if page.retargeted() => {
+                Some(retargeted_ci(&pipeline.status, &target.url))
             }
-            _ => None,
+            Some(pipeline) => Some(ci(
+                pipeline,
+                jobs.nodes,
+                &target.url,
+                page.skipped_accepted(),
+            )),
+            None => self.head_ci(target, &head, &page, jobs.nodes, deadline, hints)?,
         };
         let (comments, threads) = conversation(notes.nodes);
         let mut reviews: Vec<_> = approvers
@@ -312,12 +320,86 @@ impl<E: Exec> GitLab<'_, E> {
         })
     }
 
+    /// Picks the first page's fallback candidate, finishing `jobs` where CI needs none.
+    fn choose_pipeline(
+        &self,
+        target: &Target,
+        head: &str,
+        page: &MergeRequestPage,
+        jobs: &mut Paged<Job>,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Option<usize>, Failure> {
+        if let Some(pipeline) = &page.head_pipeline {
+            if !(pipeline.sha == head || pipeline.merged()) {
+                jobs.finish();
+            }
+            return Ok(None);
+        }
+        let fallback = self.fallback(head, page, &target.host, deadline, hints)?;
+        if fallback.is_none() || page.retargeted() {
+            jobs.finish();
+        }
+        Ok(fallback)
+    }
+
+    /// The newest merge request pipeline that ran `head`.
+    fn fallback(
+        &self,
+        head: &str,
+        page: &MergeRequestPage,
+        host: &str,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Option<usize>, Failure> {
+        let Some(candidates) = &page.pipelines else {
+            return Ok(None);
+        };
+        for (index, candidate) in candidates.nodes.iter().enumerate() {
+            if self.built_on(head, candidate, page.project_id, host, deadline, hints)? {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The head pipeline's CI, where it ran `head`.
+    fn head_ci(
+        &self,
+        target: &Target,
+        head: &str,
+        page: &MergeRequestPage,
+        jobs: Vec<Job>,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Option<Ci>, Failure> {
+        let Some(pipeline) = &page.head_pipeline else {
+            return Ok(None);
+        };
+        if !self.built_on(
+            head,
+            pipeline,
+            page.project_id,
+            &target.host,
+            deadline,
+            hints,
+        )? {
+            return Ok(None);
+        }
+        Ok(Some(ci(
+            pipeline,
+            jobs,
+            &target.url,
+            page.skipped_accepted(),
+        )))
+    }
+
     /// Whether `pipeline` ran `head`: on it, or on a merge commit whose second parent it is,
     /// which only REST lists.
     fn built_on(
         &self,
         head: &str,
-        pipeline: &HeadPipeline,
+        pipeline: &Pipeline,
         project_id: u64,
         host: &str,
         deadline: Option<SystemTime>,
@@ -353,9 +435,9 @@ impl<E: Exec> GitLab<'_, E> {
     }
 }
 
-/// The head pipeline's jobs at their latest attempts, deciding unless their failure is a warning,
+/// The pipeline's jobs at their latest attempts, deciding unless their failure is a warning,
 /// and the pipeline itself where it was skipped or no job decides.
-fn ci(pipeline: &HeadPipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: bool) -> Ci {
+fn ci(pipeline: &Pipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: bool) -> Ci {
     let origin = web_origin(target_url);
     // Jobs held behind a deciding manual job stay created while the pipeline waits on it.
     let blocked = pipeline.status == CI_MANUAL;
@@ -388,6 +470,25 @@ fn ci(pipeline: &HeadPipeline, jobs: Vec<Job>, target_url: &str, skipped_accepte
     }
     Ci {
         checks,
+        required_known: true,
+    }
+}
+
+/// A finished retargeted pipeline waits on a new run, whatever its colour.
+fn retargeted_ci(status: &str, target_url: &str) -> Ci {
+    let assessment = match job_assessment(status) {
+        Assessment::Pending => Assessment::Pending,
+        _ => Assessment::Waiting,
+    };
+    Ci {
+        checks: vec![Check {
+            assessment,
+            conclusion: RETARGETED.to_owned(),
+            deciding: true,
+            job_id: None,
+            name: PIPELINE_CHECK.to_owned(),
+            url: Some(format!("{target_url}/pipelines")),
+        }],
         required_known: true,
     }
 }
@@ -575,10 +676,15 @@ struct Viewer {
 struct MergeRequestPage {
     approved_by: Option<Connection<User>>,
     diff_head_sha: Option<String>,
-    head_pipeline: Option<HeadPipeline>,
+    /// The fallback candidate looked up again for its jobs, which may run in a fork.
+    fallback_pipeline: Option<Nodes<Pipeline>>,
+    head_pipeline: Option<Pipeline>,
     notes: Option<Connection<Note>>,
+    /// The merge request's own pipelines, newest first.
+    pipelines: Option<Nodes<Pipeline>>,
     project: Option<Project>,
     project_id: u64,
+    retargeted: Option<bool>,
     reviewers: Option<Connection<Reviewer>>,
     #[serde(flatten)]
     standing: Standing,
@@ -606,16 +712,40 @@ struct Lifecycle {
 }
 
 impl MergeRequestPage {
+    fn candidate(&self, index: usize) -> Option<&Pipeline> {
+        self.pipelines.as_ref()?.nodes.get(index)
+    }
+
+    fn candidate_ids(&self) -> Vec<&str> {
+        self.pipelines
+            .iter()
+            .flat_map(|pipelines| &pipelines.nodes)
+            .map(|pipeline| pipeline.id.as_str())
+            .collect()
+    }
+
     fn pipeline_id(&self) -> Option<&str> {
         self.head_pipeline
             .as_ref()
             .map(|pipeline| pipeline.id.as_str())
     }
+
+    /// Whether GitLab cleared the head pipeline on retargeting and hasn't recorded one since.
+    fn retargeted(&self) -> bool {
+        self.retargeted == Some(true)
+    }
+
+    fn skipped_accepted(&self) -> bool {
+        self.project
+            .as_ref()
+            .and_then(|project| project.allow_merge_on_skipped_pipeline)
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HeadPipeline {
+struct Pipeline {
     id: String,
     jobs: Option<Connection<Job>>,
     merge_request_event_type: Option<String>,
@@ -624,7 +754,7 @@ struct HeadPipeline {
     status: String,
 }
 
-impl HeadPipeline {
+impl Pipeline {
     /// Whether GitLab ran the pipeline on a merge commit rather than on the head itself.
     fn merged(&self) -> bool {
         matches!(
@@ -1258,14 +1388,23 @@ mod tests {
 
     /// The recorded poll with its head pipeline, built on the head, replaced by `pipeline`.
     fn ci_of(pipeline: Value, skipped_accepted: bool) -> Option<Ci> {
-        let fixture = include_str!("gitlab/fixtures/poll.http");
+        let stdout = edited(|merge_request| {
+            merge_request["headPipeline"] = pipeline;
+            merge_request["project"]["allowMergeOnSkippedPipeline"] = json!(skipped_accepted);
+        });
+        poll_with([graphql("", &stdout)]).unwrap().ci
+    }
+
+    /// The recorded poll with its merge request edited.
+    fn edited(edit: impl FnOnce(&mut Value)) -> String {
+        edited_fixture(include_str!("gitlab/fixtures/poll.http"), edit)
+    }
+
+    fn edited_fixture(fixture: &str, edit: impl FnOnce(&mut Value)) -> String {
         let (headers, body) = fixture.rsplit_once('\n').unwrap();
         let mut body: Value = serde_json::from_str(body).unwrap();
-        let merge_request = body.pointer_mut("/data/mergeRequest").unwrap();
-        merge_request["headPipeline"] = pipeline;
-        merge_request["project"]["allowMergeOnSkippedPipeline"] = json!(skipped_accepted);
-        let stdout = format!("{headers}\n{body}");
-        poll_with([graphql("", &stdout)]).unwrap().ci
+        edit(body.pointer_mut("/data/mergeRequest").unwrap());
+        format!("{headers}\n{body}")
     }
 
     fn pipeline(status: &str, jobs: &Value) -> Value {
@@ -1290,6 +1429,270 @@ mod tests {
             "status": status,
             "webPath": format!("/gitlab-org/cli/-/jobs/{id}"),
         })
+    }
+
+    /// The recorded poll's merge request with no head pipeline and its own pipelines `candidates`.
+    fn headless(cleared: Cleared, candidates: &[Value]) -> String {
+        edited(|merge_request| behead(merge_request, cleared, candidates))
+    }
+
+    /// `headless` but answering the query for `fallback`'s jobs.
+    fn headless_with(candidates: &[Value], fallback: &[Value]) -> String {
+        edited(|merge_request| {
+            behead(merge_request, Cleared::Deleted, candidates);
+            merge_request["fallbackPipeline"] = json!({ "nodes": fallback });
+        })
+    }
+
+    fn behead(merge_request: &mut Value, cleared: Cleared, candidates: &[Value]) {
+        merge_request["headPipeline"] = Value::Null;
+        merge_request["pipelines"] = json!({ "nodes": candidates });
+        merge_request["retargeted"] = json!(matches!(cleared, Cleared::Retargeted));
+    }
+
+    /// How GitLab came to clear the head pipeline.
+    #[derive(Clone, Copy, Debug)]
+    enum Cleared {
+        Deleted,
+        Retargeted,
+    }
+
+    fn candidate(id: u64, sha: &str, status: &str) -> Value {
+        json!({
+            "id": format!("gid://gitlab/Ci::Pipeline/{id}"),
+            "mergeRequestEventType": "DETACHED",
+            "path": format!("/gitlab-org/cli/-/pipelines/{id}"),
+            "sha": sha,
+            "status": status,
+        })
+    }
+
+    /// Pages after the first, asking for the fallback pipeline's jobs after `jobs_after`.
+    fn fallback_page(
+        jobs_after: Option<&str>,
+        stdout: &str,
+    ) -> (String, Result<Output, exec::Error>) {
+        let jobs = jobs_after.map_or(String::new(), |cursor| format!(" -f jobsAfter={cursor}"));
+        graphql(
+            &format!(
+                " -F approvers=false{jobs} -F notes=false -F reviewers=false -F fallback=true \
+                 -f fallbackPipeline=gid://gitlab/Ci::Pipeline/7"
+            ),
+            stdout,
+        )
+    }
+
+    #[test]
+    fn a_retargeted_merge_request_waits_amber_on_a_new_run_once_its_old_pipeline_finishes() {
+        let running = headless(Cleared::Retargeted, &[candidate(7, HEAD, "RUNNING")]);
+        let retargeted = include_str!("gitlab/fixtures/poll_retargeted.http");
+
+        let running = poll_with([graphql("", &running)]).unwrap().ci.unwrap();
+        let finished = poll_one(&merge_request("552882065"), POLL_QUERY, retargeted)
+            .ci
+            .unwrap();
+
+        assert_eq!(
+            finished.checks,
+            [Check {
+                assessment: Assessment::Waiting,
+                conclusion: "retargeted".to_owned(),
+                deciding: true,
+                job_id: None,
+                name: "pipeline".to_owned(),
+                url: Some(format!("{URL}/pipelines")),
+            }],
+        );
+        assert_eq!(finished.colour(), Some(Colour::Amber));
+        assert_eq!(running.colour(), None);
+    }
+
+    #[test]
+    fn without_a_merge_request_pipeline_on_the_head_there_is_no_ci() {
+        for cleared in [Cleared::Deleted, Cleared::Retargeted] {
+            let stdout = headless(cleared, &[candidate(7, "0ther", "SUCCESS")]);
+
+            let poll = poll_with([graphql("", &stdout)]).unwrap();
+
+            assert_eq!(poll.ci, None, "{cleared:?}");
+        }
+    }
+
+    #[test]
+    fn the_search_skips_a_merged_results_pipeline_on_another_head_for_an_older_one_on_this_head() {
+        let mut merged = candidate(8, MERGE_SHA, "SUCCESS");
+        merged["mergeRequestEventType"] = json!("MERGED_RESULT");
+        let candidates = [merged, candidate(7, HEAD, "SUCCESS")];
+        let other = include_str!("gitlab/fixtures/commit.http").replace(HEAD, "0ther");
+        let fallback = pipeline("SUCCESS", &json!([job(1, "test", "SUCCESS", false)]));
+
+        let poll = poll_with([
+            graphql("", &headless(Cleared::Deleted, &candidates)),
+            commit_lookup(&other),
+            fallback_page(None, &headless_with(&candidates, &[fallback])),
+        ])
+        .unwrap();
+
+        assert_eq!(poll.ci.and_then(|ci| ci.colour()), Some(Colour::Green));
+    }
+
+    #[test]
+    fn a_new_pipeline_between_pages_leaves_a_poll_with_a_head_pipeline_alone() {
+        let created = include_str!("gitlab/fixtures/poll_page_2.http").replace(
+            r#""mergeRequest":{"#,
+            &format!(
+                r#""mergeRequest":{{"pipelines":{{"nodes":[{}]}},"#,
+                candidate(9, HEAD, "RUNNING")
+            ),
+        );
+        let one_page = poll_with(recorded(include_str!("gitlab/fixtures/commit.http")));
+
+        let stitched = poll_with(
+            paged(&created)
+                .into_iter()
+                .chain([commit_lookup(include_str!("gitlab/fixtures/commit.http"))]),
+        );
+
+        assert_eq!(stitched.unwrap(), one_page.unwrap());
+    }
+
+    #[test]
+    fn a_deleted_head_pipeline_reports_ci_from_the_pipeline_surviving_on_the_head() {
+        let target = merge_request("552882785");
+        let jobs = " -F approvers=false -F notes=false -F reviewers=false -F fallback=true \
+                    -f fallbackPipeline=gid://gitlab/Ci::Pipeline/2972592330";
+
+        let poll = poll_target(
+            &target,
+            [
+                query_call(
+                    POLL_QUERY,
+                    &target.forge_id,
+                    "",
+                    include_str!("gitlab/fixtures/poll_head_pipeline_deleted.http"),
+                ),
+                query_call(
+                    POLL_QUERY,
+                    &target.forge_id,
+                    jobs,
+                    include_str!("gitlab/fixtures/poll_head_pipeline_deleted_jobs.http"),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let ci = poll.ci.unwrap();
+        let checks: Vec<_> = ci
+            .checks
+            .iter()
+            .map(|check| (check.name.as_str(), check.job_id.as_deref()))
+            .collect();
+        assert_eq!(checks, [("test", Some("17353736186"))]);
+        assert_eq!(ci.colour(), Some(Colour::Red));
+    }
+
+    #[test]
+    fn a_fork_merge_request_finds_its_fallback_pipeline_in_the_fork() {
+        let target = merge_request("552240558");
+        let beheaded = |fixture| {
+            edited_fixture(fixture, |merge_request| {
+                merge_request["headPipeline"] = Value::Null;
+            })
+        };
+        let jobs = " -F approvers=false -F notes=false -F reviewers=false -F fallback=true \
+                    -f fallbackPipeline=gid://gitlab/Ci::Pipeline/2968588387";
+
+        let poll = poll_target(
+            &target,
+            [
+                query_call(
+                    POLL_QUERY,
+                    &target.forge_id,
+                    "",
+                    &beheaded(include_str!("gitlab/fixtures/poll_fork.http")),
+                ),
+                query_call(
+                    POLL_QUERY,
+                    &target.forge_id,
+                    jobs,
+                    &beheaded(include_str!("gitlab/fixtures/poll_fork_jobs.http")),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let ci = poll.ci.unwrap();
+        assert_eq!(ci.checks.len(), 13);
+        assert_eq!(ci.colour(), Some(Colour::Green));
+    }
+
+    #[test]
+    fn a_lost_head_pipeline_falls_back_to_the_newest_pipeline_on_the_head_paging_its_jobs() {
+        let candidates = [
+            candidate(8, "0ther", "SUCCESS"),
+            candidate(7, HEAD, "FAILED"),
+        ];
+        let jobs = |cursor: Option<&str>, jobs| {
+            json!({
+                "pageInfo": { "hasNextPage": cursor.is_some(), "endCursor": cursor.unwrap_or("JOBS_2") },
+                "nodes": jobs,
+            })
+        };
+        let mut first_jobs = pipeline("FAILED", &json!([]));
+        first_jobs["jobs"] = jobs(Some("JOBS_1"), json!([job(1, "test", "SUCCESS", false)]));
+        let mut second_jobs = first_jobs.clone();
+        second_jobs["jobs"] = jobs(None, json!([job(2, "lint", "FAILED", false)]));
+
+        let poll = poll_with([
+            graphql("", &headless(Cleared::Deleted, &candidates)),
+            fallback_page(None, &headless_with(&candidates, &[first_jobs])),
+            fallback_page(Some("JOBS_1"), &headless_with(&candidates, &[second_jobs])),
+        ])
+        .unwrap();
+
+        let ci = poll.ci.unwrap();
+        let checks: Vec<_> = ci.checks.iter().map(|check| check.name.as_str()).collect();
+        assert_eq!(checks, ["test", "lint"]);
+        assert_eq!(ci.colour(), Some(Colour::Red));
+    }
+
+    #[test]
+    fn a_fallback_pipeline_that_changes_or_goes_between_pages_fails_the_poll() {
+        let candidates = [candidate(7, HEAD, "SUCCESS")];
+        let fallback = pipeline("SUCCESS", &json!([job(1, "test", "SUCCESS", false)]));
+        let newer = [candidate(9, HEAD, "RUNNING"), candidate(7, HEAD, "SUCCESS")];
+
+        for second in [
+            headless_with(&newer, &[fallback]),
+            headless_with(&candidates, &[]),
+        ] {
+            let failure = poll_with([
+                graphql("", &headless(Cleared::Deleted, &candidates)),
+                fallback_page(None, &second),
+            ])
+            .unwrap_err();
+
+            assert!(matches!(failure, Failure::Transient { .. }), "{failure:?}");
+        }
+    }
+
+    #[test]
+    fn retargeted_amber_goes_straight_to_green_when_gitlab_reselects_the_old_pipeline() {
+        let reselected = edited(|merge_request| {
+            merge_request["headPipeline"] =
+                pipeline("SUCCESS", &json!([job(1, "test", "SUCCESS", false)]));
+        });
+
+        let kinds = replay(
+            rest_id(FORGE_ID),
+            &headless(Cleared::Retargeted, &[candidate(7, HEAD, "RUNNING")]),
+            &[
+                &headless(Cleared::Retargeted, &[candidate(7, HEAD, "SUCCESS")]),
+                &reselected,
+            ],
+        );
+
+        assert_eq!(kinds, [["ci.settled Amber"], ["ci.settled Green"]]);
     }
 
     #[test]

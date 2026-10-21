@@ -149,7 +149,8 @@ present.
 
 `reply_to` is what the forge's reply call takes: the first comment's id on GitHub, the discussion
 id on GitLab. A check in `checks` or `warnings` is `name`; `conclusion`, the forge's own word in
-lowercase; `url` (nullable); and `job_id` (optional: a GitHub Actions job or a GitLab job).
+lowercase, except `retargeted`; `url` (nullable); and `job_id` (optional: a GitHub Actions job or a
+GitLab job).
 
 Issues report only `comment.*` and `state.*` events. `merge.*` events come only from an open target,
 and an event about the target as a whole (`ci.settled`, `head.pushed`, `merge.*`) has no `at` or
@@ -163,7 +164,7 @@ they were given in.
 | Colour  | When                                                                                       |
 | ------- | ------------------------------------------------------------------------------------------ |
 | `red`   | A deciding check failed. Red settles at once, even while other checks are still pending.   |
-| `amber` | No deciding check failed or is pending, and at least one waits on someone: a GitHub check asking for action, a stale or waiting run, or a required status expected but not posted; a GitLab manual job, or a skipped pipeline in a project that doesn't allow merging on one. |
+| `amber` | No deciding check failed or is pending, and at least one waits on someone: a GitHub check asking for action, a stale or waiting run, or a required status expected but not posted; a GitLab manual job, a skipped pipeline in a project that doesn't allow merging on one, or a finished pipeline GitLab set aside when it retargeted the merge request, which waits on a new pipeline. |
 | `green` | Every deciding check passed and, on GitHub, every required check has reported.            |
 
 Until then CI is unsettled and reports nothing. **No deciding checks doesn't mean green**: a head
@@ -172,8 +173,14 @@ green.
 
 The **deciding checks** are, on GitHub, the base branch's required checks when it has any and every
 check when it has none; on GitLab, every job not allowed to fail, or the pipeline itself when no
-job decides or the pipeline was skipped. A failed check that doesn't decide is a **warning**:
-`checks` lists the deciding checks that failed or wait, and `warnings` the warnings.
+job decides or the pipeline was skipped. A retargeted merge request's one deciding check is
+`pipeline`, with `conclusion` `retargeted` and the merge request's pipelines page as its `url`. A
+failed check that doesn't decide is a **warning**: `checks` lists the deciding checks that failed or
+wait, and `warnings` the warnings.
+
+GitLab CI comes from the merge request's head pipeline. While GitLab names none, as after a
+retarget or a deleted head pipeline, it comes from the newest merge request pipeline that ran the
+head; a branch pipeline never stands in.
 
 Each colour is reported once per head. A push starts the new head uncoloured, and a re-run that
 unsettles CI and settles it again reports again, even in the same colour.
