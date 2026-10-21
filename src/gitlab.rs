@@ -1471,12 +1471,13 @@ mod tests {
 
     #[test]
     fn a_retargeted_merge_request_waits_amber_on_a_new_run_once_its_old_pipeline_finishes() {
-        let colour = |status| {
-            let stdout = headless(true, &[candidate(7, HEAD, status)]);
-            poll_with([graphql("", &stdout)]).unwrap().ci.unwrap()
-        };
+        let running = headless(true, &[candidate(7, HEAD, "RUNNING")]);
+        let retargeted = include_str!("gitlab/fixtures/poll_retargeted.http");
 
-        let finished = colour("FAILED");
+        let running = poll_with([graphql("", &running)]).unwrap().ci.unwrap();
+        let finished = poll_one(&merge_request("552882065"), POLL_QUERY, retargeted)
+            .ci
+            .unwrap();
 
         assert_eq!(
             finished.checks,
@@ -1490,7 +1491,7 @@ mod tests {
             }],
         );
         assert_eq!(finished.colour(), Some(Colour::Amber));
-        assert_eq!(colour("RUNNING").colour(), None);
+        assert_eq!(running.colour(), None);
     }
 
     #[test]
