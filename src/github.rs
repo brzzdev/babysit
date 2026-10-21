@@ -2062,6 +2062,7 @@ mod tests {
         assert!(ci.checks[0].deciding);
     }
 
+    const SANDBOX: &str = "https://github.com/brzzdev/babysit-sandbox/pull/1";
     const SANDBOX_ID: &str = "PR_kwDOVSJOoc8AAAABJxuGIQ";
 
     /// The sandbox's CI, where `check` passed and the required `never-reports` never reported.
@@ -2069,7 +2070,7 @@ mod tests {
         let exec = Script::new([graphql(POLL_QUERY, &format!("-f id={SANDBOX_ID}"), stdout)]);
         let target = Target {
             forge_id: SANDBOX_ID.to_owned(),
-            url: "https://github.com/brzzdev/babysit-sandbox/pull/1".to_owned(),
+            url: SANDBOX.to_owned(),
             ..polled()
         };
         GitHub::new(&exec)
@@ -2371,19 +2372,21 @@ mod tests {
         );
     }
 
-    const SANDBOX: &str = "https://github.com/brzzdev/babysit-sandbox/pull/1";
     const USAGE: &str = include_str!("../docs/usage.md");
     const WORKED_LOOP_RULES: [&str; 2] = ["thread.* actor=@human", "ci.settled colour=red"];
 
-    /// The live pull request the recordings came from, from green through review to red and green.
-    fn sandbox_steps() -> (Snapshot, Vec<(Vec<diff::Event>, Snapshot)>) {
-        let sandbox = Target {
+    fn sandbox() -> Target {
+        Target {
             url: SANDBOX.to_owned(),
             ..polled()
-        };
+        }
+    }
+
+    /// The live pull request the recordings came from, from green through review to red and green.
+    fn sandbox_steps() -> (Snapshot, Vec<(Vec<diff::Event>, Snapshot)>) {
         let poll = |stdout| {
             let exec = Script::new([first_page(stdout)]);
-            GitHub::new(&exec).poll(&sandbox, None).unwrap().0
+            GitHub::new(&exec).poll(&sandbox(), None).unwrap().0
         };
         let first = poll(include_str!("github/fixtures/poll_green.http"));
         let rest = [
@@ -2423,10 +2426,7 @@ mod tests {
 
     #[test]
     fn the_usage_reference_examples_are_what_babysit_prints() {
-        let sandbox = Target {
-            url: SANDBOX.to_owned(),
-            ..polled()
-        };
+        let sandbox = sandbox();
         let (baseline, mut steps) = sandbox_steps();
         let mut woke = |step: usize| {
             let (events, snapshot) = &mut steps[step - 1];

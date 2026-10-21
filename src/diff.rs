@@ -476,7 +476,7 @@ fn label(event: &Event) -> String {
 /// restart would.
 #[cfg(test)]
 pub fn replay(first: Poll, rest: Vec<Poll>) -> Vec<(Vec<Event>, Snapshot)> {
-    let reload = |snapshot: &Snapshot| -> Snapshot {
+    let reload = |snapshot: &Snapshot| {
         serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap()
     };
     let mut snapshot = reload(&Snapshot::from(first));
