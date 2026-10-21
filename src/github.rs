@@ -171,9 +171,9 @@ impl<E: Exec> GitHub<'_, E> {
         let mut reviews = Paged::new(Forge::GitHub, "reviews");
         let mut rules = Paged::new(Forge::GitHub, "rules");
         let mut threads = Paged::new(Forge::GitHub, "threads");
+        let mut classic = None;
         let mut first: Option<(String, Standing)> = None;
         let mut rollup_state = None;
-        let mut classic = None;
         while !(checks.done()
             && comments.done()
             && dismissals.done()
@@ -546,7 +546,7 @@ struct BaseRef {
     branch_protection_rule: Option<BranchProtectionRule>,
     /// Classic branch protection as it binds the viewer, so empty for an admin it doesn't bind.
     ref_update_rule: Option<RefUpdateRule>,
-    rules: Option<Connection<RuleNode>>,
+    rules: Option<Connection<RulesetRule>>,
 }
 
 #[derive(Deserialize)]
@@ -589,20 +589,20 @@ impl BaseRef {
     }
 }
 
-/// A ruleset rule, which lists checks only when it requires them.
+/// One rule of a ruleset, which lists checks only when it requires them.
 #[derive(Deserialize)]
-struct RuleNode {
-    parameters: Option<RuleParameters>,
+struct RulesetRule {
+    parameters: Option<RulesetParameters>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RuleParameters {
+struct RulesetParameters {
     #[serde(default)]
     required_status_checks: Vec<Requirement>,
 }
 
-/// A check the base branch requires; one naming an app is met only by that app's check run.
+/// A check the base branch requires; one naming an app is met only by that app's checks.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Requirement {
@@ -890,8 +890,10 @@ impl ContextNode {
                 run.name == requirement.context
                     && requirement.integration_id.is_none_or(|id| app == Some(id))
             }
+            // A status names no app, but GitHub flags one posted by the required app as required.
             Self::StatusContext(status) => {
-                status.context == requirement.context && requirement.integration_id.is_none()
+                status.context == requirement.context
+                    && (requirement.integration_id.is_none() || status.is_required)
             }
         }
     }
@@ -1854,12 +1856,12 @@ mod tests {
         fixture: &str,
         replacements: impl IntoIterator<Item = (&'a str, Value)>,
     ) -> String {
-        let (headers, body) = fixture.split_once("\n\n").unwrap();
+        let (headers, body) = fixture.trim_end().rsplit_once('\n').unwrap();
         let mut body: Value = serde_json::from_str(body).unwrap();
         for (pointer, value) in replacements {
             *body.pointer_mut(pointer).unwrap() = value;
         }
-        format!("{headers}\n\n{body}")
+        format!("{headers}\n{body}")
     }
 
     /// The recorded poll with its base's required set replaced by `base`, and its head's
@@ -1897,6 +1899,7 @@ mod tests {
     }
 
     const ACTIONS_APP_ID: u64 = 15_368;
+    const CODECOV_APP_ID: u64 = 254;
 
     fn check_run(name: &str, status: &str, conclusion: Option<&str>, app: u64) -> Value {
         json!({
@@ -1945,7 +1948,7 @@ mod tests {
             run(101, None, "IN_PROGRESS"),
             {
                 "__typename": "CheckRun",
-                "checkSuite": { "app": { "databaseId": 254 }, "workflowRun": null },
+                "checkSuite": { "app": { "databaseId": CODECOV_APP_ID }, "workflowRun": null },
                 "conclusion": "FAILURE", "databaseId": 200,
                 "detailsUrl": "https://codecov.io/1", "isRequired": false, "name": "codecov",
                 "status": "COMPLETED",
@@ -2096,7 +2099,12 @@ mod tests {
 
     #[test]
     fn a_required_check_from_another_app_has_not_reported() {
-        let contexts = json!([check_run("check", "COMPLETED", Some("SUCCESS"), 254)]);
+        let contexts = json!([check_run(
+            "check",
+            "COMPLETED",
+            Some("SUCCESS"),
+            CODECOV_APP_ID
+        )]);
         let base = protected(
             &[],
             &json!([{ "context": "check", "integrationId": ACTIONS_APP_ID }]),
@@ -2108,9 +2116,35 @@ mod tests {
         assert_eq!(ci.colour(), None);
     }
 
+    /// As vercel/vercel requires its `Vercel` status, posted by the Vercel app.
+    #[test]
+    fn a_status_meets_an_app_pinned_requirement_once_github_flags_it_required() {
+        let colour = |is_required: bool| {
+            let contexts = json!([{
+                "__typename": "StatusContext", "context": "Vercel", "isRequired": is_required,
+                "state": "SUCCESS", "targetUrl": null,
+            }]);
+            let base = protected(
+                &[],
+                &json!([{ "context": "Vercel", "integrationId": 8329 }]),
+            );
+            ci_of(&with_ci(base, rollup("SUCCESS", &contexts)))
+                .unwrap()
+                .colour()
+        };
+
+        assert_eq!(colour(true), Some(Colour::Green));
+        assert_eq!(colour(false), None);
+    }
+
     #[test]
     fn with_every_required_check_missing_a_failed_check_only_warns() {
-        let contexts = json!([check_run("codecov", "COMPLETED", Some("FAILURE"), 254)]);
+        let contexts = json!([check_run(
+            "codecov",
+            "COMPLETED",
+            Some("FAILURE"),
+            CODECOV_APP_ID
+        )]);
         let base = protected(&["never-reports"], &json!([]));
 
         let ci = ci_of(&with_ci(base, rollup("FAILURE", &contexts))).unwrap();
