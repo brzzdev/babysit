@@ -9,7 +9,7 @@ use crate::forge::{
     Account, Assessment, Backend, Check, Ci, Comment, Failure, Hints, Merge, Poll, Position,
     Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
-use crate::graphql::{Connection, Paged, same_head};
+use crate::graphql::{Connection, Nodes, Paged, same_head};
 use crate::reference::Reference;
 use crate::response::{self, Response};
 
@@ -636,11 +636,6 @@ impl From<Option<u64>> for RequiredApp {
     fn from(app: Option<u64>) -> Self {
         app.map_or(Self::Any, Self::Only)
     }
-}
-
-#[derive(Deserialize)]
-struct Nodes<T> {
-    nodes: Vec<T>,
 }
 
 #[derive(Deserialize)]

@@ -3,14 +3,19 @@ use serde::Deserialize;
 use crate::envelope::Forge;
 use crate::forge::Failure;
 
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Connection<T> {
     pub nodes: Vec<T>,
     pub page_info: PageInfo,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
+pub struct Nodes<T> {
+    pub nodes: Vec<T>,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageInfo {
     pub end_cursor: Option<String>,
