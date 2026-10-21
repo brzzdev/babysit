@@ -205,7 +205,6 @@ impl<E: Exec> GitHub<'_, E> {
                     if rollup.is_none() {
                         checks.finish();
                     }
-                    // A deleted base leaves its required set unreadable.
                     if page.base_ref.is_none() {
                         rules.finish();
                     }
@@ -240,7 +239,13 @@ impl<E: Exec> GitHub<'_, E> {
         let (state_changed_at, state_changed_by) = standing.change();
         Ok(Poll {
             ci: rollup_state.map(|state| {
-                let required = classic.map(|classic| requirements(classic, rules.nodes));
+                let rulesets = rules
+                    .nodes
+                    .into_iter()
+                    .filter_map(|rule| rule.parameters)
+                    .flat_map(|parameters| parameters.required_status_checks);
+                let required =
+                    classic.map(|classic| classic.into_iter().chain(rulesets).collect::<Vec<_>>());
                 ci(&state, &checks.nodes, required.as_deref())
             }),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
@@ -565,7 +570,6 @@ struct RefUpdateRule {
 }
 
 impl BaseRef {
-    /// The checks classic branch protection requires.
     fn classic(&self) -> Vec<Requirement> {
         let full = self.branch_protection_rule.iter().flat_map(|rule| {
             rule.required_status_checks.iter().map(|check| Requirement {
@@ -881,27 +885,16 @@ impl ContextNode {
                 let app = run
                     .check_suite
                     .as_ref()
-                    .and_then(|suite| suite.app.as_ref());
+                    .and_then(|suite| suite.app.as_ref())
+                    .map(|app| app.database_id);
                 run.name == requirement.context
-                    && requirement
-                        .integration_id
-                        .is_none_or(|id| app.is_some_and(|app| app.database_id == id))
+                    && requirement.integration_id.is_none_or(|id| app == Some(id))
             }
             Self::StatusContext(status) => {
                 status.context == requirement.context && requirement.integration_id.is_none()
             }
         }
     }
-}
-
-/// The base branch's required set: classic protection's checks and its rulesets'.
-fn requirements(mut classic: Vec<Requirement>, rules: Vec<RuleNode>) -> Vec<Requirement> {
-    let rulesets = rules
-        .into_iter()
-        .filter_map(|rule| rule.parameters)
-        .flat_map(|parameters| parameters.required_status_checks);
-    classic.extend(rulesets);
-    classic
 }
 
 /// The head's checks at their latest attempts, deciding on the required ones when any exist.
@@ -975,7 +968,8 @@ fn ci(rollup_state: &str, contexts: &[ContextNode], required: Option<&[Requireme
         .collect();
     Ci {
         checks,
-        // An expecting rollup with no expected context awaits a check it doesn't name.
+        // An expecting rollup with no expected context awaits a required check the base's
+        // protection doesn't show.
         required_known: all_reported && (expected_seen || rollup_state != EXPECTED),
     }
 }
@@ -1855,28 +1849,43 @@ mod tests {
         assert_eq!(kind(&failure), ErrorKind::CliMissing);
     }
 
+    /// The recorded poll `fixture` with the value at each JSON pointer replaced.
+    fn replaced<'a>(
+        fixture: &str,
+        replacements: impl IntoIterator<Item = (&'a str, Value)>,
+    ) -> String {
+        let (headers, body) = fixture.split_once("\n\n").unwrap();
+        let mut body: Value = serde_json::from_str(body).unwrap();
+        for (pointer, value) in replacements {
+            *body.pointer_mut(pointer).unwrap() = value;
+        }
+        format!("{headers}\n\n{body}")
+    }
+
     /// The recorded poll with its base's required set replaced by `base`, and its head's
     /// `statusCheckRollup` by `rollup`.
     fn with_ci(base: Value, rollup: Value) -> String {
-        let fixture = include_str!("github/fixtures/poll.http");
-        let (headers, body) = fixture.split_once("\n\n").unwrap();
-        let mut body: Value = serde_json::from_str(body).unwrap();
-        *body.pointer_mut("/data/node/baseRef").unwrap() = base;
-        *body
-            .pointer_mut("/data/node/commits/nodes/0/commit/statusCheckRollup")
-            .unwrap() = rollup;
-        format!("{headers}\n\n{body}")
+        replaced(
+            include_str!("github/fixtures/poll.http"),
+            [
+                ("/data/node/baseRef", base),
+                (
+                    "/data/node/commits/nodes/0/commit/statusCheckRollup",
+                    rollup,
+                ),
+            ],
+        )
     }
 
     /// The recorded poll on an unprotected base, with its head's rollup replaced by `rollup`.
     fn with_rollup(rollup: Value) -> String {
-        with_ci(protected(None, &json!([])), rollup)
+        with_ci(protected(&[], &json!([])), rollup)
     }
 
     /// A base requiring `classic` through branch protection and `ruleset` through a ruleset.
-    fn protected(classic: Option<&[&str]>, ruleset: &Value) -> Value {
+    fn protected(classic: &[&str], ruleset: &Value) -> Value {
         json!({
-            "refUpdateRule": classic.map(|contexts| json!({ "requiredStatusCheckContexts": contexts })),
+            "refUpdateRule": { "requiredStatusCheckContexts": classic },
             "rules": {
                 "pageInfo": { "hasNextPage": false, "endCursor": "MQ" },
                 "nodes": [
@@ -1889,14 +1898,19 @@ mod tests {
 
     const ACTIONS_APP_ID: u64 = 15_368;
 
-    /// A completed check run by `app`, flagged required as GitHub flags those the base requires.
-    fn completed(name: &str, conclusion: &str, app: u64, required: bool) -> Value {
+    fn check_run(name: &str, status: &str, conclusion: Option<&str>, app: u64) -> Value {
         json!({
             "__typename": "CheckRun",
             "checkSuite": { "app": { "databaseId": app }, "workflowRun": null },
             "conclusion": conclusion, "databaseId": 1, "detailsUrl": null,
-            "isRequired": required, "name": name, "status": "COMPLETED",
+            "isRequired": false, "name": name, "status": status,
         })
+    }
+
+    /// `run` flagged required, as GitHub flags a check the base requires.
+    fn required(mut run: Value) -> Value {
+        run["isRequired"] = json!(true);
+        run
     }
 
     fn rollup(state: &str, contexts: &Value) -> Value {
@@ -1916,7 +1930,7 @@ mod tests {
     #[test]
     fn judges_each_check_on_its_latest_attempt_and_decides_on_the_required_ones() {
         let actions = json!({
-            "app": { "databaseId": 15_368 },
+            "app": { "databaseId": ACTIONS_APP_ID },
             "workflowRun": { "workflow": { "databaseId": 390_459_010 } },
         });
         let run = |id: u64, conclusion: Option<&str>, status: &str| {
@@ -2039,16 +2053,16 @@ mod tests {
     #[test]
     fn a_required_check_that_never_reports_holds_green_back_under_classic_protection() {
         let admin = include_str!("github/fixtures/poll_required_classic.http");
-        let member = admin
-            .replace(
-                r#""branchProtectionRule":{"requiredStatusChecks":[{"app":{"databaseId":15368},"context":"check"},{"app":null,"context":"never-reports"}]}"#,
-                r#""branchProtectionRule":null"#,
-            )
-            .replace(
-                r#""requiredStatusCheckContexts":[]"#,
-                r#""requiredStatusCheckContexts":["check","never-reports"]"#,
-            );
-        assert_ne!(admin, member);
+        let member = replaced(
+            admin,
+            [
+                ("/data/node/baseRef/branchProtectionRule", Value::Null),
+                (
+                    "/data/node/baseRef/refUpdateRule/requiredStatusCheckContexts",
+                    json!(["check", "never-reports"]),
+                ),
+            ],
+        );
 
         for stdout in [admin, &member] {
             let ci = sandbox_ci(stdout);
@@ -2059,7 +2073,12 @@ mod tests {
 
     #[test]
     fn a_required_check_missing_from_either_source_holds_green_back() {
-        let passed = json!([completed("check", "SUCCESS", ACTIONS_APP_ID, true)]);
+        let passed = json!([required(check_run(
+            "check",
+            "COMPLETED",
+            Some("SUCCESS"),
+            ACTIONS_APP_ID
+        ))]);
         let colour = |base| {
             ci_of(&with_ci(base, rollup("SUCCESS", &passed)))
                 .unwrap()
@@ -2068,21 +2087,18 @@ mod tests {
         let check = json!([{ "context": "check", "integrationId": ACTIONS_APP_ID }]);
         let never_reports = json!([{ "context": "never-reports", "integrationId": null }]);
 
-        assert_eq!(colour(protected(None, &check)), Some(Colour::Green));
-        assert_eq!(colour(protected(None, &never_reports)), None);
-        assert_eq!(
-            colour(protected(Some(&["never-reports"]), &json!([]))),
-            None
-        );
-        assert_eq!(colour(protected(Some(&["check"]), &never_reports)), None);
-        assert_eq!(colour(protected(Some(&["never-reports"]), &check)), None);
+        assert_eq!(colour(protected(&[], &check)), Some(Colour::Green));
+        assert_eq!(colour(protected(&[], &never_reports)), None);
+        assert_eq!(colour(protected(&["never-reports"], &json!([]))), None);
+        assert_eq!(colour(protected(&["check"], &never_reports)), None);
+        assert_eq!(colour(protected(&["never-reports"], &check)), None);
     }
 
     #[test]
     fn a_required_check_from_another_app_has_not_reported() {
-        let contexts = json!([completed("check", "SUCCESS", 254, false)]);
+        let contexts = json!([check_run("check", "COMPLETED", Some("SUCCESS"), 254)]);
         let base = protected(
-            None,
+            &[],
             &json!([{ "context": "check", "integrationId": ACTIONS_APP_ID }]),
         );
 
@@ -2094,8 +2110,8 @@ mod tests {
 
     #[test]
     fn with_every_required_check_missing_a_failed_check_only_warns() {
-        let contexts = json!([completed("codecov", "FAILURE", 254, false)]);
-        let base = protected(Some(&["never-reports"]), &json!([]));
+        let contexts = json!([check_run("codecov", "COMPLETED", Some("FAILURE"), 254)]);
+        let base = protected(&["never-reports"], &json!([]));
 
         let ci = ci_of(&with_ci(base, rollup("FAILURE", &contexts))).unwrap();
 
@@ -2105,13 +2121,8 @@ mod tests {
 
     #[test]
     fn a_required_check_yet_to_report_leaves_an_approval_gates_amber() {
-        let contexts = json!([{
-            "__typename": "CheckRun",
-            "checkSuite": { "app": { "databaseId": ACTIONS_APP_ID }, "workflowRun": null },
-            "conclusion": null, "databaseId": 1, "detailsUrl": null,
-            "isRequired": true, "name": "gate", "status": "WAITING",
-        }]);
-        let base = protected(Some(&["gate", "after"]), &json!([]));
+        let contexts = json!([required(check_run("gate", "WAITING", None, ACTIONS_APP_ID))]);
+        let base = protected(&["gate", "after"], &json!([]));
 
         let ci = ci_of(&with_ci(base, rollup("PENDING", &contexts))).unwrap();
 
@@ -2120,7 +2131,12 @@ mod tests {
 
     #[test]
     fn a_deleted_base_leaves_the_required_set_unknown() {
-        let passed = json!([completed("test", "SUCCESS", ACTIONS_APP_ID, false)]);
+        let passed = json!([check_run(
+            "test",
+            "COMPLETED",
+            Some("SUCCESS"),
+            ACTIONS_APP_ID
+        )]);
 
         let ci = ci_of(&with_ci(Value::Null, rollup("SUCCESS", &passed))).unwrap();
 
@@ -2134,7 +2150,7 @@ mod tests {
             json!({
                 "__typename": "CheckRun",
                 "checkSuite": {
-                    "app": { "databaseId": 15_368 },
+                    "app": { "databaseId": ACTIONS_APP_ID },
                     "workflowRun": {
                         "databaseId": 39_494_970_229_u64,
                         "workflow": { "databaseId": 391_007_203 },
