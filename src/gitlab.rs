@@ -1594,7 +1594,7 @@ mod tests {
     #[test]
     fn a_fork_merge_request_finds_its_fallback_pipeline_in_the_fork() {
         let target = merge_request("552240558");
-        let lost = |fixture| {
+        let beheaded = |fixture| {
             edited_fixture(fixture, |merge_request| {
                 merge_request["headPipeline"] = Value::Null;
             })
@@ -1609,13 +1609,13 @@ mod tests {
                     POLL_QUERY,
                     &target.forge_id,
                     "",
-                    &lost(include_str!("gitlab/fixtures/poll_fork.http")),
+                    &beheaded(include_str!("gitlab/fixtures/poll_fork.http")),
                 ),
                 query_call(
                     POLL_QUERY,
                     &target.forge_id,
                     jobs,
-                    &lost(include_str!("gitlab/fixtures/poll_fork_jobs.http")),
+                    &beheaded(include_str!("gitlab/fixtures/poll_fork_jobs.http")),
                 ),
             ],
         )
