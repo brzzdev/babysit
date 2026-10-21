@@ -786,8 +786,8 @@ mod tests {
     const HEAD: &str = "25892092f1db0711fcea689c27db39f6d928d2eb";
     /// The recorded head pipeline's merge commit.
     const MERGE_SHA: &str = "d29dd22357102fba3709a18e01c6a96e025174a3";
-    /// The fixture's `Ratelimit-Reset`.
     const PLAIN_MR_ID: &str = "552726042";
+    /// The fixture's `Ratelimit-Reset`.
     const RESET: u64 = 1_792_533_720;
     const RESOLVE: &str = "glab api -i --hostname gitlab.com \
                            projects/gitlab-org%2Fcli/merge_requests/4157";
@@ -1452,14 +1452,11 @@ mod tests {
 
     #[test]
     fn a_plain_note_is_a_comment_and_an_approval_a_review_without_a_time() {
+        let unreviewed = include_str!("gitlab/fixtures/poll_unreviewed.http");
         let commented = include_str!("gitlab/fixtures/poll_commented.http");
         let approved = include_str!("gitlab/fixtures/poll_approved.http");
 
-        let kinds = replay(
-            PLAIN_MR_ID,
-            include_str!("gitlab/fixtures/poll_unreviewed.http"),
-            &[commented, approved],
-        );
+        let kinds = replay(PLAIN_MR_ID, unreviewed, &[commented, approved]);
         let review = &poll_one(&merge_request(PLAIN_MR_ID), POLL_QUERY, approved).reviews[0];
 
         assert_eq!(kinds, [["comment.created"], ["review.submitted"]]);
