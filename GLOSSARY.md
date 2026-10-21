@@ -25,7 +25,7 @@ Everything babysit knows about a target at one moment.
 _Avoid_: State, status
 
 **Target**:
-A single pull request, merge request or issue being watched.
+A single pull request, merge request, or issue being watched.
 _Avoid_: Item, watch
 
 ### Events
@@ -74,7 +74,7 @@ _Avoid_: Discussion, conversation
 
 **CI colour**:
 The verdict on CI for a target's latest commit: green (every deciding check passed), amber (no
-deciding check failed, but CI can't finish until someone acts) or red (a deciding check failed).
+deciding check failed, but CI can't finish until someone acts), or red (a deciding check failed).
 _Avoid_: CI status, CI result
 
 **Deciding check**:

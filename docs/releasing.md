@@ -2,7 +2,7 @@
 
 Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`, which checks the tag against the
 `Cargo.toml` version, runs the CI gates, builds binaries for macOS and Linux on arm64 and x86-64,
-and publishes a GitHub Release with one archive per target, a `SHA256SUMS` file and generated notes.
+and publishes a GitHub Release with an archive per target, a `SHA256SUMS` file, and generated notes.
 
 ## Cutting a release
 

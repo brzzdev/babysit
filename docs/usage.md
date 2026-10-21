@@ -1,8 +1,8 @@
 # Using babysit
 
 babysit watches one or more targets, waits for an event its rules care about, prints one JSON
-envelope on stdout and exits. Run it again with the same `--snapshot` and it picks up where the last
-run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
+envelope on stdout, and exits. Run it again with the same `--snapshot` and it picks up where the
+last run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
 
 ## Invocation
 
@@ -20,23 +20,23 @@ babysit [--on RULE]... [--ignore RULE]... --snapshot PATH [--interval DURATION] 
 | `-h`, `--help`         |         | Print help                                                                              |
 | `-V`, `--version`      |         | Print `babysit <version>`                                                               |
 
-A duration is a whole number followed by `s`, `m` or `h`, such as `45s`, `10m` or `2h`; `--timeout`
-also takes a bare `0`. A forge that asks for slower polling, through `x-poll-interval` or
-`retry-after`, stretches the interval.
+A duration is a whole number followed by `s`, `m`, or `h`, such as `45s`, `10m`, or `2h`;
+`--timeout` also takes a bare `0`. A forge that asks for slower polling, through
+`x-poll-interval` or `retry-after`, stretches the interval.
 
 babysit drives the forge's own CLI: an authenticated `gh` for GitHub, `glab` for GitLab. Progress
 notes such as retries and rate-limit waits go to stderr, prefixed `babysit:`, and are for humans.
 
 ### Targets
 
-Each target is a pull request, merge request or issue, named one of two ways:
+Each target is a pull request, merge request, or issue, named one of two ways:
 
 - **A web URL.** The URL's shape decides the forge, so GitHub Enterprise and self-managed GitLab
   hosts work too. No query or fragment.
   - GitHub: `https://<host>/<owner>/<repo>/pull/<n>` or `…/issues/<n>`. An issue URL that names a
     pull request is watched as that pull request. A GitHub URL can't name a port.
-  - GitLab: `https://<host>/<group>[/<subgroup>…]/<project>/-/merge_requests/<n>`, `…/-/issues/<n>`
-    or `…/-/work_items/<n>`.
+  - GitLab: `https://<host>/<group>[/<subgroup>…]/<project>/-/merge_requests/<n>`,
+    `…/-/issues/<n>`, or `…/-/work_items/<n>`.
 - **A checkout reference**, inside a git checkout: on GitHub, `#<n>` is a pull request or issue; on
   GitLab, `#<n>` is an issue and `!<n>` a merge request. babysit picks the project `gh pr view` or
   `glab mr view` would: the default `gh repo set-default` or glab recorded, else the only remote on
@@ -116,7 +116,7 @@ Every event prints as a JSON object: the fields of its kind, then the common one
 | Common field  | Value                                                                                    |
 | ------------- | ---------------------------------------------------------------------------------------- |
 | `kind`        | The event kind                                                                           |
-| `url`         | Where the event is on the web: the comment, review or thread, or the target itself       |
+| `url`         | Where the event is on the web: the comment, review, or thread, else the target itself    |
 | `at`          | When it happened, RFC 3339; **absent** where the forge doesn't record it                 |
 | `actor`       | The account that caused it; **absent** where the forge doesn't record it                 |
 | `subject`     | The account it happened to; only on `review.withdrawn`, **absent** where unknown         |
@@ -184,21 +184,20 @@ stdout carries exactly one envelope, pretty-printed JSON:
 
 | Field     | Value                                                                                         |
 | --------- | --------------------------------------------------------------------------------------------- |
-| `outcome` | `woke`, `timed_out` or `error`                                                                |
+| `outcome` | `woke`, `timed_out`, or `error`                                                               |
 | `events`  | The events that woke the run, across every target; empty unless `woke`                       |
 | `targets` | A summary of each target polled successfully in this run, in the order given                 |
 | `error`   | `null`, or the error that ended the run; a wake in the same round wins over it                |
 
-A target summary is `target` and `state` (`open`, `closed` or `merged`). A pull or merge request
+A target summary is `target` and `state` (`open`, `closed`, or `merged`). A pull or merge request
 adds `head`, its head commit; `colour`, the CI colour reported for that head or `null` while
-unsettled; `merge`, the last known of `clean`, `behind` or `conflicted`, which stays put while the
+unsettled; `merge`, the last known of `clean`, `behind`, or `conflicted`, which stays put while the
 forge recomputes it and is `null` until first known or once the target isn't open; and
-`unresolved_threads`. An issue's summary has only `target` and
-`state`.
+`unresolved_threads`. An issue's summary has only `target` and `state`.
 
 The examples below come from a live GitHub pull request and issue, recorded in
 `src/github/fixtures/`. The test `the_usage_reference_examples_are_what_babysit_prints` in
-`src/github.rs` replays those recordings through babysit's polling, diffing, rule matching and
+`src/github.rs` replays those recordings through babysit's polling, diffing, rule matching, and
 printing, and fails if a block marked `checked` here differs from its output or isn't one it
 checks. The envelope is assembled in the test as a run assembles it.
 
@@ -336,12 +335,12 @@ A target the forge can't find:
 | 2    | none        | A usage error: the message is on stderr and **no envelope** is printed     |
 | 3    | `timed_out` | `--timeout` passed without a wake                                          |
 
-Usage errors are found before any forge is polled: a malformed flag, rule, duration or target, a
-checkout reference babysit can't place, a duration past what the clock can hold, or a `--snapshot`
+Usage errors are found before any forge is polled: a malformed flag, rule, duration, or target; a
+checkout reference babysit can't place; a duration past what the clock can hold; or a `--snapshot`
 file that isn't a babysit snapshot file of this version.
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, or `null` for a failure that isn't a forge's,
-such as the snapshot file, or `git`, `gh auth token` or `glab config get token` failing while
+such as the snapshot file, or `git`, `gh auth token`, or `glab config get token` failing while
 babysit places a checkout reference, which isn't retried);
 `target` (the target's URL, or the name as given before it resolved, or `null`); and `message`, for
 humans.
@@ -349,14 +348,14 @@ humans.
 | `kind`             | Cause                                                                                        |
 | ------------------ | -------------------------------------------------------------------------------------------- |
 | `auth`             | The CLI isn't signed in or was refused (401, 403), or both `gh` and `glab` hold a token for a checkout remote's host |
-| `cli_missing`      | `gh`, `glab` or `git` isn't installed or not on `PATH`                                      |
+| `cli_missing`      | `gh`, `glab`, or `git` isn't installed or not on `PATH`                                     |
 | `lock_held`        | Another babysit run holds the `--snapshot` file                                              |
 | `poll_failed`      | A call to the forge failed 10 times in a row for one target, or once under `--timeout 0`     |
-| `snapshot_io`      | The `--snapshot` file couldn't be read, locked or written                                    |
+| `snapshot_io`      | The `--snapshot` file couldn't be read, locked, or written                                   |
 | `target_not_found` | The forge has no such target, it's gone or no longer visible, or it redirects to another host |
 
 A failed call is retried at the interval until 10 in a row fail for one target; a success resets
-the count. An `auth`, `target_not_found` or `cli_missing` failure isn't retried: it ends the run.
+the count. An `auth`, `target_not_found`, or `cli_missing` failure isn't retried: it ends the run.
 Every call due in a round is still made, so a wake in the same round wins: the run prints `woke`
 with `error: null`, and the failing target's entry stays unsaved, so the next run meets the error
 again. Each call to a CLI gets 60 seconds. A rate limit isn't a failure: babysit waits for the
