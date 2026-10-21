@@ -1,6 +1,6 @@
 ---
 name: babysit
-description: Wait on a GitHub pull request, GitLab merge request, or issue with the `babysit` CLI, which blocks until CI settles, a review, thread, or comment lands, or the target merges or closes. Use whenever you must wait for something to happen on a PR, MR, or issue instead of polling or sleeping, or when the `babysit` command comes up.
+description: Wait on a GitHub pull request, GitLab merge request, or issue with the `babysit` CLI, which blocks until CI settles; a review, thread, or comment lands; or the target merges or closes. Use whenever you must wait for something to happen on a PR, MR, or issue instead of polling or sleeping, or when the `babysit` command comes up.
 metadata:
   author: Paul Breeze
 ---
