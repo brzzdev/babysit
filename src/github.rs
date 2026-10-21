@@ -2493,6 +2493,11 @@ mod tests {
     }
 
     #[test]
+    fn the_readme_wake_is_the_usage_reference_wake() {
+        assert!(include_str!("../README.md").contains(checked_in_usage("woke-thread")));
+    }
+
+    #[test]
     fn the_usage_reference_worked_loop_wakes_on_a_human_thread_and_red_ci_alone() {
         let documented: Vec<(String, &str)> = checked_in_usage("worked-loop")
             .lines()
