@@ -79,8 +79,8 @@ Starting sets:
 
 ```sh
 # A PR or MR until it lands
---on 'ci.settled' --on 'merge.conflicted' --on 'review.*' --on 'state.*' --on 'thread.*' \
-  --ignore 'comment.* actor=@me' --ignore 'thread.* actor=@me'
+--on 'ci.settled' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
+  --on 'thread.*' --ignore 'comment.* actor=@me' --ignore 'thread.* actor=@me'
 
 # Only until CI settles, to carry on with work that needs it green
 --on 'ci.settled' --on 'state.*'
@@ -111,7 +111,7 @@ are progress for humans. Capture the envelope and the exit status apart, since a
 `jq`'s status instead:
 
 ```sh
-out="$(babysit …)"; status=$?
+out="$(babysit …)"; exit_code=$?
 jq '.events[] | {kind, target, url, body, reply_to, path, line, colour, checks, warnings}' <<<"$out"
 ```
 
