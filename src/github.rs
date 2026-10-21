@@ -2067,18 +2067,7 @@ mod tests {
 
     /// The sandbox's CI, where `check` passed and the required `never-reports` never reported.
     fn sandbox_ci(stdout: &str) -> Ci {
-        let exec = Script::new([graphql(POLL_QUERY, &format!("-f id={SANDBOX_ID}"), stdout)]);
-        let target = Target {
-            forge_id: SANDBOX_ID.to_owned(),
-            url: SANDBOX.to_owned(),
-            ..polled()
-        };
-        GitHub::new(&exec)
-            .poll(&target, None)
-            .unwrap()
-            .0
-            .ci
-            .unwrap()
+        poll_sandbox(stdout).ci.unwrap()
     }
 
     #[test]
@@ -2373,22 +2362,25 @@ mod tests {
     }
 
     const USAGE: &str = include_str!("../docs/usage.md");
-    const WORKED_LOOP_RULES: [&str; 2] = ["thread.* actor=@human", "ci.settled colour=red"];
+    const WORKED_LOOP_RULES: [&str; 3] =
+        ["thread.* actor=@human", "ci.settled colour=red", "state.*"];
 
     fn sandbox() -> Target {
         Target {
+            forge_id: SANDBOX_ID.to_owned(),
             url: SANDBOX.to_owned(),
             ..polled()
         }
     }
 
-    /// The live pull request the recordings came from, from green through review to red and green.
+    fn poll_sandbox(stdout: &str) -> Poll {
+        let exec = Script::new([graphql(POLL_QUERY, &format!("-f id={SANDBOX_ID}"), stdout)]);
+        GitHub::new(&exec).poll(&sandbox(), None).unwrap().0
+    }
+
+    /// The live pull request's baseline, then each later poll's events and the snapshot it leaves.
     fn sandbox_steps() -> (Snapshot, Vec<(Vec<diff::Event>, Snapshot)>) {
-        let poll = |stdout| {
-            let exec = Script::new([first_page(stdout)]);
-            GitHub::new(&exec).poll(&sandbox(), None).unwrap().0
-        };
-        let first = poll(include_str!("github/fixtures/poll_green.http"));
+        let first = poll_sandbox(include_str!("github/fixtures/poll_green.http"));
         let rest = [
             include_str!("github/fixtures/poll_commented.http"),
             include_str!("github/fixtures/poll_comment_minimised.http"),
@@ -2402,7 +2394,7 @@ mod tests {
         ];
         (
             Snapshot::from(first.clone()),
-            diff::replay(first, rest.into_iter().map(poll).collect()),
+            diff::replay(first, rest.into_iter().map(poll_sandbox).collect()),
         )
     }
 
@@ -2427,9 +2419,9 @@ mod tests {
     #[test]
     fn the_usage_reference_examples_are_what_babysit_prints() {
         let sandbox = sandbox();
-        let (baseline, mut steps) = sandbox_steps();
-        let mut woke = |step: usize| {
-            let (events, snapshot) = &mut steps[step - 1];
+        let (_, mut steps) = sandbox_steps();
+        let mut woke = |table_step: usize| {
+            let (events, snapshot) = &mut steps[table_step - 1];
             let events = std::mem::take(events)
                 .into_iter()
                 .filter(wakes)
@@ -2445,20 +2437,29 @@ mod tests {
                 ..Envelope::ended(Outcome::Woke)
             }
         };
+        let issue_exec = Script::new([graphql(
+            ISSUE_POLL_QUERY,
+            &format!("-f id={ISSUE_ID}"),
+            include_str!("github/fixtures/issue_poll.http"),
+        )]);
+        let (issue_poll, _) = GitHub::new(&issue_exec).poll(&issue(), None).unwrap();
+        let ci_running = poll_sandbox(include_str!("github/fixtures/poll_red_pending.http"));
         let not_found = resolve_with(Ok(gh(
             1,
             include_str!("github/fixtures/resolve_not_found.http"),
             "gh: Not Found (HTTP 404)",
         )))
         .unwrap_err();
-
-        for (name, envelope) in [
+        let examples = [
             ("woke-thread", woke(4)),
             ("woke-red", woke(7)),
             (
                 "timed-out",
                 Envelope {
-                    targets: vec![Summary::new(&sandbox, &baseline)],
+                    targets: vec![
+                        Summary::new(&issue(), &issue_poll.into()),
+                        Summary::new(&sandbox, &ci_running.into()),
+                    ],
                     ..Envelope::ended(Outcome::TimedOut)
                 },
             ),
@@ -2469,29 +2470,67 @@ mod tests {
                     "https://github.com/brzzdev/babysit-sandbox/pull/9",
                 ),
             ),
-        ] {
+        ];
+
+        let marked: Vec<_> = USAGE
+            .split("<!-- checked: ")
+            .skip(1)
+            .map(|rest| rest.split_once(" -->").unwrap().0)
+            .collect();
+        assert_eq!(
+            marked,
+            [
+                "woke-thread",
+                "woke-red",
+                "timed-out",
+                "error",
+                "worked-loop"
+            ],
+        );
+        for (name, envelope) in examples {
             assert_eq!(checked_in_usage(name), printed(&envelope), "{name}");
         }
     }
 
     #[test]
     fn the_usage_reference_worked_loop_wakes_on_a_human_thread_and_red_ci_alone() {
-        let documented: Vec<(Vec<&str>, bool)> = checked_in_usage("worked-loop")
+        let documented: Vec<(String, &str)> = checked_in_usage("worked-loop")
             .lines()
             .skip(2)
             .map(|row| {
                 let cells: Vec<_> = row.split('|').map(str::trim).collect();
-                let kinds = cells[3].split('`').skip(1).step_by(2).collect();
-                (kinds, cells[4] == "yes")
+                let [_, _step, _what_happened, events, wakes, _] = cells[..] else {
+                    panic!("{row}");
+                };
+                (events.to_owned(), wakes)
             })
             .collect();
 
-        let replayed: Vec<(Vec<&str>, bool)> = sandbox_steps()
+        let replayed: Vec<(String, &str)> = sandbox_steps()
             .1
             .iter()
             .map(|(events, _)| {
-                let kinds = events.iter().map(|event| event.detail.kind()).collect();
-                (kinds, events.iter().any(wakes))
+                let listed: Vec<_> = events
+                    .iter()
+                    .map(|event| match &event.detail {
+                        diff::Detail::CiSettled { colour, .. } => {
+                            let colour = serde_json::to_value(colour).unwrap();
+                            format!("`ci.settled` ({})", colour.as_str().unwrap())
+                        }
+                        detail => format!("`{}`", detail.kind()),
+                    })
+                    .collect();
+                let listed = if listed.is_empty() {
+                    "none".to_owned()
+                } else {
+                    listed.join(", ")
+                };
+                let woke = if events.iter().any(wakes) {
+                    "yes"
+                } else {
+                    "no"
+                };
+                (listed, woke)
             })
             .collect();
 

@@ -63,8 +63,9 @@ terms, separated by spaces.
 - **`--ignore` wins**: an event matching any `--ignore` rule never wakes, whatever `--on` says.
 - **A missing field never matches.** `actor=@human` doesn't match an event with no actor, and with
   no kind pattern, `colour=red` matches only `ci.settled`. A pattern whose kinds can't carry the
-  field is a usage error: `thread.opened colour=red`. The exception is `head.pushed`, which accepts
-  `actor` but never has one, so `head.pushed actor=…` parses and never matches.
+  field is a usage error: `thread.opened colour=red`. The exceptions are `head.pushed` and
+  `thread.unresolved`, which accept `actor` but never have one, so such a term parses and never
+  matches.
 
 | Field     | Carried by                            | Values                                     |
 | --------- | ------------------------------------- | ------------------------------------------ |
@@ -110,7 +111,7 @@ Every event prints as a JSON object: the fields of its kind, then the common one
 
 An account is `{"bot": true | false | null, "login": "…"}`; `null` means the forge doesn't say.
 
-Field rules: a field marked *optional* below is **absent** when it has no value. A field marked
+Presence: a field marked *optional* below is **absent** when it has no value. A field marked
 *nullable* is always present and prints `null` when it has no value. Everything else is always
 present.
 
@@ -148,11 +149,12 @@ they were given in.
 | Colour  | When                                                                                       |
 | ------- | ------------------------------------------------------------------------------------------ |
 | `red`   | A deciding check failed. Red settles at once, even while other checks are still pending.   |
-| `amber` | No deciding check failed or is pending, and at least one waits on someone: a GitHub check asking for action, a stale or waiting run, or a required status expected but not posted; a GitLab manual job, or a skipped pipeline the project won't merge. |
+| `amber` | No deciding check failed or is pending, and at least one waits on someone: a GitHub check asking for action, a stale or waiting run, or a required status expected but not posted; a GitLab manual job, or a skipped pipeline in a project that doesn't allow merging on one. |
 | `green` | Every deciding check passed and, on GitHub, every required check has reported.            |
 
 Until then CI is unsettled and reports nothing. **No deciding checks doesn't mean green**: a head
-with no checks, or whose required checks haven't reported, never settles.
+with no checks never settles, and one whose required checks haven't all reported never settles
+green.
 
 The **deciding checks** are, on GitHub, the base branch's required checks when it has any and every
 check when it has none; on GitLab, every job not allowed to fail, or the pipeline itself when no
@@ -171,19 +173,23 @@ stdout carries exactly one envelope, pretty-printed JSON:
 | `outcome` | `woke`, `timed_out` or `error`                                                                |
 | `events`  | The events that woke the run, across every target; empty unless `woke`                       |
 | `targets` | A summary of each target polled successfully in this run, in the order given                 |
-| `error`   | `null`, or the error that ended the run                                                       |
+| `error`   | `null`, or the error that ended the run; a wake in the same round wins over it                |
 
 A target summary is `target` and `state` (`open`, `closed` or `merged`). A pull or merge request
 adds `head`, its head commit; `colour`, the CI colour reported for that head or `null` while
-unsettled; `merge`, one of `clean`, `behind` or `conflicted`, or `null` while the forge is computing
-it or once the target isn't open; and `unresolved_threads`. An issue's summary has only `target` and
+unsettled; `merge`, the last known of `clean`, `behind` or `conflicted`, which stays put while the
+forge recomputes it and is `null` until first known or once the target isn't open; and
+`unresolved_threads`. An issue's summary has only `target` and
 `state`.
 
-The examples below come from a live GitHub pull request, recorded in `src/github/fixtures/`. The
-test `the_usage_reference_examples_are_what_babysit_prints` in `src/github.rs` replays those
-recordings and fails if any block marked `checked` here differs from what babysit prints.
+The examples below come from a live GitHub pull request and issue, recorded in
+`src/github/fixtures/`. The test `the_usage_reference_examples_are_what_babysit_prints` in
+`src/github.rs` replays those recordings through babysit's polling, diffing, rule matching and
+printing, and fails if a block marked `checked` here differs from its output or isn't one it
+checks. The envelope is assembled in the test as a run assembles it.
 
-A wake on a human's line thread, with the bot approval before it ignored:
+A wake on a human's line thread. Only matching events print: the review the thread was opened in
+didn't match, so it's left out:
 
 <!-- checked: woke-thread -->
 ```json
@@ -263,7 +269,9 @@ A wake on red CI. The event about the target as a whole carries no `at` or `acto
 }
 ```
 
-A first run with `--timeout 0`, which only records the baseline:
+A first run with `--timeout 0` on an issue and a pull request whose CI is still running, which
+only records their baselines. The issue's summary has no pull request fields, and unsettled CI is
+`null`:
 
 <!-- checked: timed-out -->
 ```json
@@ -272,10 +280,14 @@ A first run with `--timeout 0`, which only records the baseline:
   "events": [],
   "targets": [
     {
+      "target": "https://github.com/brzzdev/babysit/issues/9",
+      "state": "closed"
+    },
+    {
       "target": "https://github.com/brzzdev/babysit-sandbox/pull/1",
       "state": "open",
-      "head": "683bf59580d1f4e7a42d6aa1d918477aa94b1730",
-      "colour": "green",
+      "head": "54dcdb220c6c950e4d0327cd38867b7cee7b3b9e",
+      "colour": null,
       "merge": "clean",
       "unresolved_threads": 0
     }
@@ -314,7 +326,9 @@ Usage errors are found before any forge is polled: a malformed flag, rule, durat
 checkout reference babysit can't place, a duration past what the clock can hold, or a `--snapshot`
 file that isn't a babysit snapshot file of this version.
 
-`error` holds `kind`; `forge` (`github`, `gitlab`, or `null` for a failure before any forge call);
+`error` holds `kind`; `forge` (`github`, `gitlab`, or `null` for a failure that isn't a forge's,
+such as the snapshot file, or `git`, `gh auth token` or `glab config get token` failing while
+babysit places a checkout reference, which isn't retried);
 `target` (the target's URL, or the name as given before it resolved, or `null`); and `message`, for
 humans.
 
@@ -328,14 +342,17 @@ humans.
 | `target_not_found` | The forge has no such target, it's gone or no longer visible, or it redirects to another host |
 
 A failed call is retried at the interval until 10 in a row fail for one target; a success resets
-the count. Each call to a CLI gets 60 seconds. A rate limit isn't a failure: babysit waits for the
+the count. An `auth`, `target_not_found` or `cli_missing` failure isn't retried: it ends the run.
+Every call due in a round is still made, so a wake in the same round wins: the run prints `woke`
+with `error: null`, and the failing target's entry stays unsaved, so the next run meets the error
+again. Each call to a CLI gets 60 seconds. A rate limit isn't a failure: babysit waits for the
 `retry-after` or the quota reset the forge names, or else backs off from 60 seconds, doubling up to
 15 minutes, and notes the wait on stderr. Other hosts keep polling meanwhile.
 
 With `--timeout`, the run ends `timed_out` once the next call would be due past the deadline, or
 when the deadline kills a call in flight. `--timeout 0` makes one round of calls: each target is
-resolved and polled once, nothing waits out a rate limit (a target that only hit one ends
-`timed_out`), and the first failed call ends the run as `poll_failed`.
+resolved and polled once, nothing waits out a rate limit (a run that only hit one ends
+`timed_out`), and a call that would have been retried fails the run as `poll_failed` instead.
 
 ## The snapshot file
 
@@ -345,14 +362,16 @@ it to start over.
 
 - **The first poll only records a baseline.** A target with no entry is polled once and that
   snapshot saved at once, without reporting anything: what is already true, such as red CI or an
-  open thread, never wakes. A run without `--timeout 0` then keeps polling and wakes on what changes.
-- **Ignored events count as seen.** Every poll advances the baseline, whether or not its events
-  woke the run, so an event your rules didn't match won't come back on a later run with other rules.
+  open thread, never wakes. A run without `--timeout 0` then keeps polling and wakes on new events.
+- **Ignored events count as seen.** Each poll moves the run's baseline on, whether or not its
+  events woke the run, and the run saves that baseline when it ends, so an event your rules didn't
+  match won't come back on a later run with other rules. On a wake, only the targets polled in the
+  waking round are saved; another target keeps its earlier entry and diffs again from it.
 - **A wake is saved only after it's printed.** When the envelope can't be written, or the save after
   it fails, the file keeps the earlier baseline and the next run reports the same events again. A
   failed save after a printed envelope notes the failure on stderr and exits 1, though the envelope
-  says `woke`: act on the events, and expect them again. A run killed mid-wait likewise replays
-  whatever it hadn't printed.
+  says `woke`: act on the events, and expect them again. A run killed mid-wait saves nothing past
+  first baselines, so the next run diffs, ignored events included, from the last saved entry.
 - **One run at a time.** babysit locks `<PATH>.lock` for the whole run; a second run on the same
   file ends at once with `lock_held`. The lock file stays behind and is harmless. Saves go through
   `<PATH>.tmp` and an atomic rename.
@@ -366,20 +385,22 @@ snapshot:
 
 ```sh
 babysit --snapshot .babysit.json \
-  --on 'thread.* actor=@human' --on 'ci.settled colour=red' \
+  --on 'thread.* actor=@human' --on 'ci.settled colour=red' --on 'state.*' \
   https://github.com/brzzdev/babysit-sandbox/pull/1
 ```
 
-1. The first run records the baseline: green CI, no threads. It keeps polling.
+1. The first run records the baseline: green CI, no threads. It keeps polling and wakes on what
+   happens next.
 2. On a wake it prints the envelope and exits 0. The agent reads `events`, does the work (fixes the
    failing check, answers the thread, using `reply_to`), and pushes.
 3. It runs the same command again. The baseline carries over, so only what happened since the last
    wake can wake it.
-4. It stops when a run prints a `state.merged` or `state.closed` event (if its rules include them),
-   when the summary's `state` is no longer `open`, or on an `error`.
+4. It stops when a run wakes on `state.merged` or `state.closed`, or ends in an `error`. Without a
+   `state.*` rule, a merge wakes nothing and the run waits until its `--timeout`.
 
-Replayed against the recorded pull request, those two rules sort the steps like this; the test
-named above checks this table too:
+Replayed against the recorded pull request, those rules sort its steps like this, and
+`the_usage_reference_worked_loop_wakes_on_a_human_thread_and_red_ci_alone` checks the Events and
+Wakes columns. A step's events print only where they match, as the first example above shows:
 
 <!-- checked: worked-loop -->
 | Step | What happened                            | Events                                | Wakes |

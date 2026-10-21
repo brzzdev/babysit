@@ -489,7 +489,7 @@ pub fn replay(first: Poll, rest: Vec<Poll>) -> Vec<(Vec<Event>, Snapshot)> {
         .collect()
 }
 
-/// The events of each poll after `first`, reloading each snapshot as a restart would.
+/// `replay`'s events as labels.
 #[cfg(test)]
 pub fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
     replay(first, rest)
