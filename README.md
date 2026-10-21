@@ -1,6 +1,6 @@
 # babysit
 
-Blocks until a GitHub pull request, GitLab merge request or issue thread does something a coding
+Blocks until a GitHub pull request, GitLab merge request, or issue thread does something a coding
 agent should act on, then prints what happened and exits.
 
 ## Why
@@ -8,7 +8,7 @@ agent should act on, then prints what happened and exits.
 An agent babysitting a PR by polling from inside its own loop re-sends its whole context on every
 check, paying model prices for what a `while` loop and `gh api` do for free. `babysit` does the
 waiting in a plain process and wakes the agent only for the events it was asked to care about, such
-as a red or amber CI job, a human review thread or a reply on a watched issue. A bot's routine
+as a red or amber CI job, a human review thread, or a reply on a watched issue. A bot's routine
 approval can stay silent.
 
 ## Example
@@ -63,7 +63,7 @@ human opens a line thread, it prints one JSON envelope and exits 0:
 
 The agent acts on the events, then runs the same command again.
 
-Rules, event kinds, the envelope, exit codes and the snapshot file are all in the
+Rules, event kinds, the envelope, exit codes, and the snapshot file are all in the
 [usage reference](docs/usage.md).
 
 ## Forges
@@ -79,7 +79,7 @@ GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab.
 
 Each [release](https://github.com/brzzdev/babysit/releases) has an archive for macOS and Linux on
 arm64 and x86-64. Set `target` to yours (`aarch64-apple-darwin`, `x86_64-apple-darwin`,
-`aarch64-unknown-linux-gnu` or `x86_64-unknown-linux-gnu`), then download the latest archive and
+`aarch64-unknown-linux-gnu`, or `x86_64-unknown-linux-gnu`), then download the latest archive and
 put `babysit` in `~/.local/bin`, which must be on `PATH`:
 
 ```sh

@@ -1,6 +1,6 @@
 ---
 name: babysit
-description: Wait on a GitHub pull request, GitLab merge request or issue with the `babysit` CLI, which blocks until CI settles, a review, thread or comment lands, or the target merges or closes. Use whenever you must wait for something to happen on a PR, MR or issue instead of polling or sleeping, or when the `babysit` command comes up.
+description: Wait on a GitHub pull request, GitLab merge request, or issue with the `babysit` CLI, which blocks until CI settles, a review, thread, or comment lands, or the target merges or closes. Use whenever you must wait for something to happen on a PR, MR, or issue instead of polling or sleeping, or when the `babysit` command comes up.
 metadata:
   author: Paul Breeze
 ---
@@ -31,8 +31,8 @@ share one run.
    rules loses events, and one file allows one run at a time (`lock_held`).
 2. **Take stock.** The first poll of a target only records its **baseline**: red CI or an open
    thread that is already there never wakes. Run once with `--timeout 0`, which polls each target
-   once and exits 3 (on a resumed snapshot it can wake instead: act on its events too), and read `targets[]`: `state`, `colour` (`null` while CI is unsettled), `merge`
-   and `unresolved_threads`. Each red or amber `colour`, `conflicted` `merge` and nonzero
+   once and exits 3 (on a resumed snapshot it can wake instead: act on its events too), and read `targets[]`: `state`, `colour` (`null` while CI is unsettled), `merge`,
+   and `unresolved_threads`. Each red or amber `colour`, `conflicted` `merge`, and nonzero
    `unresolved_threads` it shows is yours to deal with: none of them will wake you.
 3. **Wait.** Start the same command without `--timeout` as a background job, before you deal with
    what step 2 showed, so anything landing meanwhile wakes it. It runs until a wake or an error:
@@ -62,7 +62,7 @@ share one run.
 | `error.kind`       | Do                                                                              |
 | ------------------ | ------------------------------------------------------------------------------- |
 | `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, or both hold a token for the remote's host |
-| `cli_missing`      | Tell the user which of `gh`, `glab` or `git` is missing                         |
+| `cli_missing`      | Tell the user which of `gh`, `glab`, or `git` is missing                        |
 | `lock_held`        | Another run owns this snapshot file. Wait for it, or use another file; the `.lock` file stays, so leave it |
 | `poll_failed`      | The forge failed 10 calls in a row, or once under `--timeout 0`. Report it before starting another run |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |
@@ -100,7 +100,7 @@ Starting sets:
 
 What bites:
 
-- **A missing field never matches.** `ci.settled`, `head.pushed`, `merge.*` and `thread.unresolved`
+- **A missing field never matches.** `ci.settled`, `head.pushed`, `merge.*`, and `thread.unresolved`
   carry no actor, so `--ignore 'actor=@me'` never drops them, and `actor=@human` never matches them. An account whose
   bot flag the forge doesn't report matches neither `@bot` nor `@human`.
 - **`@me` is whoever `gh` or `glab` is signed in as.** When you post through the user's CLI, that is
@@ -130,7 +130,7 @@ out="$(babysit …)"; exit_code=$?
 jq '.events[] | {kind, target, url, body, reply_to, path, line, colour, checks, warnings}' <<<"$out"
 ```
 
-Run the forge commands below from the target's checkout: `{owner}`, `{repo}` and `:fullpath`
+Run the forge commands below from the target's checkout: `{owner}`, `{repo}`, and `:fullpath`
 resolve from the current directory's repo. Elsewhere, take the host from the target's URL: for
 `gh`, set `GH_HOST=<host>` and `GH_REPO=<host>/<owner>/<repo>`; for `glab api`, pass
 `--hostname <host>` and put the URL-encoded project path in place of `:fullpath`.

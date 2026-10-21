@@ -6,7 +6,7 @@ doesn't apply here: GitHub's thread resolution and review decision exist only in
 gets no `304`s, and GitLab counts a `304` against the rate limit anyway. The CLIs also own sign-in,
 including refreshing GitLab's two-hour OAuth tokens, which a borrowed token would let go stale.
 babysit already needs them to resolve checkout references and to tell which forge a host belongs to,
-and the choice keeps an HTTP client, an async runtime and a TLS stack out of the build. See
+and the choice keeps an HTTP client, an async runtime, and a TLS stack out of the build. See
 [Does babysit poll through gh/glab or over direct HTTP?](https://github.com/brzzdev/babysit/issues/9).
 
 ## Consequences
