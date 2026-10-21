@@ -472,10 +472,11 @@ fn label(event: &Event) -> String {
     }
 }
 
-/// The events of each poll after `first`, reloading each snapshot as a restart would.
+/// The events of each poll after `first` with the snapshot it leaves, reloading each snapshot as a
+/// restart would.
 #[cfg(test)]
-pub fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
-    let reload = |snapshot: &Snapshot| {
+pub fn replay(first: Poll, rest: Vec<Poll>) -> Vec<(Vec<Event>, Snapshot)> {
+    let reload = |snapshot: &Snapshot| -> Snapshot {
         serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap()
     };
     let mut snapshot = reload(&Snapshot::from(first));
@@ -483,8 +484,17 @@ pub fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
         .map(|next| {
             let (events, next) = diff(&snapshot, next);
             snapshot = reload(&next);
-            events.iter().map(label).collect()
+            (events, snapshot.clone())
         })
+        .collect()
+}
+
+/// The events of each poll after `first`, reloading each snapshot as a restart would.
+#[cfg(test)]
+pub fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
+    replay(first, rest)
+        .into_iter()
+        .map(|(events, _)| events.iter().map(label).collect())
         .collect()
 }
 

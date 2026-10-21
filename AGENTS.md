@@ -4,9 +4,15 @@ Blocks until a GitHub pull request, GitLab merge request or issue thread does so
 agent should act on, then reports it and exits, written in Rust over the `gh` and `glab` CLIs.
 Serves the `babysit` skill. Forgejo is planned, not in v1.
 
+## Docs
+
+- `docs/usage.md`: the caller's contract (targets, rules, events, envelope, exit codes, snapshot
+  file). Change it in the same commit as the behaviour it describes; tests in `src/github.rs`
+  fail when a block marked `<!-- checked: … -->` drifts from what babysit prints.
+- `GLOSSARY.md`: the domain terms. Name things in code, tests and docs with them.
+
 ## Style
 
-- Rust 2024 edition
 - Keep dependencies minimal
 
 ## Agent skills
