@@ -776,8 +776,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::diff::{self, Detail};
     use crate::exec::{self, Output, Script};
-    use crate::forge::Colour;
+    use crate::forge::{Colour, Snapshot};
     use crate::reference;
 
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
@@ -1436,5 +1437,65 @@ mod tests {
         let poll = poll_one(&merge_request("552635815"), POLL_QUERY, stdout);
 
         assert_eq!(poll.merge, Some(Merge::Conflicted));
+    }
+
+    /// The events each recorded poll of MR !3 yields against the poll before it, by kind.
+    fn kinds_across(stdouts: &[&str]) -> Vec<Vec<String>> {
+        let target = merge_request("552635815");
+        let poll = |stdout| poll_one(&target, POLL_QUERY, stdout);
+        let mut snapshot = Snapshot::from(poll(stdouts[0]));
+        let mut kinds = Vec::new();
+        for stdout in &stdouts[1..] {
+            let (events, next) = diff::diff(&snapshot, poll(stdout));
+            let kind = |event: &diff::Event| match &event.detail {
+                Detail::CiSettled { colour, .. } => format!("ci.settled {colour:?}"),
+                detail => detail.kind().to_owned(),
+            };
+            kinds.push(events.iter().map(kind).collect());
+            snapshot = next;
+        }
+        kinds
+    }
+
+    #[test]
+    fn resolving_a_thread_reports_only_the_resolution_though_it_bumps_the_edit_time() {
+        let kinds = kinds_across(&[
+            include_str!("gitlab/fixtures/poll_thread_open.http"),
+            include_str!("gitlab/fixtures/poll_thread_resolved.http"),
+        ]);
+
+        assert_eq!(kinds, [["thread.resolved"]]);
+    }
+
+    #[test]
+    fn a_published_draft_note_batch_reports_each_note_and_the_thread_its_reply_reopened() {
+        let kinds = kinds_across(&[
+            include_str!("gitlab/fixtures/poll_pipeline_passed.http"),
+            include_str!("gitlab/fixtures/poll_draft_notes_published.http"),
+        ]);
+
+        assert_eq!(
+            kinds,
+            [["thread.opened", "thread.replied", "thread.unresolved"]],
+        );
+    }
+
+    #[test]
+    fn a_pipeline_settles_red_then_green_on_the_next_head() {
+        let kinds = kinds_across(&[
+            include_str!("gitlab/fixtures/poll_pipeline_running.http"),
+            include_str!("gitlab/fixtures/poll_pipeline_failed.http"),
+            include_str!("gitlab/fixtures/poll_pipeline_rerunning.http"),
+            include_str!("gitlab/fixtures/poll_pipeline_passed.http"),
+        ]);
+
+        assert_eq!(
+            kinds,
+            [
+                vec!["ci.settled Red"],
+                vec!["head.pushed"],
+                vec!["ci.settled Green"],
+            ],
+        );
     }
 }
