@@ -343,8 +343,7 @@ impl<E: Exec> GitLab<'_, E> {
         Ok(fallback)
     }
 
-    /// The newest merge request pipeline that ran `head`, giving up at the first merged-results
-    /// one that didn't: an older pipeline won't have run a newer head.
+    /// The newest merge request pipeline that ran `head`.
     fn fallback(
         &self,
         head: &str,
@@ -359,9 +358,6 @@ impl<E: Exec> GitLab<'_, E> {
         for (index, candidate) in candidates.nodes.iter().enumerate() {
             if self.built_on(head, candidate, page.project_id, host, deadline, hints)? {
                 return Ok(Some(index));
-            }
-            if candidate.merged() {
-                return Ok(None);
             }
         }
         Ok(None)
@@ -1519,15 +1515,21 @@ mod tests {
     }
 
     #[test]
-    fn the_search_gives_up_at_the_first_merged_results_pipeline_on_another_head() {
+    fn the_search_passes_a_merged_results_pipeline_on_another_head_for_an_older_one_on_this_head() {
         let mut merged = candidate(8, MERGE_SHA, "SUCCESS");
         merged["mergeRequestEventType"] = json!("MERGED_RESULT");
-        let stdout = headless(Cleared::Deleted, &[merged, candidate(7, HEAD, "SUCCESS")]);
+        let candidates = [merged, candidate(7, HEAD, "SUCCESS")];
         let other = include_str!("gitlab/fixtures/commit.http").replace(HEAD, "0ther");
+        let fallback = pipeline("SUCCESS", &json!([job(1, "test", "SUCCESS", false)]));
 
-        let poll = poll_with([graphql("", &stdout), commit_lookup(&other)]).unwrap();
+        let poll = poll_with([
+            graphql("", &headless(Cleared::Deleted, &candidates)),
+            commit_lookup(&other),
+            fallback_page(None, &headless_with(&candidates, fallback)),
+        ])
+        .unwrap();
 
-        assert_eq!(poll.ci, None);
+        assert_eq!(poll.ci.and_then(|ci| ci.colour()), Some(Colour::Green));
     }
 
     #[test]
