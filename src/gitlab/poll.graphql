@@ -3,7 +3,7 @@ query (
   $approvers: Boolean = true
   $approversAfter: String
   $fallback: Boolean = false
-  $fallbackPipeline: CiPipelineID
+  $fallbackPipeline: [ID!]
   $jobs: Boolean = true
   $jobsAfter: String
   $notes: Boolean = true
@@ -16,6 +16,11 @@ query (
     conflicts
     detailedMergeStatus
     diffHeadSha
+    fallbackPipeline: pipelines(ids: $fallbackPipeline, first: 1) @include(if: $fallback) {
+      nodes {
+        ...pipeline
+      }
+    }
     headPipeline {
       ...pipeline
     }
@@ -34,9 +39,6 @@ query (
     }
     project {
       allowMergeOnSkippedPipeline
-      fallbackPipeline: pipeline(id: $fallbackPipeline) @include(if: $fallback) {
-        ...pipeline
-      }
     }
     projectId
     retargeted

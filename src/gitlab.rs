@@ -228,9 +228,9 @@ impl<E: Exec> GitLab<'_, E> {
             // The fallback's jobs are only asked for from the second page.
             if first.is_some() || fallback.is_none() {
                 let fallback_pipeline = page
-                    .project
+                    .fallback_pipeline
                     .as_mut()
-                    .and_then(|project| project.fallback_pipeline.as_mut());
+                    .and_then(|pipelines| pipelines.nodes.first_mut());
                 let pipeline = page.head_pipeline.as_mut().or(fallback_pipeline);
                 jobs.take(pipeline.and_then(|pipeline| pipeline.jobs.take()))?;
             }
@@ -676,6 +676,8 @@ struct Viewer {
 struct MergeRequestPage {
     approved_by: Option<Connection<User>>,
     diff_head_sha: Option<String>,
+    /// The fallback candidate looked up again for its jobs, which may run in a fork.
+    fallback_pipeline: Option<Nodes<Pipeline>>,
     head_pipeline: Option<Pipeline>,
     notes: Option<Connection<Note>>,
     /// The merge request's own pipelines, newest first.
@@ -776,7 +778,6 @@ struct Job {
 #[serde(rename_all = "camelCase")]
 struct Project {
     allow_merge_on_skipped_pipeline: Option<bool>,
-    fallback_pipeline: Option<Pipeline>,
 }
 
 #[derive(Deserialize)]
@@ -1396,7 +1397,10 @@ mod tests {
 
     /// The recorded poll with its merge request edited.
     fn edited(edit: impl FnOnce(&mut Value)) -> String {
-        let fixture = include_str!("gitlab/fixtures/poll.http");
+        edited_fixture(include_str!("gitlab/fixtures/poll.http"), edit)
+    }
+
+    fn edited_fixture(fixture: &str, edit: impl FnOnce(&mut Value)) -> String {
         let (headers, body) = fixture.rsplit_once('\n').unwrap();
         let mut body: Value = serde_json::from_str(body).unwrap();
         edit(body.pointer_mut("/data/mergeRequest").unwrap());
@@ -1433,10 +1437,10 @@ mod tests {
     }
 
     /// `headless` but answering the query for `fallback`'s jobs.
-    fn headless_with(candidates: &[Value], fallback: Value) -> String {
+    fn headless_with(candidates: &[Value], fallback: &[Value]) -> String {
         edited(|merge_request| {
             behead(merge_request, Cleared::Deleted, candidates);
-            merge_request["project"]["fallbackPipeline"] = fallback;
+            merge_request["fallbackPipeline"] = json!({ "nodes": fallback });
         })
     }
 
@@ -1525,7 +1529,7 @@ mod tests {
         let poll = poll_with([
             graphql("", &headless(Cleared::Deleted, &candidates)),
             commit_lookup(&other),
-            fallback_page(None, &headless_with(&candidates, fallback)),
+            fallback_page(None, &headless_with(&candidates, &[fallback])),
         ])
         .unwrap();
 
@@ -1588,6 +1592,41 @@ mod tests {
     }
 
     #[test]
+    fn a_fork_merge_request_finds_its_fallback_pipeline_in_the_fork() {
+        let target = merge_request("552240558");
+        let lost = |fixture| {
+            edited_fixture(fixture, |merge_request| {
+                merge_request["headPipeline"] = Value::Null;
+            })
+        };
+        let jobs = " -F approvers=false -F notes=false -F reviewers=false -F fallback=true \
+                    -f fallbackPipeline=gid://gitlab/Ci::Pipeline/2968588387";
+
+        let poll = poll_target(
+            &target,
+            [
+                query_call(
+                    POLL_QUERY,
+                    &target.forge_id,
+                    "",
+                    &lost(include_str!("gitlab/fixtures/poll_fork.http")),
+                ),
+                query_call(
+                    POLL_QUERY,
+                    &target.forge_id,
+                    jobs,
+                    &lost(include_str!("gitlab/fixtures/poll_fork_jobs.http")),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let ci = poll.ci.unwrap();
+        assert_eq!(ci.checks.len(), 13);
+        assert_eq!(ci.colour(), Some(Colour::Green));
+    }
+
+    #[test]
     fn a_lost_head_pipeline_falls_back_to_the_newest_pipeline_on_the_head_paging_its_jobs() {
         let candidates = [
             candidate(8, "0ther", "SUCCESS"),
@@ -1606,8 +1645,8 @@ mod tests {
 
         let poll = poll_with([
             graphql("", &headless(Cleared::Deleted, &candidates)),
-            fallback_page(None, &headless_with(&candidates, first_jobs)),
-            fallback_page(Some("JOBS_1"), &headless_with(&candidates, second_jobs)),
+            fallback_page(None, &headless_with(&candidates, &[first_jobs])),
+            fallback_page(Some("JOBS_1"), &headless_with(&candidates, &[second_jobs])),
         ])
         .unwrap();
 
@@ -1624,8 +1663,8 @@ mod tests {
         let newer = [candidate(9, HEAD, "RUNNING"), candidate(7, HEAD, "SUCCESS")];
 
         for second in [
-            headless_with(&newer, fallback),
-            headless_with(&candidates, Value::Null),
+            headless_with(&newer, &[fallback]),
+            headless_with(&candidates, &[]),
         ] {
             let failure = poll_with([
                 graphql("", &headless(Cleared::Deleted, &candidates)),
