@@ -4,6 +4,9 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: release-${{ github.ref }}
+
 permissions:
   contents: read
 
@@ -24,7 +27,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
           if [ "$TAG" != "v$version" ]; then
             echo "::error::Tag $TAG does not match Cargo.toml version $version"
             exit 1
@@ -86,6 +89,13 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.ref_name }}
     steps:
+      - name: Check the tag still points at the built commit
+        run: |
+          tagged="$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)"
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG now points at $tagged, not the built commit $GITHUB_SHA"
+            exit 1
+          fi
       - uses: actions/download-artifact@v8
         with:
           path: dist

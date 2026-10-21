@@ -29,5 +29,5 @@ git push --delete origin vX.Y.Z
 git tag -d vX.Y.Z
 ```
 
-and tag again from step 3. A published release is never replaced: to ship a fix after one, bump the
-version.
+and tag again from step 3. Never move the tag of a published release: to ship a fix after one, bump
+the version.
