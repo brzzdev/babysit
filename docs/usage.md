@@ -116,7 +116,7 @@ Every event prints as a JSON object: the fields of its kind, then the common one
 | Common field  | Value                                                                                    |
 | ------------- | ---------------------------------------------------------------------------------------- |
 | `kind`        | The event kind                                                                           |
-| `url`         | Where the event is on the web: the comment, review, or thread, or the target itself      |
+| `url`         | Where the event is on the web: the comment, review, or thread, else the target itself    |
 | `at`          | When it happened, RFC 3339; **absent** where the forge doesn't record it                 |
 | `actor`       | The account that caused it; **absent** where the forge doesn't record it                 |
 | `subject`     | The account it happened to; only on `review.withdrawn`, **absent** where unknown         |
@@ -193,8 +193,7 @@ A target summary is `target` and `state` (`open`, `closed`, or `merged`). A pull
 adds `head`, its head commit; `colour`, the CI colour reported for that head or `null` while
 unsettled; `merge`, the last known of `clean`, `behind`, or `conflicted`, which stays put while the
 forge recomputes it and is `null` until first known or once the target isn't open; and
-`unresolved_threads`. An issue's summary has only `target` and
-`state`.
+`unresolved_threads`. An issue's summary has only `target` and `state`.
 
 The examples below come from a live GitHub pull request and issue, recorded in
 `src/github/fixtures/`. The test `the_usage_reference_examples_are_what_babysit_prints` in
@@ -336,8 +335,8 @@ A target the forge can't find:
 | 2    | none        | A usage error: the message is on stderr and **no envelope** is printed     |
 | 3    | `timed_out` | `--timeout` passed without a wake                                          |
 
-Usage errors are found before any forge is polled: a malformed flag, rule, duration, or target, a
-checkout reference babysit can't place, a duration past what the clock can hold, or a `--snapshot`
+Usage errors are found before any forge is polled: a malformed flag, rule, duration, or target; a
+checkout reference babysit can't place; a duration past what the clock can hold; or a `--snapshot`
 file that isn't a babysit snapshot file of this version.
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, or `null` for a failure that isn't a forge's,
