@@ -73,7 +73,7 @@ Rules, event kinds, the envelope, exit codes and the snapshot file are all in th
 GitHub and GitLab, including GitHub Enterprise and self-managed GitLab. Forgejo is planned.
 
 babysit calls the forge's own CLI, so it needs an authenticated [`gh`](https://cli.github.com) for
-GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab, whichever forge you watch.
+GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab.
 
 ## Install
 
