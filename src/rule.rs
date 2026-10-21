@@ -3,21 +3,26 @@ use crate::forge::Account;
 
 const COLOURS: [&str; 3] = ["amber", "green", "red"];
 
+const QUOTE: char = '"';
+
 /// Every event kind in v1 with the fields it carries, including kinds no backend reports yet.
 const KINDS: [Kind; 15] = [
     ("ci.settled", &[Field::Colour]),
-    ("comment.created", &[Field::Actor]),
-    ("comment.edited", &[Field::Actor]),
+    ("comment.created", &[Field::Actor, Field::Body]),
+    ("comment.edited", &[Field::Actor, Field::Body]),
     ("head.pushed", &[]),
     ("merge.behind", &[]),
     ("merge.conflicted", &[]),
-    ("review.submitted", &[Field::Actor, Field::State]),
+    (
+        "review.submitted",
+        &[Field::Actor, Field::Body, Field::State],
+    ),
     ("review.withdrawn", &[Field::Actor, Field::Subject]),
     ("state.closed", &[Field::Actor]),
     ("state.merged", &[Field::Actor]),
     ("state.reopened", &[Field::Actor]),
-    ("thread.opened", &[Field::Actor]),
-    ("thread.replied", &[Field::Actor]),
+    ("thread.opened", &[Field::Actor, Field::Body]),
+    ("thread.replied", &[Field::Actor, Field::Body]),
     ("thread.resolved", &[Field::Actor]),
     ("thread.unresolved", &[]),
 ];
@@ -36,6 +41,7 @@ pub struct Rule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Actor,
+    Body,
     Colour,
     State,
     Subject,
@@ -45,6 +51,7 @@ enum Field {
 #[derive(Clone, Debug)]
 enum Term {
     Accounts(Field, Vec<Selector>),
+    BodyPrefixes(Vec<String>),
     Words(Field, Vec<&'static str>),
 }
 
@@ -57,8 +64,13 @@ enum Selector {
 }
 
 pub fn parse(given: &str) -> Result<Rule, String> {
-    let mut words = given.split_whitespace().peekable();
+    let mut words = split(given)?.into_iter().peekable();
     let pattern = words.next_if(|word| !word.contains('='));
+    if let Some(pattern) = pattern
+        && pattern.contains(QUOTE)
+    {
+        return Err(outside_a_value(pattern));
+    }
     let kinds = kinds(pattern)?;
     let mut terms: Vec<Term> = Vec::new();
     for word in words {
@@ -100,29 +112,134 @@ fn kinds(pattern: Option<&str>) -> Result<Vec<Kind>, String> {
     Ok(covered)
 }
 
+/// The rule's whitespace-separated words, a double-quoted run staying whole inside its word.
+fn split(given: &str) -> Result<Vec<&str>, String> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quoted = false;
+    let mut chars = given.char_indices();
+    while let Some((at, char)) = chars.next() {
+        if quoted {
+            match char {
+                '\\' => _ = chars.next(),
+                QUOTE => quoted = false,
+                _ => {}
+            }
+            continue;
+        }
+        if char.is_whitespace() {
+            if let Some(start) = start.take() {
+                words.push(&given[start..at]);
+            }
+            continue;
+        }
+        start.get_or_insert(at);
+        quoted = char == QUOTE;
+    }
+    if quoted {
+        return Err(format!("`{given}` has an unterminated quote"));
+    }
+    words.extend(start.map(|start| &given[start..]));
+    Ok(words)
+}
+
 fn term(word: &str) -> Result<Term, String> {
-    let (name, values) = word.split_once('=').ok_or_else(|| {
-        format!("`{word}` is not a `field=value` term; a kind pattern comes first")
-    })?;
+    let Some((name, values)) = word.split_once('=') else {
+        if word.contains(QUOTE) {
+            return Err(outside_a_value(word));
+        }
+        return Err(format!(
+            "`{word}` is not a `field=value` term; a kind pattern comes first"
+        ));
+    };
+    if name.contains(QUOTE) {
+        return Err(outside_a_value(word));
+    }
+    let (name, prefix) = match name.strip_suffix('^') {
+        Some(name) => (name, true),
+        None => (name, false),
+    };
     let field = match name {
         "actor" => Field::Actor,
+        "body" => Field::Body,
         "colour" => Field::Colour,
         "state" => Field::State,
         "subject" => Field::Subject,
         _ => {
             return Err(format!(
-                "`{name}` is not a field: use actor, colour, state or subject"
+                "`{name}` is not a field: use actor, body, colour, state or subject"
             ));
         }
     };
-    let values = values.split(',');
+    match (field, prefix) {
+        (Field::Body, false) => return Err("`body` takes `^=`, a prefix, not `=`".to_owned()),
+        (Field::Body, true) | (_, false) => {}
+        (_, true) => return Err(format!("`{name}` takes `=`; only `body` takes `^=`")),
+    }
+    let values = self::values(word, values)?;
+    let values = values.iter().map(String::as_str);
     Ok(match field {
         Field::Actor | Field::Subject => {
             Term::Accounts(field, values.map(selector).collect::<Result<_, _>>()?)
         }
+        Field::Body => Term::BodyPrefixes(values.map(prefix_of).collect::<Result<_, _>>()?),
         Field::Colour => Term::Words(field, words(values, &COLOURS, field)?),
         Field::State => Term::Words(field, words(values, &STATES, field)?),
     })
+}
+
+/// A term's comma-separated values, each bare or double-quoted with `\"` and `\\` as escapes.
+fn values(word: &str, given: &str) -> Result<Vec<String>, String> {
+    let mut values = Vec::new();
+    let mut rest = given;
+    loop {
+        let (value, after) = if let Some(quoted) = rest.strip_prefix(QUOTE) {
+            unquote(quoted).ok_or_else(|| format!("`{word}` has an unterminated quote"))?
+        } else {
+            let end = rest.find(',').unwrap_or(rest.len());
+            let (value, after) = rest.split_at(end);
+            if value.contains(QUOTE) {
+                return Err(outside_a_value(word));
+            }
+            (value.to_owned(), after)
+        };
+        values.push(value);
+        if after.is_empty() {
+            return Ok(values);
+        }
+        rest = after
+            .strip_prefix(',')
+            .ok_or_else(|| outside_a_value(word))?;
+    }
+}
+
+/// The quoted value opening `given`, with what follows its closing quote.
+fn unquote(given: &str) -> Option<(String, &str)> {
+    let mut value = String::new();
+    let mut chars = given.char_indices().peekable();
+    while let Some((at, char)) = chars.next() {
+        match char {
+            QUOTE => return Some((value, &given[at + 1..])),
+            '\\' => value.push(
+                chars
+                    .next_if(|(_, next)| matches!(*next, QUOTE | '\\'))
+                    .map_or(char, |(_, next)| next),
+            ),
+            _ => value.push(char),
+        }
+    }
+    None
+}
+
+fn outside_a_value(word: &str) -> String {
+    format!("`{word}` has a quote outside a value; quote a whole value after `=`")
+}
+
+fn prefix_of(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Err("a body prefix is empty".to_owned());
+    }
+    Ok(value.to_owned())
 }
 
 fn selector(value: &str) -> Result<Selector, String> {
@@ -187,6 +304,7 @@ impl Field {
     fn name(self) -> &'static str {
         match self {
             Self::Actor => "actor",
+            Self::Body => "body",
             Self::Colour => "colour",
             Self::State => "state",
             Self::Subject => "subject",
@@ -198,6 +316,7 @@ impl Term {
     fn field(&self) -> Field {
         match self {
             Self::Accounts(field, _) | Self::Words(field, _) => *field,
+            Self::BodyPrefixes(_) => Field::Body,
         }
     }
 
@@ -208,6 +327,8 @@ impl Term {
                     .iter()
                     .any(|selector| selector.matches(account, me))
             }),
+            Self::BodyPrefixes(prefixes) => body(&event.detail)
+                .is_some_and(|body| prefixes.iter().any(|prefix| body.starts_with(prefix))),
             Self::Words(field, words) => {
                 word(&event.detail, *field).is_some_and(|word| words.contains(&word.as_str()))
             }
@@ -230,7 +351,18 @@ fn account(event: &Event, field: Field) -> Option<&Account> {
     match field {
         Field::Actor => event.actor.as_ref(),
         Field::Subject => event.subject.as_ref(),
-        Field::Colour | Field::State => None,
+        Field::Body | Field::Colour | Field::State => None,
+    }
+}
+
+fn body(detail: &Detail) -> Option<&str> {
+    match detail {
+        Detail::CommentCreated { body, .. }
+        | Detail::CommentEdited { body, .. }
+        | Detail::ReviewSubmitted { body, .. }
+        | Detail::ThreadOpened { body, .. }
+        | Detail::ThreadReplied { body, .. } => Some(body),
+        _ => None,
     }
 }
 
@@ -481,6 +613,54 @@ mod tests {
         ));
     }
 
+    fn replied(body: &str) -> Event {
+        event(Detail::ThreadReplied {
+            thread_id: "PRRT_1".to_owned(),
+            comment_id: "11".to_owned(),
+            reply_to: "10".to_owned(),
+            body: body.to_owned(),
+            review_id: None,
+        })
+    }
+
+    #[test]
+    fn a_body_prefix_tells_apart_two_agents_sharing_an_account() {
+        let ignore = [r#"thread.* actor=octocat body^="Paul's Claude:""#];
+        let claude = by(
+            account("octocat", Some(false)),
+            replied("Paul's Claude: done"),
+        );
+        let codex = by(
+            account("octocat", Some(false)),
+            replied("Paul's Codex: found"),
+        );
+
+        assert!(!woken(&[], &ignore, &claude));
+        assert!(woken(&[], &ignore, &codex));
+    }
+
+    #[test]
+    fn quoted_values_keep_spaces_commas_and_escapes_and_commas_between_them_are_or() {
+        let either = [r#"body^="A","B""#];
+        let literal = [r#"body^="a, b \"c\" \\ \d""#];
+
+        assert!(woken(&either, &[], &replied("A1")));
+        assert!(woken(&either, &[], &replied("B2")));
+        assert!(!woken(&either, &[], &replied("C3")));
+        assert!(woken(&literal, &[], &replied(r#"a, b "c" \ \d!"#)));
+        assert!(!woken(&literal, &[], &replied("a")));
+        assert!(!woken(&["body^=x"], &[], &replied("")));
+        assert!(!woken(&["body^=x"], &[], &resolved()));
+    }
+
+    #[test]
+    fn a_quoted_login_matches_as_a_bare_one() {
+        let bot = by(account("some-bot[bot]", Some(true)), created());
+
+        assert!(woken(&[r#"actor="some-bot[bot]""#], &[], &bot));
+        assert!(woken(&[r#"actor=octocat,"some-bot[bot]""#], &[], &bot));
+    }
+
     #[test]
     fn only_rules_naming_me_need_the_viewer() {
         assert!(!names_me(&rules(&["actor=@bot,octocat", "colour=red"])));
@@ -525,6 +705,21 @@ mod tests {
             ("head.pushed actor=@me", "`head.pushed`"),
             ("merge.behind actor=@me", "`merge.behind`"),
             ("thread.unresolved actor=@human", "`thread.unresolved`"),
+            ("ci.settled body^=x", "`ci.settled`"),
+            ("thread.resolved body^=x", "`thread.resolved`"),
+            ("body=x", "`^=`"),
+            ("actor^=octocat", "`actor` takes `=`"),
+            ("body^=x body^=y", "`body` appears twice"),
+            (r#"body^="""#, "empty"),
+            ("body^=", "empty"),
+            ("body^=x,", "empty"),
+            (r#"body^="x"#, "unterminated"),
+            (r#"body^="x\""#, "unterminated"),
+            (r#""thread.*" body^=x"#, "`\"thread.*\"`"),
+            (r#"thread.* "body"^=x"#, "outside a value"),
+            (r#"thread.* "x""#, "outside a value"),
+            (r#"body^=x"y""#, "outside a value"),
+            (r#"body^="x"y"#, "outside a value"),
         ] {
             let error = parse(given).expect_err(given);
             assert!(error.contains(culprit), "{given}: {error}");

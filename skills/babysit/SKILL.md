@@ -71,6 +71,7 @@ including your own pushes.
 | Field     | Carried by         | Values                                           |
 | --------- | ------------------ | ------------------------------------------------ |
 | `actor`   | most kinds         | a login (`name[bot]` for a GitHub app), `@bot`, `@human`, `@me` |
+| `body`    | `comment.*`, `review.submitted`, `thread.opened`, `thread.replied` | `body^=<prefix>` only: the body starts with it, case-sensitively |
 | `colour`  | `ci.settled`       | `amber`, `green`, `red`                          |
 | `state`   | `review.submitted` | `approved`, `changes_requested`, `commented`     |
 | `subject` | `review.withdrawn` | an account selector, as for `actor`              |
@@ -97,7 +98,9 @@ What bites:
 - **`@me` is whoever `gh` or `glab` is signed in as.** When you post through the user's CLI, that is
   the user too, so ignoring `@me` also hides their own comments, and on `state.*` it hides the merge
   or close they make. Scope it to `comment.*` and `thread.*`, and drop it when they review through
-  the same account.
+  the same account. Where another agent posts from that account too, `@me` hides its posts as
+  well: add the prefix that starts your own posts, double-quoting a value with spaces or commas,
+  `--ignore "thread.* actor=@me body^=\"Paul's Claude:\""`.
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
