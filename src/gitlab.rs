@@ -915,7 +915,7 @@ mod tests {
     use super::*;
     use crate::diff;
     use crate::exec::{self, Output, Script};
-    use crate::forge::Colour;
+    use crate::forge::{Colour, fatal_kind};
     use crate::reference;
 
     const BLOCKERS_MR_ID: &str = "552635815";
@@ -1020,13 +1020,6 @@ mod tests {
         }
     }
 
-    fn kind(failure: &Failure) -> ErrorKind {
-        match failure {
-            Failure::Fatal { kind, .. } => *kind,
-            other => panic!("not fatal: {other:?}"),
-        }
-    }
-
     #[test]
     fn resolves_a_merge_request_to_its_web_url_and_global_id() {
         let resolved = resolve_with(include_str!("gitlab/fixtures/resolve.http"), 0);
@@ -1039,7 +1032,7 @@ mod tests {
         let stdout = include_str!("gitlab/fixtures/resolve_not_found.http");
 
         assert_eq!(
-            kind(&resolve_with(stdout, 1).unwrap_err()),
+            fatal_kind(&resolve_with(stdout, 1).unwrap_err()),
             ErrorKind::TargetNotFound,
         );
     }
@@ -1057,7 +1050,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                kind(&resolve_with(stdout, code).unwrap_err()),
+                fatal_kind(&resolve_with(stdout, code).unwrap_err()),
                 ErrorKind::Auth
             );
         }
@@ -1082,7 +1075,7 @@ mod tests {
 
         let failure = poll_with([graphql("", stdout)]).unwrap_err();
 
-        assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
+        assert_eq!(fatal_kind(&failure), ErrorKind::TargetNotFound);
     }
 
     #[test]

@@ -24,8 +24,10 @@ const AUTH_ERRORS: [&str; 7] = [
 ];
 const CLI: &str = "curl";
 /// curl's flags for every call. curl reads the token from the environment itself, so it never
-/// appears among any process's arguments.
-const CURL_FLAGS: [&str; 8] = [
+/// appears among any process's arguments, and `--disable`, which must come first, keeps a
+/// `.curlrc` from adding `verbose` and printing the token to stderr.
+const CURL_FLAGS: [&str; 9] = [
+    "--disable",
     "--silent",
     "--show-error",
     "--include",
@@ -100,10 +102,7 @@ impl<'a, E: Exec> Slack<'a, E> {
             ..Hints::default()
         };
         if response.status == STATUS_TOO_MANY_REQUESTS {
-            return Err(Failure::RateLimited {
-                forge: Forge::Slack,
-                hints,
-            });
+            return Err(rate_limited(hints));
         }
         if response.status != STATUS_OK {
             return Err(Failure::Transient {
@@ -242,10 +241,7 @@ fn time(ts: &str) -> String {
 /// The failure a Web API `error` names.
 fn refused(error: &str, hints: Hints) -> Failure {
     if error == ERROR_RATE_LIMITED {
-        return Failure::RateLimited {
-            forge: Forge::Slack,
-            hints,
-        };
+        return rate_limited(hints);
     }
     if AUTH_ERRORS.contains(&error) {
         let message = format!("Slack refused the token in {TOKEN_VARIABLE}: {error}");
@@ -259,6 +255,13 @@ fn refused(error: &str, hints: Hints) -> Failure {
         forge: Forge::Slack,
         hints,
         message: format!("Slack answered {error}"),
+    }
+}
+
+fn rate_limited(hints: Hints) -> Failure {
+    Failure::RateLimited {
+        forge: Forge::Slack,
+        hints,
     }
 }
 
@@ -326,7 +329,7 @@ mod tests {
     use crate::diff::{self, diff};
     use crate::envelope::{Envelope, Outcome, Summary};
     use crate::exec::{self, Output, Script};
-    use crate::forge::Snapshot;
+    use crate::forge::{Snapshot, fatal_kind};
     use crate::reference;
     use crate::rule;
 
@@ -345,8 +348,8 @@ mod tests {
 
     fn curl(method: &str, parameters: &str) -> String {
         format!(
-            "curl --silent --show-error --include --get --variable %BABYSIT_SLACK_TOKEN \
-             --expand-header Authorization: Bearer {{{{BABYSIT_SLACK_TOKEN}}}}{parameters} \
+            "curl --disable --silent --show-error --include --get \
+             --variable %BABYSIT_SLACK_TOKEN --expand-header Authorization: Bearer {{{{BABYSIT_SLACK_TOKEN}}}}{parameters} \
              https://brzz.slack.com/api/{method}"
         )
     }
@@ -408,13 +411,6 @@ mod tests {
             .collect()
     }
 
-    fn kind(failure: &Failure) -> ErrorKind {
-        match failure {
-            Failure::Fatal { kind, .. } => *kind,
-            other => panic!("not fatal: {other:?}"),
-        }
-    }
-
     #[test]
     fn a_reply_permalink_and_its_parent_permalink_are_one_target() {
         let reply = "https://brzz.slack.com/archives/C0A1B2C3D4E/p1792500060000200\
@@ -452,7 +448,8 @@ mod tests {
 
     #[test]
     fn a_poll_passes_curl_the_token_by_name_only() {
-        let call = "curl --silent --show-error --include --get --variable %BABYSIT_SLACK_TOKEN \
+        let call = "curl --disable --silent --show-error --include --get \
+                    --variable %BABYSIT_SLACK_TOKEN \
                     --expand-header Authorization: Bearer {{BABYSIT_SLACK_TOKEN}} \
                     --data-urlencode channel=C0A1B2C3D4E --data-urlencode ts=1792500000.000100 \
                     --data-urlencode limit=1000 https://brzz.slack.com/api/conversations.replies";
@@ -616,8 +613,8 @@ mod tests {
         let refused = poll_calls([replies("", refused)]).unwrap_err();
         let missing = poll_calls([replies("", missing)]).unwrap_err();
 
-        assert_eq!(kind(&refused), ErrorKind::Auth);
-        assert_eq!(kind(&missing), ErrorKind::TargetNotFound);
+        assert_eq!(fatal_kind(&refused), ErrorKind::Auth);
+        assert_eq!(fatal_kind(&missing), ErrorKind::TargetNotFound);
     }
 
     #[test]

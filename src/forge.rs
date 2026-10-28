@@ -36,7 +36,7 @@ pub struct Target {
 pub enum TargetKind {
     /// A GitHub pull request or GitLab merge request.
     ChangeRequest,
-    /// An issue, or a Slack thread, which has only comments as an issue does.
+    /// An issue, or a Slack thread, which has only comments.
     Issue,
 }
 
@@ -320,6 +320,14 @@ pub struct Account {
     #[serde(skip)]
     pub id: Option<String>,
     pub login: String,
+}
+
+#[cfg(test)]
+pub fn fatal_kind(failure: &Failure) -> ErrorKind {
+    match failure {
+        Failure::Fatal { kind, .. } => *kind,
+        other => panic!("not fatal: {other:?}"),
+    }
 }
 
 #[cfg(test)]

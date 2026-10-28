@@ -21,8 +21,7 @@ permalink (the parent's, or a reply's with its `?thread_ts=…&cid=…`), or ins
 
 A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with the
 `channels:history`, `groups:history`, `im:history`, and `mpim:history` scopes, exported as
-`BABYSIT_SLACK_TOKEN`. Ask the user for it rather than looking for one. A thread reports only
-`comment.created` and `comment.edited`, and its `targets[].state` is always `open`.
+`BABYSIT_SLACK_TOKEN`. Ask the user for it rather than looking for one.
 
 ## The loop
 
@@ -125,9 +124,9 @@ What bites:
 - **Nothing reports** a conflict clearing, or a job that isn't a deciding check finishing while
   other jobs decide. A GitLab `when: manual` job outside `rules:` is one: it defaults to
   `allow_failure: true`, while inside `rules:` it decides and holds CI amber.
-- Issues report only `comment.*` and `state.*`; a Slack thread only `comment.*`, so it never wakes
-  on its own ending.
-- **On Slack, `@me` is the token's user** and a login is a Slack user id (`U…`), or an
+- Issues report only `comment.*` and `state.*`; a Slack thread only `comment.*`, and its
+  `targets[].state` stays `open`, so stop on your goal.
+- **On Slack, `@me` is the token's user** and a login is a Slack user id (`U…` or `W…`), or an
   integration's `bot_id`, which counts as `@bot`.
 
 ## Acting on a wake

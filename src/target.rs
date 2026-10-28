@@ -211,24 +211,32 @@ impl<'a, E: Exec> Locator<'a, E> {
         unclaimed: &[String],
     ) -> Result<(String, String), Error> {
         let usage = |reason: &str| Error::Usage(format!("`{given}` {reason}; {PASS_THE_URL}"));
-        let (forge_name, cli, chosen_by, pattern, recorded): (_, _, _, _, RecordedDefault) =
-            match forge {
-                Forge::GitHub => (
-                    "GitHub",
-                    "gh",
-                    "`gh repo set-default`",
-                    format!(r"^remote\..*\.{GH_RESOLVED_KEY}$"),
-                    gh_default,
-                ),
-                Forge::GitLab => (
-                    "GitLab",
-                    "glab",
-                    "glab's base repository choice",
-                    format!(r"^remote\..*\.{GLAB_RESOLVED_KEY}(-base)?$"),
-                    glab_default,
-                ),
-                Forge::Slack => unreachable!("a checkout reference never names a Slack thread"),
-            };
+        let (forge_name, cli, chosen_by, pattern, recorded, host_of): (
+            _,
+            _,
+            _,
+            _,
+            RecordedDefault,
+            fn(&str) -> &str,
+        ) = match forge {
+            Forge::GitHub => (
+                "GitHub",
+                "gh",
+                "`gh repo set-default`",
+                format!(r"^remote\..*\.{GH_RESOLVED_KEY}$"),
+                gh_default,
+                without_port,
+            ),
+            Forge::GitLab => (
+                "GitLab",
+                "glab",
+                "glab's base repository choice",
+                format!(r"^remote\..*\.{GLAB_RESOLVED_KEY}(-base)?$"),
+                glab_default,
+                |authority| authority,
+            ),
+            Forge::Slack => unreachable!("a checkout reference never names a Slack thread"),
+        };
         let resolved = self
             .call("git", &["config", "--get-regexp", &pattern])?
             .map(|output| output.stdout)
@@ -271,11 +279,7 @@ impl<'a, E: Exec> Locator<'a, E> {
         if !reference::is_project_path(forge, path) {
             return Err(usage(&format!("can't use the remote project `{path}`")));
         }
-        let host = match forge {
-            Forge::GitHub => without_port(host),
-            Forge::GitLab | Forge::Slack => host,
-        };
-        Ok((host.to_owned(), path.to_owned()))
+        Ok((host_of(host).to_owned(), path.to_owned()))
     }
 
     /// Runs a local command; `None` when the program isn't installed.

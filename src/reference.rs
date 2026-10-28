@@ -174,13 +174,13 @@ fn parse_slack_thread(given: &str, rest: &str) -> Result<Option<Reference>, Stri
         return Err(invalid());
     };
     let mut thread_ts = None;
-    let mut cid = None;
+    let mut cid_seen = false;
     for parameter in query.split('&').filter(|parameter| !parameter.is_empty()) {
         match parameter.split_once('=') {
             Some(("thread_ts", value)) if thread_ts.is_none() && is_ts(value) => {
                 thread_ts = Some(value);
             }
-            Some(("cid", value)) if cid.is_none() && value == channel => cid = Some(value),
+            Some(("cid", value)) if !cid_seen && value == channel => cid_seen = true,
             _ => {
                 return Err(format!(
                     "`{given}` may carry only a reply's `thread_ts` and its own channel as `cid`"
