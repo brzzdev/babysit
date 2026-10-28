@@ -11,6 +11,7 @@ mod reference;
 mod response;
 mod rule;
 mod run;
+mod slack;
 mod snapshot_file;
 mod target;
 
@@ -26,6 +27,7 @@ use crate::exec::SystemExec;
 use crate::github::GitHub;
 use crate::gitlab::GitLab;
 use crate::run::{Backends, UsageError};
+use crate::slack::Slack;
 
 fn main() -> ExitCode {
     let args = Args::parse();
@@ -33,6 +35,7 @@ fn main() -> ExitCode {
     let backends = Backends {
         github: &GitHub::new(&exec),
         gitlab: &GitLab::new(&exec),
+        slack: &Slack::new(&exec),
     };
     let code = run::run(
         &args,

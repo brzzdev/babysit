@@ -1,7 +1,7 @@
 # babysit
 
-Blocks until a GitHub pull request, GitLab merge request, or issue thread does something a coding
-agent should act on, then prints what happened and exits.
+Blocks until a GitHub pull request, GitLab merge request, issue thread, or Slack thread does
+something a coding agent should act on, then prints what happened and exits.
 
 ## Why
 
@@ -68,10 +68,11 @@ Rules, event kinds, the envelope, exit codes, and the snapshot file are all in t
 
 ## Forges
 
-GitHub and GitLab. Forgejo is planned.
+GitHub, GitLab, and Slack threads. Forgejo is planned.
 
 babysit calls the forge's own CLI, so it needs an authenticated [`gh`](https://cli.github.com) for
-GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab.
+GitHub or [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab. Slack has no such CLI, so babysit
+calls its Web API through `curl` 8.3 or later, with a user token in `BABYSIT_SLACK_TOKEN`.
 
 ## Install
 

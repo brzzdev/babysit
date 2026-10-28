@@ -22,6 +22,7 @@ const RATE_LIMIT_WAIT_MAX: Duration = Duration::from_mins(15);
 pub struct Backends<'a> {
     pub github: &'a dyn Backend,
     pub gitlab: &'a dyn Backend,
+    pub slack: &'a dyn Backend,
 }
 
 impl<'a> Backends<'a> {
@@ -29,6 +30,7 @@ impl<'a> Backends<'a> {
         match forge {
             Forge::GitHub => self.github,
             Forge::GitLab => self.gitlab,
+            Forge::Slack => self.slack,
         }
     }
 }
@@ -729,7 +731,7 @@ mod tests {
     use crate::envelope::Forge;
     use crate::exec::{Output, Script};
     use crate::forge::{Account, Merge, Poll, TargetKind, TargetState, octocat, poll};
-    use crate::reference::{self, Reference};
+    use crate::reference::{self, Locus, Reference};
 
     const ENTERPRISE: &str = "https://ghe.example.com/o/r/pull/3";
     const NODE_ID: &str = "PR_1";
@@ -777,13 +779,18 @@ mod tests {
             let Reference {
                 forge,
                 host,
-                number,
-                project,
+                locus: Locus::Numbered {
+                    number, project, ..
+                },
                 ..
-            } = reference;
+            } = reference
+            else {
+                unreachable!("the run tests name no Slack thread");
+            };
             let (id, path) = match forge {
                 Forge::GitHub => ("PR", "pull"),
                 Forge::GitLab => ("MR", "-/merge_requests"),
+                Forge::Slack => unreachable!("the run tests name no Slack thread"),
             };
             let target = Target {
                 forge: *forge,
@@ -981,6 +988,7 @@ mod tests {
             &Backends {
                 github: &backend,
                 gitlab: &backend,
+                slack: &backend,
             },
             &Script::new([]),
             &clock,
@@ -1071,6 +1079,7 @@ mod tests {
         let backends = Backends {
             github: &github,
             gitlab: &gitlab,
+            slack: &github,
         };
 
         let code = run(
@@ -1367,6 +1376,7 @@ mod tests {
             &Backends {
                 github: &backend,
                 gitlab: &backend,
+                slack: &backend,
             },
             &exec,
             &clock,

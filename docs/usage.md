@@ -24,19 +24,26 @@ A duration is a whole number followed by `s`, `m`, or `h`, such as `45s`, `10m`,
 `--timeout` also takes a bare `0`. A forge that asks for slower polling, through
 `x-poll-interval` or `retry-after`, stretches the interval.
 
-babysit drives the forge's own CLI: an authenticated `gh` for GitHub, `glab` for GitLab. Progress
-notes such as retries and rate-limit waits go to stderr, prefixed `babysit:`, and are for humans.
+babysit drives the forge's own CLI: an authenticated `gh` for GitHub, `glab` for GitLab. Slack has
+none, so babysit calls its Web API through `curl` 8.3 or later (see [Slack](#slack)). Progress notes
+such as retries and rate-limit waits go to stderr, prefixed `babysit:`, and are for humans.
 
 ### Targets
 
-Each target is a pull request, merge request, or issue, named one of two ways:
+Each target is a pull request, merge request, issue, or Slack thread, named one of two ways:
 
 - **A web URL.** The URL's shape decides the forge, so GitHub Enterprise and self-managed GitLab
-  hosts work too. No query or fragment.
+  hosts work too. No query or fragment, except on a Slack permalink.
   - GitHub: `https://<host>/<owner>/<repo>/pull/<n>` or `…/issues/<n>`. An issue URL that names a
     pull request is watched as that pull request. A GitHub URL can't name a port.
   - GitLab: `https://<host>/<group>[/<subgroup>…]/<project>/-/merge_requests/<n>`,
     `…/-/issues/<n>`, or `…/-/work_items/<n>`.
+  - Slack: a thread's permalink, `https://<workspace>.slack.com/archives/<channel>/p<ts>`, where
+    `<ts>` is the parent message's `ts` without its dot. A reply's permalink,
+    `…/p<reply ts>?thread_ts=<parent ts>&cid=<channel>`, names the thread it belongs to; those two
+    parameters are the only query a target may carry. The envelope reports the parent's
+    permalink, so a parent and a reply permalink for one thread are one target and share one
+    baseline.
 - **A checkout reference**, inside a git checkout: on GitHub, `#<n>` is a pull request or issue; on
   GitLab, `#<n>` is an issue and `!<n>` a merge request. babysit picks the project `gh pr view` or
   `glab mr view` would: the default `gh repo set-default` or glab recorded, else the only remote on
@@ -83,8 +90,9 @@ An account selector is a login, matched case-insensitively (a GitHub app is `<na
 
 - `@bot`: an account the forge flags as a bot
 - `@human`: an account the forge flags as not a bot
-- `@me`: whoever `gh` or `glab` is signed in as on the target's host, matched by account id rather
-  than login. babysit looks it up once per host, only when a rule names `@me`.
+- `@me`: whoever `gh` or `glab` is signed in as on the target's host, or on Slack the token's
+  user, matched by account id rather than login. babysit looks it up once per host, only when a
+  rule names `@me`.
 
 Where the forge doesn't say whether an account is a bot (its `bot` prints `null`), it matches
 neither `@bot` nor `@human`: `--on 'actor=@human'` won't wake on it, and `--ignore 'actor=@bot'`
@@ -152,7 +160,7 @@ id on GitLab. A check in `checks` or `warnings` is `name`; `conclusion`, the for
 lowercase, except `retargeted`; `url` (nullable); and `job_id` (optional: a GitHub Actions job or a
 GitLab job).
 
-Issues report only `comment.*` and `state.*` events. `merge.*` events come only from an open target,
+Issues report only `comment.*` and `state.*` events, and a Slack thread only `comment.*`. `merge.*` events come only from an open target,
 and an event about the target as a whole (`ci.settled`, `head.pushed`, `merge.*`) has no `at` or
 `actor`. Within one target, events are ordered by `at`, untimed ones last; targets follow the order
 they were given in.
@@ -200,7 +208,8 @@ A target summary is `target` and `state` (`open`, `closed`, or `merged`). A pull
 adds `head`, its head commit; `colour`, the CI colour reported for that head or `null` while
 unsettled; `merge`, the last known of `clean`, `behind`, or `conflicted`, which stays put while the
 forge recomputes it and is `null` until first known or once the target isn't open; and
-`unresolved_threads`. An issue's summary has only `target` and `state`.
+`unresolved_threads`. An issue's or Slack thread's summary has only `target` and `state`, and a
+Slack thread is always `open`.
 
 The examples below come from a live GitHub pull request and issue, recorded in
 `src/github/fixtures/`. The test `the_usage_reference_examples_are_what_babysit_prints` in
@@ -346,7 +355,7 @@ Usage errors are found before any forge is polled: a malformed flag, rule, durat
 checkout reference babysit can't place; a duration past what the clock can hold; or a `--snapshot`
 file that isn't a babysit snapshot file of this version.
 
-`error` holds `kind`; `forge` (`github`, `gitlab`, or `null` for a failure that isn't a forge's,
+`error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a forge's,
 such as the snapshot file, or `git`, `gh auth token`, or `glab config get token` failing while
 babysit places a checkout reference, which isn't retried);
 `target` (the target's URL, or the name as given before it resolved, or `null`); and `message`, for
@@ -354,8 +363,8 @@ humans.
 
 | `kind`             | Cause                                                                                        |
 | ------------------ | -------------------------------------------------------------------------------------------- |
-| `auth`             | The CLI isn't signed in or was refused (401, 403), or both `gh` and `glab` hold a token for a checkout remote's host |
-| `cli_missing`      | `gh`, `glab`, or `git` isn't installed or not on `PATH`                                     |
+| `auth`             | The CLI isn't signed in or was refused (401, 403), both `gh` and `glab` hold a token for a checkout remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
+| `cli_missing`      | `gh`, `glab`, `git`, or `curl` isn't installed or not on `PATH`                             |
 | `lock_held`        | Another babysit run holds the `--snapshot` file                                              |
 | `poll_failed`      | A call to the forge failed 10 times in a row for one target, or once under `--timeout 0`     |
 | `snapshot_io`      | The `--snapshot` file couldn't be read, locked, or written                                   |
@@ -373,6 +382,31 @@ With `--timeout`, the run ends `timed_out` once the next call would be due past 
 when the deadline kills a call in flight. `--timeout 0` makes one round of calls: each target is
 resolved and polled once, nothing waits out a rate limit (a run that only hit one ends
 `timed_out`), and a call that would have been retried fails the run as `poll_failed` instead.
+
+## Slack
+
+babysit reads a Slack thread with the Web API's `conversations.replies`, through `curl`, using a
+token the caller exports in `BABYSIT_SLACK_TOKEN`. curl reads the token from the environment
+itself, so it never appears in a process's arguments. The supported token is an internal Slack
+app's user token (`xoxp-`) with the `channels:history`, `groups:history`, `im:history`, and
+`mpim:history` scopes. A user token makes `@me` that person; a bot token makes it the bot.
+
+- **A poll fetches the whole thread**, following the cursor page by page; any page failing fails
+  the poll, which changes no baseline. A call succeeds only on HTTP 200 with `ok` true.
+- **The parent and every reply are comments.** `comment_id` is the message's `ts`, `at` its time,
+  `url` its permalink, and `body` its `text`. `reply_to` is the parent's `ts`, the `thread_ts`
+  that `chat.postMessage` takes to reply in the thread.
+- **An edit to a message's text is `comment.edited`**, its `at` and `actor` the edit's time and
+  editor where Slack records them. A change to anything but the text, a reaction, and a deleted
+  message report nothing.
+- **An account's `login` is the Slack user id** (`U…` or `W…`), or the `bot_id` of an integration
+  posting with no user. `bot` is `true` for a message carrying a `bot_id` and `false` otherwise; an
+  editor's `bot` is `null`.
+- **Errors**: an unset `BABYSIT_SLACK_TOKEN`, and Slack's `not_authed`, `invalid_auth`,
+  `token_revoked`, `token_expired`, `account_inactive`, `missing_scope`, and
+  `not_allowed_token_type`, are `auth`; `channel_not_found` and `thread_not_found` are
+  `target_not_found`. HTTP 429 or `ratelimited` is a rate limit, waited out by its `retry-after`.
+  Anything else, such as `invalid_cursor`, fails the poll for a retry.
 
 ## The snapshot file
 

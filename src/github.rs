@@ -10,7 +10,7 @@ use crate::forge::{
     Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
 use crate::graphql::{Connection, Nodes, Paged, same_head};
-use crate::reference::Reference;
+use crate::reference::{Locus, Reference};
 use crate::response::{self, Response};
 
 const BOT_SUFFIX: &str = "[bot]";
@@ -99,15 +99,20 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         reference: &Reference,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
+        let Locus::Numbered {
+            kind,
+            number,
+            project,
+        } = &reference.locus
+        else {
+            unreachable!("only a Slack reference names a thread");
+        };
         // The issues endpoint answers for a pull request too, with its own URL and node id.
-        let resource = match reference.kind {
+        let resource = match kind {
             TargetKind::ChangeRequest => "pulls",
             TargetKind::Issue => "issues",
         };
-        let path = format!(
-            "repos/{}/{resource}/{}",
-            reference.project, reference.number,
-        );
+        let path = format!("repos/{project}/{resource}/{number}");
         let (response, hints) = self.call(
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
@@ -122,7 +127,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             host: reference.host.clone(),
             kind: match found.pull_request {
                 Some(_) => TargetKind::ChangeRequest,
-                None => reference.kind,
+                None => *kind,
             },
             url: found.html_url,
         };

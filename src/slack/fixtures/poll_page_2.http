@@ -1,0 +1,16 @@
+HTTP/2 200 
+date: Wed, 28 Oct 2026 15:20:00 GMT
+server: Apache
+vary: Accept-Encoding
+x-slack-req-id: 6e1f0a4c2b9d47e3a8f5c1d2e3b4a596
+x-content-type-options: nosniff
+x-robots-tag: noindex,nofollow
+cache-control: private, no-cache, no-store, must-revalidate
+content-type: application/json; charset=utf-8
+access-control-expose-headers: x-slack-req-id, retry-after
+strict-transport-security: max-age=31536000; includeSubDomains; preload
+referrer-policy: no-referrer
+x-backend: api_normal
+x-edge-backend: envoy-www
+
+{"ok":true,"messages":[{"user":"U0TEAMMATE1","type":"message","ts":"1792500180.000300","client_msg_id":"80000300-6c1e-4f1a-9b2e-3d4c5b6a7f80","text":"Left two comments","team":"T0BRZZ00001","thread_ts":"1792500000.000100","parent_user_id":"U0PAUL00001"},{"user":"U0PAUL00001","type":"message","ts":"1792500240.000400","client_msg_id":"40000400-6c1e-4f1a-9b2e-3d4c5b6a7f80","text":"Thanks, on it","team":"T0BRZZ00001","thread_ts":"1792500000.000100","parent_user_id":"U0PAUL00001"}],"has_more":false,"response_metadata":{"next_cursor":""}}

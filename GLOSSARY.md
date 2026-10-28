@@ -12,7 +12,7 @@ when there is none.
 _Avoid_: Cursor, checkpoint, last seen
 
 **Forge**:
-A code-hosting service babysit watches, such as GitHub or GitLab.
+A service babysit watches targets on, such as GitHub, GitLab, or Slack.
 _Avoid_: Host, provider, platform
 
 **Poll**:
@@ -25,7 +25,7 @@ Everything babysit knows about a target at one moment.
 _Avoid_: State, status
 
 **Target**:
-A single pull request, merge request, or issue being watched.
+A single pull request, merge request, issue, or Slack thread being watched.
 _Avoid_: Item, watch
 
 ### Events
@@ -67,7 +67,8 @@ A single remark on a target, standing alone or inside a thread.
 _Avoid_: Note, message
 
 **Thread**:
-A resolvable series of comments on a target.
+A resolvable series of comments on a target. A Slack thread is a target, not a thread: it can't be
+resolved, and its parent and replies are each a comment.
 _Avoid_: Discussion, conversation
 
 ### CI

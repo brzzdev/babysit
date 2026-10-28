@@ -10,7 +10,7 @@ use crate::forge::{
     Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
 use crate::graphql::{Connection, Nodes, Paged, same_head};
-use crate::reference::Reference;
+use crate::reference::{Locus, Reference};
 use crate::response::{self, Response};
 
 const CI_CREATED: &str = "CREATED";
@@ -121,14 +121,21 @@ impl<E: Exec> Backend for GitLab<'_, E> {
         reference: &Reference,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
-        let (resource, global_id) = match reference.kind {
+        let Locus::Numbered {
+            kind,
+            number,
+            project,
+        } = &reference.locus
+        else {
+            unreachable!("only a Slack reference names a thread");
+        };
+        let (resource, global_id) = match kind {
             TargetKind::ChangeRequest => ("merge_requests", MERGE_REQUEST_GID),
             TargetKind::Issue => ("issues", ISSUE_GID),
         };
         let path = format!(
-            "projects/{}/{resource}/{}",
-            reference.project.replace('/', "%2F"),
-            reference.number,
+            "projects/{}/{resource}/{number}",
+            project.replace('/', "%2F"),
         );
         let (response, hints) = self.call(
             &["api", "-i", "--hostname", &reference.host, &path],
@@ -139,7 +146,7 @@ impl<E: Exec> Backend for GitLab<'_, E> {
             forge: Forge::GitLab,
             forge_id: format!("{global_id}{}", found.id),
             host: reference.host.clone(),
-            kind: reference.kind,
+            kind: *kind,
             url: found.web_url,
         };
         Ok((target, hints))

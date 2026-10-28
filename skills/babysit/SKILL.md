@@ -1,6 +1,6 @@
 ---
 name: babysit
-description: Wait on a GitHub pull request, GitLab merge request, or issue with the `babysit` CLI, which blocks until CI settles; a review, thread, or comment lands; or the target merges or closes. Use whenever you must wait for something to happen on a PR, MR, or issue, in place of `gh pr checks --watch`, `glab ci status --live`, or a polling loop, or when the `babysit` command comes up.
+description: Wait on a GitHub pull request, GitLab merge request, issue, or Slack thread with the `babysit` CLI, which blocks until CI settles; a review, thread, comment, or Slack reply lands; or the target merges or closes. Use whenever you must wait for something to happen on a PR, MR, issue, or Slack thread, in place of `gh pr checks --watch`, `glab ci status --live`, or a polling loop, or when the `babysit` command comes up.
 metadata:
   author: Paul Breeze
 ---
@@ -15,9 +15,14 @@ when something here doesn't match.
 babysit --snapshot <PATH> [--on RULE]... [--ignore RULE]... [--timeout DURATION] TARGET...
 ```
 
-A target is a web URL (`…/pull/<n>`, `…/issues/<n>`, `…/-/merge_requests/<n>`), or inside a
-checkout `#<n>` (a GitHub PR or issue, a GitLab issue) or `!<n>` (a GitLab MR). Several targets can
-share one run.
+A target is a web URL (`…/pull/<n>`, `…/issues/<n>`, `…/-/merge_requests/<n>`), a Slack thread's
+permalink (the parent's, or a reply's with its `?thread_ts=…&cid=…`), or inside a checkout `#<n>`
+(a GitHub PR or issue, a GitLab issue) or `!<n>` (a GitLab MR). Several targets can share one run.
+
+A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with the
+`channels:history`, `groups:history`, `im:history`, and `mpim:history` scopes, exported as
+`BABYSIT_SLACK_TOKEN`. Ask the user for it rather than looking for one. A thread reports only
+`comment.created` and `comment.edited`, and its `targets[].state` is always `open`.
 
 ## The loop
 
@@ -61,8 +66,8 @@ share one run.
 
 | `error.kind`       | Do                                                                              |
 | ------------------ | ------------------------------------------------------------------------------- |
-| `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, or both hold a token for the remote's host |
-| `cli_missing`      | Tell the user which of `gh`, `glab`, or `git` is missing                        |
+| `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, both hold a token for the remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
+| `cli_missing`      | Tell the user which of `gh`, `glab`, `git`, or `curl` is missing                |
 | `lock_held`        | Another run owns this snapshot file. Wait for it, or use another file; the `.lock` file stays, so leave it |
 | `poll_failed`      | The forge failed 10 calls in a row, or once under `--timeout 0`. Report it before starting another run |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |
@@ -96,6 +101,9 @@ Starting sets:
 
 # A reply on an issue
 --on 'comment.* actor=@human' --on 'state.*' --ignore 'comment.* actor=@me'
+
+# A reply in a Slack thread
+--on 'comment.*' --ignore 'comment.* actor=@me'
 ```
 
 What bites:
@@ -117,7 +125,10 @@ What bites:
 - **Nothing reports** a conflict clearing, or a job that isn't a deciding check finishing while
   other jobs decide. A GitLab `when: manual` job outside `rules:` is one: it defaults to
   `allow_failure: true`, while inside `rules:` it decides and holds CI amber.
-- Issues report only `comment.*` and `state.*`.
+- Issues report only `comment.*` and `state.*`; a Slack thread only `comment.*`, so it never wakes
+  on its own ending.
+- **On Slack, `@me` is the token's user** and a login is a Slack user id (`U…`), or an
+  integration's `bot_id`, which counts as `@bot`.
 
 ## Acting on a wake
 
@@ -148,7 +159,8 @@ resolve from the current directory's repo. Elsewhere, take the host from the tar
   glab api 'projects/:fullpath/issues/<iid>/discussions/<reply_to>/notes' -f body='…'
   ```
   A GitHub `comment.created` stands outside any thread: answer it with `gh pr comment <n>` or
-  `gh issue comment <n>`.
+  `gh issue comment <n>`. A Slack event's `reply_to` is the parent's `ts`: reply in the thread
+  through `chat.postMessage` with it as `thread_ts`.
 - **`merge.conflicted`** means the head conflicts with its base. **`merge.behind`** means the forge
   wants the head updated before merging; ask before rebasing for it.
 - Each event's `url` links it on the web, for the line you report to the user.

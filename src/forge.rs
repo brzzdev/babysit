@@ -36,6 +36,7 @@ pub struct Target {
 pub enum TargetKind {
     /// A GitHub pull request or GitLab merge request.
     ChangeRequest,
+    /// An issue, or a Slack thread, which has only comments as an issue does.
     Issue,
 }
 

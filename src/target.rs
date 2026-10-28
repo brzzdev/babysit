@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use crate::envelope::{ErrorKind, Forge};
 use crate::exec::{self, CALL_LIMIT, Exec, Limit, Output};
 use crate::forge::{Failure, Snapshot, Target, TargetKind};
-use crate::reference::{self, Name, Prefix, Reference};
+use crate::reference::{self, Locus, Name, Prefix, Reference};
 use crate::snapshot_file::SnapshotFile;
 
 const GITHUB_HOST: &str = "github.com";
@@ -193,9 +193,11 @@ impl<'a, E: Exec> Locator<'a, E> {
             forge,
             given: given.to_owned(),
             host,
-            kind,
-            number,
-            project,
+            locus: Locus::Numbered {
+                kind,
+                number,
+                project,
+            },
         })
     }
 
@@ -225,6 +227,7 @@ impl<'a, E: Exec> Locator<'a, E> {
                     format!(r"^remote\..*\.{GLAB_RESOLVED_KEY}(-base)?$"),
                     glab_default,
                 ),
+                Forge::Slack => unreachable!("a checkout reference never names a Slack thread"),
             };
         let resolved = self
             .call("git", &["config", "--get-regexp", &pattern])?
@@ -270,7 +273,7 @@ impl<'a, E: Exec> Locator<'a, E> {
         }
         let host = match forge {
             Forge::GitHub => without_port(host),
-            Forge::GitLab => host,
+            Forge::GitLab | Forge::Slack => host,
         };
         Ok((host.to_owned(), path.to_owned()))
     }
@@ -536,9 +539,11 @@ mod tests {
             forge: Forge::GitHub,
             given: "#12".to_owned(),
             host: host.to_owned(),
-            kind: TargetKind::Issue,
-            number: 12,
-            project: format!("{owner}/{repo}"),
+            locus: Locus::Numbered {
+                kind: TargetKind::Issue,
+                number: 12,
+                project: format!("{owner}/{repo}"),
+            },
         }
     }
 
@@ -551,9 +556,11 @@ mod tests {
             forge: Forge::GitLab,
             given: "!12".to_owned(),
             host: host.to_owned(),
-            kind: TargetKind::ChangeRequest,
-            number: 12,
-            project: project.to_owned(),
+            locus: Locus::Numbered {
+                kind: TargetKind::ChangeRequest,
+                number: 12,
+                project: project.to_owned(),
+            },
         }
     }
 
@@ -581,7 +588,11 @@ mod tests {
             locate(&script, &checkout()),
             Ok(Reference {
                 given: "#12".to_owned(),
-                kind: TargetKind::Issue,
+                locus: Locus::Numbered {
+                    kind: TargetKind::Issue,
+                    number: 12,
+                    project: "g/p".to_owned(),
+                },
                 ..located_on_gitlab("gitlab.com", "g/p")
             }),
         );

@@ -1,0 +1,31 @@
+HTTP/2 200 
+date: Wed, 28 Oct 2026 15:09:08 GMT
+server: Apache
+vary: Accept-Encoding
+x-slack-req-id: a454ddc0e70ac4eabc9ad56d8359373a
+x-content-type-options: nosniff
+x-xss-protection: 0
+x-robots-tag: noindex,nofollow
+pragma: no-cache
+cache-control: private, no-cache, no-store, must-revalidate
+expires: Sat, 26 Jul 1997 05:00:00 GMT
+content-type: application/json; charset=utf-8
+x-slack-failure: invalid_auth
+access-control-expose-headers: x-slack-req-id, retry-after
+access-control-allow-headers: slack-route, x-slack-version-ts, x-b3-traceid, x-b3-spanid, x-b3-parentspanid, x-b3-sampled, x-b3-flags, x-background
+strict-transport-security: max-age=31536000; includeSubDomains; preload
+referrer-policy: no-referrer
+x-slack-unique-id: 59986d42-3a69-43df-8d7a-19f49924ef53
+access-control-allow-origin: *
+content-length: 35
+via: 1.1 slack-prod.tinyspeck.com, ingress-www-iad-external-prod-0d535d54975acc995,ingress-edge-dub-prod-056b8783eaf6da2e4
+x-envoy-upstream-service-time: 74
+x-backend: api_normal
+x-server: slack-www-hhvm-api-iad-t6tzu7kq2r82
+x-slack-shared-secret-outcome: no-match
+x-edge-backend: envoy-www
+timing-allow-origin: *
+alt-svc: h3=":443"; ma=2592000, h3-29=":443"; ma=2592000, quic=":443"; ma=2592000
+x-slack-edge-shared-secret-outcome: no-match
+
+{"ok":false,"error":"invalid_auth"}
