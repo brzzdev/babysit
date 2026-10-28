@@ -688,16 +688,17 @@ mod tests {
         let null_cursor = last.replace(r#""next_cursor":"""#, r#""next_cursor":null"#);
         let no_metadata = last.replace(r#","response_metadata":{"next_cursor":""}"#, "");
 
-        for last in [null_cursor, no_metadata] {
+        for (case, last_page) in [("null cursor", null_cursor), ("no metadata", no_metadata)] {
+            assert_ne!(last_page, last, "{case}");
             let paged = poll_calls([
                 replies("", include_str!("slack/fixtures/poll_page_1.http")),
-                replies(CURSOR, &last),
+                replies(CURSOR, &last_page),
             ]);
 
             assert_eq!(
                 paged.map(|poll| poll.comments.len()).ok(),
                 Some(4),
-                "{last}"
+                "{case}"
             );
         }
     }
