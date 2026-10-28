@@ -160,10 +160,10 @@ id on GitLab. A check in `checks` or `warnings` is `name`; `conclusion`, the for
 lowercase, except `retargeted`; `url` (nullable); and `job_id` (optional: a GitHub Actions job or a
 GitLab job).
 
-Issues report only `comment.*` and `state.*` events, and a Slack thread only `comment.*`. `merge.*` events come only from an open target,
-and an event about the target as a whole (`ci.settled`, `head.pushed`, `merge.*`) has no `at` or
-`actor`. Within one target, events are ordered by `at`, untimed ones last; targets follow the order
-they were given in.
+Issues report only `comment.*` and `state.*` events, and a Slack thread only `comment.*`.
+`merge.*` events come only from an open target, and an event about the target as a whole
+(`ci.settled`, `head.pushed`, `merge.*`) has no `at` or `actor`. Within one target, events are
+ordered by `at`, untimed ones last; targets follow the order they were given in.
 
 ### CI colour
 
@@ -355,16 +355,16 @@ Usage errors are found before any forge is polled: a malformed flag, rule, durat
 checkout reference babysit can't place; a duration past what the clock can hold; or a `--snapshot`
 file that isn't a babysit snapshot file of this version.
 
-`error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a forge's,
-such as the snapshot file, or `git`, `gh auth token`, or `glab config get token` failing while
-babysit places a checkout reference, which isn't retried);
+`error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a
+forge's, such as the snapshot file, or `git`, `gh auth token`, or `glab config get token` failing
+while babysit places a checkout reference, which isn't retried);
 `target` (the target's URL, or the name as given before it resolved, or `null`); and `message`, for
 humans.
 
 | `kind`             | Cause                                                                                        |
 | ------------------ | -------------------------------------------------------------------------------------------- |
 | `auth`             | The CLI isn't signed in or was refused (401, 403), both `gh` and `glab` hold a token for a checkout remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
-| `cli_missing`      | `gh`, `glab`, `git`, or `curl` isn't installed or not on `PATH`                             |
+| `cli_missing`      | `gh`, `glab`, `git`, or `curl` isn't installed or not on `PATH`, or `curl` is older than 8.3 |
 | `lock_held`        | Another babysit run holds the `--snapshot` file                                              |
 | `poll_failed`      | A call to the forge failed 10 times in a row for one target, or once under `--timeout 0`     |
 | `snapshot_io`      | The `--snapshot` file couldn't be read, locked, or written                                   |

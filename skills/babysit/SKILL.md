@@ -66,7 +66,7 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 | `error.kind`       | Do                                                                              |
 | ------------------ | ------------------------------------------------------------------------------- |
 | `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, both hold a token for the remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
-| `cli_missing`      | Tell the user which of `gh`, `glab`, `git`, or `curl` is missing                |
+| `cli_missing`      | Tell the user which of `gh`, `glab`, `git`, or `curl` is missing, or that `curl` is older than 8.3 |
 | `lock_held`        | Another run owns this snapshot file. Wait for it, or use another file; the `.lock` file stays, so leave it |
 | `poll_failed`      | The forge failed 10 calls in a row, or once under `--timeout 0`. Report it before starting another run |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |

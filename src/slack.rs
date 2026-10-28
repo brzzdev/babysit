@@ -23,14 +23,17 @@ const AUTH_ERRORS: [&str; 7] = [
     "token_revoked",
 ];
 const CLI: &str = "curl";
+/// What curl exits with when it can't start a call, as for an option older than it is.
+const CURL_FAILED_INIT: i32 = 2;
 /// curl's flags for every call. curl reads the token from the environment itself, so it never
 /// appears among any process's arguments, and `--disable`, which must come first, keeps a
 /// `.curlrc` from adding `verbose` and printing the token to stderr.
-const CURL_FLAGS: [&str; 9] = [
+const CURL_FLAGS: [&str; 10] = [
     "--disable",
     "--silent",
     "--show-error",
     "--include",
+    "--suppress-connect-headers",
     "--get",
     "--variable",
     "%BABYSIT_SLACK_TOKEN",
@@ -52,7 +55,7 @@ const TOKEN_VARIABLE: &str = "BABYSIT_SLACK_TOKEN";
 
 pub struct Slack<'a, E> {
     exec: &'a E,
-    /// Whether `BABYSIT_SLACK_TOKEN` holds a token; only curl ever reads its value.
+    /// Whether `BABYSIT_SLACK_TOKEN` holds a token.
     token_set: bool,
 }
 
@@ -91,6 +94,11 @@ impl<'a, E: Exec> Slack<'a, E> {
         args.push(&url);
         let output = run_cli(self.exec, Forge::Slack, CLI, &args, deadline)?;
         let reason = output.stderr.trim();
+        if output.code == Some(CURL_FAILED_INIT) {
+            let message =
+                format!("curl couldn't start the call; babysit needs curl 8.3 or later: {reason}");
+            return Err(fatal(ErrorKind::CliMissing, &message));
+        }
         if output.code != Some(0) {
             return Err(transient(&format!("curl failed: {reason}")));
         }
@@ -105,11 +113,7 @@ impl<'a, E: Exec> Slack<'a, E> {
             return Err(rate_limited(hints));
         }
         if response.status != STATUS_OK {
-            return Err(Failure::Transient {
-                forge: Forge::Slack,
-                hints,
-                message: format!("HTTP {}", response.status),
-            });
+            return Err(transient(&format!("HTTP {}", response.status)).paced(hints));
         }
         let status: Status = decode(&response.body).map_err(|failure| failure.paced(hints))?;
         if !status.ok {
@@ -161,7 +165,13 @@ impl<E: Exec> Backend for Slack<'_, E> {
                 .call(&target.host, METHOD_REPLIES, &parameters, deadline)
                 .map_err(|failure| failure.paced(hints))?;
             hints = hints.merge(pacing);
-            messages.extend(page.messages);
+            // Every page repeats the parent.
+            let later_page = !messages.is_empty();
+            messages.extend(
+                page.messages
+                    .into_iter()
+                    .filter(|message| !(later_page && message.ts == parent)),
+            );
             cursor = page.response_metadata.next_cursor;
             if cursor.is_empty() {
                 break;
@@ -193,7 +203,7 @@ impl<E: Exec> Backend for Slack<'_, E> {
     }
 }
 
-/// A message as a comment outside any thread, its replies going under the parent.
+/// The thread's parent or a reply as a comment outside any thread, replying under the parent.
 fn comment(target: &Target, channel: &str, parent: &str, message: Message) -> Comment {
     let url = if message.ts == parent {
         target.url.clone()
@@ -202,26 +212,30 @@ fn comment(target: &Target, channel: &str, parent: &str, message: Message) -> Co
         format!("{reply}?thread_ts={parent}&cid={channel}")
     };
     let bot = message.bot_id.is_some();
-    let actor = message.user.or(message.bot_id).map(|id| Account {
-        bot: Some(bot),
-        id: Some(id.clone()),
-        login: id,
-    });
+    let actor = message
+        .user
+        .or(message.bot_id)
+        .map(|id| account(id, Some(bot)));
     let edited = message.edited.unwrap_or_default();
     Comment {
         actor,
         at: time(&message.ts),
         body: message.text,
         edited_at: edited.ts.as_deref().map(time),
-        editor: edited.user.map(|id| Account {
-            bot: None,
-            id: Some(id.clone()),
-            login: id,
-        }),
+        editor: edited.user.map(|id| account(id, None)),
         id: message.ts,
         reply_to: Some(parent.to_owned()),
         review_id: None,
         url,
+    }
+}
+
+/// A Slack user or integration, by an id that is also its login.
+fn account(id: String, bot: Option<bool>) -> Account {
+    Account {
+        bot,
+        id: Some(id.clone()),
+        login: id,
     }
 }
 
@@ -251,11 +265,7 @@ fn refused(error: &str, hints: Hints) -> Failure {
         let message = format!("not found or not visible to {TOKEN_VARIABLE}'s user: {error}");
         return fatal(ErrorKind::TargetNotFound, &message);
     }
-    Failure::Transient {
-        forge: Forge::Slack,
-        hints,
-        message: format!("Slack answered {error}"),
-    }
+    transient(&format!("Slack answered {error}")).paced(hints)
 }
 
 fn rate_limited(hints: Hints) -> Failure {
@@ -323,19 +333,27 @@ struct Edited {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+    use std::{fs, process};
+
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::cli::Args;
+    use crate::clock::SystemClock;
     use crate::diff::{self, diff};
     use crate::envelope::{Envelope, Outcome, Summary};
     use crate::exec::{self, Output, Script};
     use crate::forge::{Snapshot, fatal_kind};
     use crate::reference;
     use crate::rule;
+    use crate::run::{self, Backends};
 
     const CURSOR: &str = "bmV4dF90czoxNzkyNTAwMTgwMDAwMzAw";
     const ME: &str = "U0PAUL00001";
     const PERMALINK: &str = "https://brzz.slack.com/archives/C0A1B2C3D4E/p1792500000000100";
+    const REPLY: &str = "https://brzz.slack.com/archives/C0A1B2C3D4E/p1792500060000200\
+                         ?thread_ts=1792500000.000100&cid=C0A1B2C3D4E";
 
     type Call = (String, Result<Output, exec::Error>);
 
@@ -348,7 +366,7 @@ mod tests {
 
     fn curl(method: &str, parameters: &str) -> String {
         format!(
-            "curl --disable --silent --show-error --include --get \
+            "curl --disable --silent --show-error --include --suppress-connect-headers --get \
              --variable %BABYSIT_SLACK_TOKEN --expand-header Authorization: Bearer {{{{BABYSIT_SLACK_TOKEN}}}}{parameters} \
              https://brzz.slack.com/api/{method}"
         )
@@ -411,13 +429,103 @@ mod tests {
             .collect()
     }
 
+    /// A directory for one test's `--snapshot`, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("babysit-{}-slack-{name}", process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn snapshot(&self) -> PathBuf {
+            self.0.join("snapshot.json")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `babysit --snapshot <snapshot> --timeout 0 <target>`, the thread answering `stdout`.
+    fn run_once(snapshot: &Path, target: &str, stdout: &str) -> (u8, Value) {
+        let args = Args {
+            ignore: Vec::new(),
+            on: Vec::new(),
+            targets: vec![reference::parse_name(target).unwrap()],
+            snapshot: snapshot.to_owned(),
+            interval: Duration::from_secs(30),
+            timeout: Some(Duration::ZERO),
+        };
+        let exec = Script::new([replies("", stdout)]);
+        let slack = slack(&exec);
+        let backends = Backends {
+            github: &slack,
+            gitlab: &slack,
+            slack: &slack,
+        };
+        let mut printed = Vec::new();
+        let code = run::run(
+            &args,
+            &backends,
+            &Script::new([]),
+            &SystemClock,
+            &mut printed,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        (code, serde_json::from_slice(&printed).unwrap())
+    }
+
+    #[test]
+    fn a_reply_permalink_then_its_parent_permalink_resume_one_baseline() {
+        let scratch = Scratch::new("resume");
+
+        let (first_code, first) = run_once(
+            &scratch.snapshot(),
+            REPLY,
+            include_str!("slack/fixtures/poll.http"),
+        );
+        let (second_code, second) = run_once(
+            &scratch.snapshot(),
+            PERMALINK,
+            include_str!("slack/fixtures/poll_replied.http"),
+        );
+
+        assert_eq!(first_code, 3);
+        assert_eq!(
+            first,
+            json!({
+                "outcome": "timed_out",
+                "events": [],
+                "targets": [{ "target": PERMALINK, "state": "open" }],
+                "error": null,
+            }),
+        );
+        assert_eq!(second_code, 0);
+        let created: Vec<_> = second["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| (event["kind"].clone(), event["comment_id"].clone()))
+            .collect();
+        assert_eq!(
+            created,
+            [
+                (json!("comment.created"), json!("1792500180.000300")),
+                (json!("comment.created"), json!("1792500240.000400")),
+            ],
+        );
+    }
+
     #[test]
     fn a_reply_permalink_and_its_parent_permalink_are_one_target() {
-        let reply = "https://brzz.slack.com/archives/C0A1B2C3D4E/p1792500060000200\
-                     ?thread_ts=1792500000.000100&cid=C0A1B2C3D4E";
-
-        assert_eq!(target_of(reply), target_of(PERMALINK));
-        assert_eq!(target_of(reply).url, PERMALINK);
+        assert_eq!(target_of(REPLY), target_of(PERMALINK));
+        assert_eq!(target_of(REPLY).url, PERMALINK);
         assert_ne!(
             target_of("https://brzz.slack.com/archives/C0OTHER0001/p1792500000000100"),
             target_of(PERMALINK),
@@ -448,7 +556,7 @@ mod tests {
 
     #[test]
     fn a_poll_passes_curl_the_token_by_name_only() {
-        let call = "curl --disable --silent --show-error --include --get \
+        let call = "curl --disable --silent --show-error --include --suppress-connect-headers --get \
                     --variable %BABYSIT_SLACK_TOKEN \
                     --expand-header Authorization: Bearer {{BABYSIT_SLACK_TOKEN}} \
                     --data-urlencode channel=C0A1B2C3D4E --data-urlencode ts=1792500000.000100 \
@@ -558,6 +666,7 @@ mod tests {
             replies(CURSOR, include_str!("slack/fixtures/poll_page_2.http")),
         ])
         .unwrap();
+        let comments = paged.comments.len();
 
         let events = events(include_str!("slack/fixtures/poll.http"), paged);
 
@@ -569,6 +678,7 @@ mod tests {
             ids,
             [json!("1792500180.000300"), json!("1792500240.000400")]
         );
+        assert_eq!(comments, 4);
     }
 
     #[test]
@@ -586,6 +696,22 @@ mod tests {
     }
 
     #[test]
+    fn a_curl_too_old_for_variable_is_cli_missing() {
+        let exec = Script::new([(
+            replies("", "").0,
+            Ok(Output {
+                code: Some(2),
+                stderr: "curl: option --variable: is unknown".to_owned(),
+                stdout: String::new(),
+            }),
+        )]);
+
+        let failure = slack(&exec).poll(&target_of(PERMALINK), None).unwrap_err();
+
+        assert_eq!(fatal_kind(&failure), ErrorKind::CliMissing);
+    }
+
+    #[test]
     fn a_deleted_message_reports_nothing() {
         let deleted = poll(include_str!("slack/fixtures/poll_deleted.http"));
         let replied = poll(include_str!("slack/fixtures/poll_replied.http"));
@@ -594,15 +720,22 @@ mod tests {
     }
 
     #[test]
-    fn a_429_waits_out_retry_after() {
-        let stdout = include_str!("slack/fixtures/poll_rate_limited.http");
+    fn a_429_or_a_ratelimited_error_waits_out_retry_after() {
+        let ratelimited = include_str!("slack/fixtures/poll_thread_not_found.http")
+            .replace("thread_not_found", "ratelimited")
+            .replace("x-slack-failure", "retry-after: 30\r\nx-slack-failure");
 
-        let failure = poll_calls([replies("", stdout)]).unwrap_err();
+        for stdout in [
+            include_str!("slack/fixtures/poll_rate_limited.http"),
+            &ratelimited,
+        ] {
+            let failure = poll_calls([replies("", stdout)]).unwrap_err();
 
-        let Failure::RateLimited { hints, .. } = failure else {
-            panic!("not a rate limit: {failure:?}");
-        };
-        assert_eq!(hints.retry_after, Some(Duration::from_secs(30)));
+            let Failure::RateLimited { hints, .. } = failure else {
+                panic!("not a rate limit: {failure:?}");
+            };
+            assert_eq!(hints.retry_after, Some(Duration::from_secs(30)));
+        }
     }
 
     #[test]
@@ -610,11 +743,15 @@ mod tests {
         let refused = include_str!("slack/fixtures/poll_invalid_auth.http");
         let missing = include_str!("slack/fixtures/poll_thread_not_found.http");
 
+        let no_channel = missing.replace("thread_not_found", "channel_not_found");
+
         let refused = poll_calls([replies("", refused)]).unwrap_err();
         let missing = poll_calls([replies("", missing)]).unwrap_err();
+        let no_channel = poll_calls([replies("", &no_channel)]).unwrap_err();
 
         assert_eq!(fatal_kind(&refused), ErrorKind::Auth);
         assert_eq!(fatal_kind(&missing), ErrorKind::TargetNotFound);
+        assert_eq!(fatal_kind(&no_channel), ErrorKind::TargetNotFound);
     }
 
     #[test]
