@@ -172,7 +172,10 @@ impl<E: Exec> Backend for Slack<'_, E> {
                     .into_iter()
                     .filter(|message| !(later_page && message.ts == parent)),
             );
-            cursor = page.response_metadata.next_cursor;
+            cursor = page
+                .response_metadata
+                .and_then(|metadata| metadata.next_cursor)
+                .unwrap_or_default();
             if cursor.is_empty() {
                 break;
             }
@@ -303,15 +306,13 @@ struct Identity {
 #[derive(Deserialize)]
 struct Replies {
     messages: Vec<Message>,
-    #[serde(default)]
-    response_metadata: Metadata,
+    response_metadata: Option<Metadata>,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct Metadata {
-    /// Empty on the last page.
-    #[serde(default)]
-    next_cursor: String,
+    /// Empty, null, or absent on the last page.
+    next_cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -679,6 +680,26 @@ mod tests {
             [json!("1792500180.000300"), json!("1792500240.000400")]
         );
         assert_eq!(comments, 4);
+    }
+
+    #[test]
+    fn a_last_page_may_end_with_a_null_or_absent_cursor() {
+        let last = include_str!("slack/fixtures/poll_page_2.http");
+        let null_cursor = last.replace(r#""next_cursor":"""#, r#""next_cursor":null"#);
+        let no_metadata = last.replace(r#","response_metadata":{"next_cursor":""}"#, "");
+
+        for last in [null_cursor, no_metadata] {
+            let paged = poll_calls([
+                replies("", include_str!("slack/fixtures/poll_page_1.http")),
+                replies(CURSOR, &last),
+            ]);
+
+            assert_eq!(
+                paged.map(|poll| poll.comments.len()).ok(),
+                Some(4),
+                "{last}"
+            );
+        }
     }
 
     #[test]
