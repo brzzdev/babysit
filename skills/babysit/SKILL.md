@@ -21,7 +21,7 @@ permalink (the parent's, or a reply's with its `?thread_ts=…&cid=…`), or ins
 
 A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with the
 `channels:history`, `groups:history`, `im:history`, and `mpim:history` scopes, exported as
-`BABYSIT_SLACK_TOKEN`. Ask the user for it rather than looking for one.
+`BABYSIT_SLACK_TOKEN`. When it is unset, ask the user for it rather than looking for one.
 
 ## The loop
 
