@@ -10,7 +10,7 @@ use crate::forge::{
     Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
 use crate::graphql::{Connection, Nodes, Paged, same_head};
-use crate::reference::Reference;
+use crate::reference::{Locus, Reference};
 use crate::response::{self, Response};
 
 const BOT_SUFFIX: &str = "[bot]";
@@ -99,15 +99,20 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         reference: &Reference,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
+        let Locus::Numbered {
+            kind,
+            number,
+            project,
+        } = &reference.locus
+        else {
+            unreachable!("only a Slack reference names a thread");
+        };
         // The issues endpoint answers for a pull request too, with its own URL and node id.
-        let resource = match reference.kind {
+        let resource = match kind {
             TargetKind::ChangeRequest => "pulls",
             TargetKind::Issue => "issues",
         };
-        let path = format!(
-            "repos/{}/{resource}/{}",
-            reference.project, reference.number,
-        );
+        let path = format!("repos/{project}/{resource}/{number}");
         let (response, hints) = self.call(
             &["api", "-i", "--hostname", &reference.host, &path],
             deadline,
@@ -122,7 +127,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
             host: reference.host.clone(),
             kind: match found.pull_request {
                 Some(_) => TargetKind::ChangeRequest,
-                None => reference.kind,
+                None => *kind,
             },
             url: found.html_url,
         };
@@ -1099,7 +1104,7 @@ mod tests {
     use crate::diff;
     use crate::envelope::{self, Envelope, Outcome, Summary};
     use crate::exec::{self, Limit, Output, Script};
-    use crate::forge::{Colour, Snapshot};
+    use crate::forge::{Colour, Snapshot, fatal_kind};
     use crate::reference;
     use crate::rule;
 
@@ -1133,13 +1138,6 @@ mod tests {
         GitHub::new(&exec)
             .resolve(&reference(), None)
             .map(|(target, _)| target)
-    }
-
-    fn kind(failure: &Failure) -> ErrorKind {
-        match failure {
-            Failure::Fatal { kind, .. } => *kind,
-            other => panic!("not fatal: {other:?}"),
-        }
     }
 
     #[test]
@@ -1207,7 +1205,7 @@ mod tests {
         ))
         .unwrap_err();
 
-        assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
+        assert_eq!(fatal_kind(&failure), ErrorKind::TargetNotFound);
     }
 
     #[test]
@@ -1231,7 +1229,7 @@ mod tests {
         )))
         .unwrap_err();
 
-        assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
+        assert_eq!(fatal_kind(&failure), ErrorKind::TargetNotFound);
     }
 
     const HEAD: &str = "dfd1945e66eb0008cad921a1230fd2c533598845";
@@ -1552,7 +1550,7 @@ mod tests {
     fn a_deleted_pull_request_is_target_not_found_naming_the_causes() {
         let failure = poll_failing(include_str!("github/fixtures/poll_not_found.http"));
 
-        assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
+        assert_eq!(fatal_kind(&failure), ErrorKind::TargetNotFound);
         assert_eq!(
             message(&failure),
             "https://github.com/brzzdev/babysit/pull/30 is gone: deleted, transferred, or no \
@@ -1592,8 +1590,8 @@ mod tests {
         let (call, _) = first_page("");
         let logged_out = poll_with([(call, Ok(gh(4, "", "gh auth login")))]).unwrap_err();
 
-        assert_eq!(kind(&rejected), ErrorKind::Auth);
-        assert_eq!(kind(&logged_out), ErrorKind::Auth);
+        assert_eq!(fatal_kind(&rejected), ErrorKind::Auth);
+        assert_eq!(fatal_kind(&logged_out), ErrorKind::Auth);
     }
 
     #[test]
@@ -1603,7 +1601,7 @@ mod tests {
             "Resource not accessible by integration",
         );
 
-        assert_eq!(kind(&poll_failing(&forbidden)), ErrorKind::Auth);
+        assert_eq!(fatal_kind(&poll_failing(&forbidden)), ErrorKind::Auth);
     }
 
     #[test]
@@ -1879,7 +1877,7 @@ mod tests {
         let failure =
             resolve_with(Err(exec::Error::Io(io::ErrorKind::NotFound.into()))).unwrap_err();
 
-        assert_eq!(kind(&failure), ErrorKind::CliMissing);
+        assert_eq!(fatal_kind(&failure), ErrorKind::CliMissing);
     }
 
     /// The recorded poll `fixture` with the value at each JSON pointer replaced.

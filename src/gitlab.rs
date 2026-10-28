@@ -10,7 +10,7 @@ use crate::forge::{
     Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
 use crate::graphql::{Connection, Nodes, Paged, same_head};
-use crate::reference::Reference;
+use crate::reference::{Locus, Reference};
 use crate::response::{self, Response};
 
 const CI_CREATED: &str = "CREATED";
@@ -121,14 +121,21 @@ impl<E: Exec> Backend for GitLab<'_, E> {
         reference: &Reference,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
-        let (resource, global_id) = match reference.kind {
+        let Locus::Numbered {
+            kind,
+            number,
+            project,
+        } = &reference.locus
+        else {
+            unreachable!("only a Slack reference names a thread");
+        };
+        let (resource, global_id) = match kind {
             TargetKind::ChangeRequest => ("merge_requests", MERGE_REQUEST_GID),
             TargetKind::Issue => ("issues", ISSUE_GID),
         };
         let path = format!(
-            "projects/{}/{resource}/{}",
-            reference.project.replace('/', "%2F"),
-            reference.number,
+            "projects/{}/{resource}/{number}",
+            project.replace('/', "%2F"),
         );
         let (response, hints) = self.call(
             &["api", "-i", "--hostname", &reference.host, &path],
@@ -139,7 +146,7 @@ impl<E: Exec> Backend for GitLab<'_, E> {
             forge: Forge::GitLab,
             forge_id: format!("{global_id}{}", found.id),
             host: reference.host.clone(),
-            kind: reference.kind,
+            kind: *kind,
             url: found.web_url,
         };
         Ok((target, hints))
@@ -908,7 +915,7 @@ mod tests {
     use super::*;
     use crate::diff;
     use crate::exec::{self, Output, Script};
-    use crate::forge::Colour;
+    use crate::forge::{Colour, fatal_kind};
     use crate::reference;
 
     const BLOCKERS_MR_ID: &str = "552635815";
@@ -1013,13 +1020,6 @@ mod tests {
         }
     }
 
-    fn kind(failure: &Failure) -> ErrorKind {
-        match failure {
-            Failure::Fatal { kind, .. } => *kind,
-            other => panic!("not fatal: {other:?}"),
-        }
-    }
-
     #[test]
     fn resolves_a_merge_request_to_its_web_url_and_global_id() {
         let resolved = resolve_with(include_str!("gitlab/fixtures/resolve.http"), 0);
@@ -1032,7 +1032,7 @@ mod tests {
         let stdout = include_str!("gitlab/fixtures/resolve_not_found.http");
 
         assert_eq!(
-            kind(&resolve_with(stdout, 1).unwrap_err()),
+            fatal_kind(&resolve_with(stdout, 1).unwrap_err()),
             ErrorKind::TargetNotFound,
         );
     }
@@ -1050,7 +1050,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                kind(&resolve_with(stdout, code).unwrap_err()),
+                fatal_kind(&resolve_with(stdout, code).unwrap_err()),
                 ErrorKind::Auth
             );
         }
@@ -1075,7 +1075,7 @@ mod tests {
 
         let failure = poll_with([graphql("", stdout)]).unwrap_err();
 
-        assert_eq!(kind(&failure), ErrorKind::TargetNotFound);
+        assert_eq!(fatal_kind(&failure), ErrorKind::TargetNotFound);
     }
 
     #[test]

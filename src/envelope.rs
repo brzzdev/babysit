@@ -77,6 +77,8 @@ pub enum Forge {
     GitHub,
     #[serde(rename = "gitlab")]
     GitLab,
+    #[serde(rename = "slack")]
+    Slack,
 }
 
 impl Envelope {
