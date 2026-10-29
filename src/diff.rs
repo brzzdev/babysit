@@ -157,7 +157,7 @@ impl Ci {
 
 impl Snapshot {
     /// A first poll, made at `now`, as baseline: its colour, and an open target's mergeability,
-    /// count as reported.
+    /// count as reported, and a head with no check starts its absence clock.
     pub fn first(poll: Poll, now: SystemTime) -> Self {
         Self {
             reported: Reported {
@@ -245,8 +245,8 @@ pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Sn
     )
 }
 
-/// A head's absence clock starts when babysit first sees it open with no check, and stops once one
-/// reports; `ci.absent` reports it once it has run long enough, and never again for that head.
+/// A head's absence clock runs while babysit sees it open with no check; `ci.absent` reports it
+/// once it has run long enough, and never again for that head.
 fn absence_after(
     poll: &Poll,
     before: Option<Absence>,
@@ -255,11 +255,8 @@ fn absence_after(
     let Some(head) = &poll.head else {
         return (None, None);
     };
-    if poll.state != TargetState::Open {
-        return (before, None);
-    }
-    if poll.ci.is_some() {
-        return (before.filter(|before| *before == Absence::Reported), None);
+    if poll.state != TargetState::Open || poll.ci.is_some() {
+        return (before.filter(|absence| *absence == Absence::Reported), None);
     }
     let now = unix_seconds(now);
     let since = match before {
@@ -1381,18 +1378,33 @@ mod tests {
     }
 
     #[test]
-    fn a_target_that_is_not_open_is_never_absent() {
-        let merged = || Poll {
-            state: TargetState::Merged,
+    fn a_closed_target_is_never_absent_and_a_reopening_restarts_the_clock() {
+        let closed = || Poll {
+            state: TargetState::Closed,
             ..unchecked(A)
         };
 
         let steps = steps_at(
-            (minutes(0), merged()),
-            vec![(minutes(15), merged()), (minutes(40), merged())],
+            (minutes(0), unchecked(A)),
+            vec![
+                (minutes(5), closed()),
+                (minutes(30), closed()),
+                (minutes(60), unchecked(A)),
+                (minutes(74), unchecked(A)),
+                (minutes(75), unchecked(A)),
+            ],
         );
 
-        assert_eq!(steps, [Vec::<String>::new(), Vec::new()]);
+        assert_eq!(
+            steps,
+            [
+                vec!["state.closed"],
+                vec![],
+                vec!["state.reopened"],
+                vec![],
+                vec!["ci.absent"],
+            ],
+        );
     }
 
     #[test]

@@ -182,7 +182,7 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reported {
-    /// The snapshot's head's absence clock, kept only while no check reports on it.
+    /// The snapshot's head's absence clock, or that `ci.absent` reported the head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub absence: Option<Absence>,
     /// The colour reported for the snapshot's head, kept only while its CI stays settled.
