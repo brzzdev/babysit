@@ -405,7 +405,12 @@ mod tests {
     }
 
     fn events(baseline: &str, next: Poll) -> Vec<diff::Event> {
-        diff(&Snapshot::from(poll(baseline)), next).0
+        diff(
+            &Snapshot::first(poll(baseline), UNIX_EPOCH),
+            next,
+            UNIX_EPOCH,
+        )
+        .0
     }
 
     fn printed(events: &[diff::Event]) -> Vec<Value> {
@@ -539,7 +544,7 @@ mod tests {
         let envelope = Envelope {
             targets: vec![Summary::new(
                 &target,
-                &poll(include_str!("slack/fixtures/poll.http")).into(),
+                &Snapshot::first(poll(include_str!("slack/fixtures/poll.http")), UNIX_EPOCH),
             )],
             ..Envelope::ended(Outcome::TimedOut)
         };
@@ -738,7 +743,10 @@ mod tests {
         let deleted = poll(include_str!("slack/fixtures/poll_deleted.http"));
         let replied = poll(include_str!("slack/fixtures/poll_replied.http"));
 
-        assert_eq!(diff(&Snapshot::from(replied), deleted).0, []);
+        assert_eq!(
+            diff(&Snapshot::first(replied, UNIX_EPOCH), deleted, UNIX_EPOCH).0,
+            []
+        );
     }
 
     #[test]

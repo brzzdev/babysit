@@ -1,9 +1,15 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use serde::Serialize;
 
 use crate::forge::{
-    Account, Assessment, Check, Ci, Colour, Comment, Merge, Poll, Position, Reported, Review,
-    ReviewState, Snapshot, TargetState, Thread,
+    Absence, Account, Assessment, Check, Ci, Colour, Comment, Merge, Poll, Position, Reported,
+    Review, ReviewState, Snapshot, TargetState, Thread,
 };
+
+/// How long a head goes without a check before `ci.absent` reports it.
+const ABSENT_AFTER: Duration = Duration::from_mins(15);
+const SECONDS_PER_MINUTE: u64 = 60;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct Event {
@@ -22,6 +28,8 @@ pub struct Event {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(tag = "kind")]
 pub enum Detail {
+    #[serde(rename = "ci.absent")]
+    CiAbsent { head_sha: String, minutes: u64 },
     #[serde(rename = "ci.settled")]
     CiSettled {
         colour: Colour,
@@ -108,6 +116,7 @@ impl Detail {
     /// The kind as printed, matching the `serde` renames above.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::CiAbsent { .. } => "ci.absent",
             Self::CiSettled { .. } => "ci.settled",
             Self::CommentCreated { .. } => "comment.created",
             Self::CommentEdited { .. } => "comment.edited",
@@ -145,11 +154,13 @@ impl Ci {
     }
 }
 
-/// A first poll as baseline: its colour, and an open target's mergeability, count as reported.
-impl From<Poll> for Snapshot {
-    fn from(poll: Poll) -> Self {
+impl Snapshot {
+    /// A first poll, made at `now`, as baseline: its colour, and an open target's mergeability,
+    /// count as reported.
+    pub fn first(poll: Poll, now: SystemTime) -> Self {
         Self {
             reported: Reported {
+                absence: absence(&poll, None, now).0,
                 colour: poll.ci.as_ref().and_then(Ci::colour),
                 merge: poll.merge.filter(|_| poll.state == TargetState::Open),
             },
@@ -158,10 +169,118 @@ impl From<Poll> for Snapshot {
     }
 }
 
-/// The events between `baseline` and `poll`, in report order, and the snapshot that follows.
-pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
+/// The events between `baseline` and `poll`, made at `now`, in report order, and the snapshot
+/// that follows.
+pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Snapshot) {
     let reported = &baseline.reported;
     let baseline = &baseline.poll;
+    let mut events = comment_events(baseline, &poll);
+    for review in &poll.reviews {
+        let seen = baseline.reviews.iter().find(|seen| seen.id == review.id);
+        events.extend(review_change(seen, review));
+    }
+    for seen in &baseline.reviews {
+        if seen.lapses && poll.reviews.iter().all(|review| review.id != seen.id) {
+            events.push(review_lapsed(seen));
+        }
+    }
+    for thread in &poll.threads {
+        let was_resolved = baseline
+            .threads
+            .iter()
+            .find(|seen| seen.id == thread.id)
+            .is_some_and(|seen| seen.resolved);
+        if thread.resolved != was_resolved {
+            events.push(resolution(thread));
+        }
+    }
+    // A new head starts uncoloured and unwatched, so returning to an earlier one settles it again.
+    let (previous, absent) = match (&baseline.head, &poll.head) {
+        (Some(old_sha), Some(new_sha)) if old_sha != new_sha => {
+            events.push(head_pushed(old_sha, new_sha, &poll));
+            (None, None)
+        }
+        _ => (reported.colour, reported.absence),
+    };
+    let (absence, absent) = absence(&poll, absent, now);
+    events.extend(absent);
+    // Unsettled CI keeps no colour, so settling again after a re-run is reported again.
+    let colour = poll.ci.as_ref().and_then(Ci::colour);
+    if let Some(ci) = &poll.ci
+        && let Some(head) = &poll.head
+        && let Some(colour) = colour
+        && previous != Some(colour)
+    {
+        events.push(ci_settled(&poll, head, ci, colour));
+    }
+    if poll.state != baseline.state {
+        events.push(state_changed(&poll));
+    }
+    // Only an open target's mergeability is news, so a merge reports nothing but itself.
+    let merge = match poll.merge {
+        Some(merge) if poll.state == TargetState::Open => Some(merge),
+        _ => reported.merge,
+    };
+    // Mergeability first known after computing is already on the target, so it reports nothing.
+    if let Some(changed) = merge
+        && reported.merge.is_some()
+        && merge != reported.merge
+    {
+        events.extend(merge_changed(&poll, changed));
+    }
+    events.sort_by(|a, b| {
+        (a.at.is_none(), &a.at, &a.detail).cmp(&(b.at.is_none(), &b.at, &b.detail))
+    });
+    (
+        events,
+        Snapshot {
+            poll,
+            reported: Reported {
+                absence,
+                colour,
+                merge,
+            },
+        },
+    )
+}
+
+/// A head's absence clock starts when babysit first sees it with no check, and stops once one
+/// reports; `ci.absent` reports it once it has run long enough.
+fn absence(
+    poll: &Poll,
+    absent: Option<Absence>,
+    now: SystemTime,
+) -> (Option<Absence>, Option<Event>) {
+    let Some(head) = &poll.head else {
+        return (None, None);
+    };
+    if poll.ci.is_some() {
+        return (None, None);
+    }
+    let since = match absent {
+        None => return (Some(Absence::Since(seconds(now))), None),
+        Some(Absence::Reported) => return (absent, None),
+        Some(Absence::Since(since)) => since,
+    };
+    let watched = Duration::from_secs(seconds(now).saturating_sub(since));
+    if watched < ABSENT_AFTER {
+        return (absent, None);
+    }
+    let detail = Detail::CiAbsent {
+        head_sha: head.clone(),
+        minutes: watched.as_secs() / SECONDS_PER_MINUTE,
+    };
+    (Some(Absence::Reported), Some(on_target(poll, detail)))
+}
+
+fn seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// The comments `poll` created or edited since `baseline`, in or outside threads.
+fn comment_events(baseline: &Poll, poll: &Poll) -> Vec<Event> {
     let mut events = Vec::new();
     let threaded = poll.threads.iter().flat_map(|thread| {
         thread
@@ -200,67 +319,7 @@ pub fn diff(baseline: &Snapshot, poll: Poll) -> (Vec<Event>, Snapshot) {
             (Some(_), _) => {}
         }
     }
-    for review in &poll.reviews {
-        let seen = baseline.reviews.iter().find(|seen| seen.id == review.id);
-        events.extend(review_change(seen, review));
-    }
-    for seen in &baseline.reviews {
-        if seen.lapses && poll.reviews.iter().all(|review| review.id != seen.id) {
-            events.push(review_lapsed(seen));
-        }
-    }
-    for thread in &poll.threads {
-        let was_resolved = baseline
-            .threads
-            .iter()
-            .find(|seen| seen.id == thread.id)
-            .is_some_and(|seen| seen.resolved);
-        if thread.resolved != was_resolved {
-            events.push(resolution(thread));
-        }
-    }
-    // A new head starts uncoloured, so returning to an earlier one settles it again.
-    let previous = match (&baseline.head, &poll.head) {
-        (Some(old_sha), Some(new_sha)) if old_sha != new_sha => {
-            events.push(head_pushed(old_sha, new_sha, &poll));
-            None
-        }
-        _ => reported.colour,
-    };
-    // Unsettled CI keeps no colour, so settling again after a re-run is reported again.
-    let colour = poll.ci.as_ref().and_then(Ci::colour);
-    if let Some(ci) = &poll.ci
-        && let Some(head) = &poll.head
-        && let Some(colour) = colour
-        && previous != Some(colour)
-    {
-        events.push(ci_settled(&poll, head, ci, colour));
-    }
-    if poll.state != baseline.state {
-        events.push(state_changed(&poll));
-    }
-    // Only an open target's mergeability is news, so a merge reports nothing but itself.
-    let merge = match poll.merge {
-        Some(merge) if poll.state == TargetState::Open => Some(merge),
-        _ => reported.merge,
-    };
-    // Mergeability first known after computing is already on the target, so it reports nothing.
-    if let Some(changed) = merge
-        && reported.merge.is_some()
-        && merge != reported.merge
-    {
-        events.extend(merge_changed(&poll, changed));
-    }
-    events.sort_by(|a, b| {
-        (a.at.is_none(), &a.at, &a.detail).cmp(&(b.at.is_none(), &b.at, &b.detail))
-    });
-    (
-        events,
-        Snapshot {
-            poll,
-            reported: Reported { colour, merge },
-        },
-    )
+    events
 }
 
 fn head_pushed(old_sha: &str, new_sha: &str, poll: &Poll) -> Event {
@@ -476,13 +535,23 @@ fn label(event: &Event) -> String {
 /// restart would.
 #[cfg(test)]
 pub fn replay(first: Poll, rest: Vec<Poll>) -> Vec<(Vec<Event>, Snapshot)> {
+    let at_epoch = |poll| (UNIX_EPOCH, poll);
+    replay_at(at_epoch(first), rest.into_iter().map(at_epoch).collect())
+}
+
+/// `replay` with each poll made at its own time.
+#[cfg(test)]
+pub fn replay_at(
+    first: (SystemTime, Poll),
+    rest: Vec<(SystemTime, Poll)>,
+) -> Vec<(Vec<Event>, Snapshot)> {
     let reload = |snapshot: &Snapshot| {
         serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap()
     };
-    let mut snapshot = reload(&Snapshot::from(first));
+    let mut snapshot = reload(&Snapshot::first(first.1, first.0));
     rest.into_iter()
-        .map(|next| {
-            let (events, next) = diff(&snapshot, next);
+        .map(|(now, next)| {
+            let (events, next) = diff(&snapshot, next, now);
             snapshot = reload(&next);
             (events, snapshot.clone())
         })
@@ -562,8 +631,12 @@ mod tests {
         }
     }
 
+    fn after(baseline: Poll, next: Poll) -> (Vec<Event>, Snapshot) {
+        diff(&Snapshot::first(baseline, UNIX_EPOCH), next, UNIX_EPOCH)
+    }
+
     fn details(baseline: &Poll, next: Poll) -> Vec<Detail> {
-        diff(&baseline.clone().into(), next)
+        after(baseline.clone(), next)
             .0
             .into_iter()
             .map(|event| event.detail)
@@ -574,7 +647,7 @@ mod tests {
     fn a_new_comment_is_created() {
         let next = poll(&["1", "2"]);
 
-        let (events, snapshot) = diff(&poll(&["1"]).into(), next.clone());
+        let (events, snapshot) = after(poll(&["1"]), next.clone());
 
         assert_eq!(
             events,
@@ -595,7 +668,7 @@ mod tests {
 
     #[test]
     fn seen_and_vanished_comments_are_quiet() {
-        let (events, _) = diff(&poll(&["1", "2"]).into(), poll(&["2"]));
+        let (events, _) = after(poll(&["1", "2"]), poll(&["2"]));
 
         assert_eq!(events, []);
     }
@@ -612,7 +685,7 @@ mod tests {
         next.comments[0].edited_at = Some("2026-10-20T19:30:00Z".to_owned());
         next.comments[0].editor = Some(hubot.clone());
 
-        let (events, _) = diff(&poll(&["1"]).into(), next);
+        let (events, _) = after(poll(&["1"]), next);
 
         assert_eq!(
             events,
@@ -700,7 +773,7 @@ mod tests {
         ]);
         next.reviews = vec![review(ReviewState::ChangesRequested)];
 
-        let (events, _) = diff(&baseline.into(), next);
+        let (events, _) = after(baseline, next);
 
         assert_eq!(
             events,
@@ -765,7 +838,7 @@ mod tests {
             ..review(ReviewState::Approved)
         };
 
-        let (events, _) = diff(&baseline.into(), with_reviews(vec![dismissed]));
+        let (events, _) = after(baseline, with_reviews(vec![dismissed]));
 
         assert_eq!(
             events,
@@ -797,7 +870,7 @@ mod tests {
     fn a_lapsed_approval_withdraws_it_with_only_the_reviewer_known() {
         let baseline = with_reviews(vec![reviewer_standing(ReviewState::Approved, true)]);
 
-        let (events, _) = diff(&baseline.into(), poll(&[]));
+        let (events, _) = after(baseline, poll(&[]));
 
         assert_eq!(
             events,
@@ -832,7 +905,7 @@ mod tests {
             ..comment("1")
         }];
 
-        let (events, _) = diff(&poll(&[]).into(), next);
+        let (events, _) = after(poll(&[]), next);
 
         let printed: Vec<_> = events
             .iter()
@@ -887,10 +960,13 @@ mod tests {
 
     #[test]
     fn a_positionless_thread_survives_the_snapshot_file() {
-        let snapshot = Snapshot::from(with_threads(vec![Thread {
-            position: None,
-            ..thread(vec![comment("10")], false)
-        }]));
+        let snapshot = Snapshot::first(
+            with_threads(vec![Thread {
+                position: None,
+                ..thread(vec![comment("10")], false)
+            }]),
+            UNIX_EPOCH,
+        );
 
         let saved = serde_json::to_string(&snapshot).unwrap();
 
@@ -912,7 +988,7 @@ mod tests {
         let mut resolved = with_threads(vec![thread(vec![comment("10")], true)]);
         resolved.comments = vec![comment("1")];
 
-        let (events, _) = diff(&open.clone().into(), resolved.clone());
+        let (events, _) = after(open.clone(), resolved.clone());
         let unresolved = details(&resolved, open);
 
         assert_eq!(
@@ -989,7 +1065,7 @@ mod tests {
         let baseline = on(A, vec![check("test", true, Assessment::Pending), running()]);
         let failed = on(A, vec![check("test", true, Assessment::Failed), running()]);
 
-        let (events, snapshot) = diff(&baseline.into(), failed);
+        let (events, snapshot) = after(baseline, failed);
 
         assert_eq!(
             events,
@@ -1086,7 +1162,7 @@ mod tests {
             ..green()
         };
 
-        let (_, cleared) = diff(&green().into(), unknown.clone());
+        let (_, cleared) = after(green(), unknown.clone());
 
         assert_eq!(cleared.reported.colour, None);
         assert_eq!(
@@ -1129,7 +1205,7 @@ mod tests {
         };
         let next = on(A, vec![check("test", true, Assessment::Passed), optional]);
 
-        let (events, _) = diff(&on(A, Vec::new()).into(), next);
+        let (events, _) = after(on(A, Vec::new()), next);
 
         assert_eq!(
             serde_json::to_value(&events[0].detail).unwrap(),
@@ -1154,7 +1230,7 @@ mod tests {
             ],
         );
 
-        let (events, _) = diff(&on(A, Vec::new()).into(), next);
+        let (events, _) = after(on(A, Vec::new()), next);
 
         let [
             Event {
@@ -1181,7 +1257,7 @@ mod tests {
         let red = on(A, vec![check("test", true, Assessment::Failed)]);
         let running = on(B, vec![check("test", true, Assessment::Pending)]);
 
-        let (events, snapshot) = diff(&red.into(), running);
+        let (events, snapshot) = after(red, running);
 
         assert_eq!(
             events.iter().map(|event| &event.detail).collect::<Vec<_>>(),
@@ -1201,6 +1277,100 @@ mod tests {
 
         let settled_again = vec!["ci.settled Green", "head.pushed"];
         assert_eq!(steps, [settled_again.clone(), settled_again]);
+    }
+
+    fn unchecked(head: &str) -> Poll {
+        Poll {
+            ci: None,
+            ..on(head, Vec::new())
+        }
+    }
+
+    fn minutes(minutes: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(minutes * SECONDS_PER_MINUTE)
+    }
+
+    fn timed_steps(first: Poll, rest: Vec<(SystemTime, Poll)>) -> Vec<Vec<String>> {
+        replay_at((minutes(0), first), rest)
+            .into_iter()
+            .map(|(events, _)| events.iter().map(label).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_head_no_check_reports_on_is_absent_once_after_15_minutes() {
+        let replayed = replay_at(
+            (minutes(0), unchecked(A)),
+            vec![
+                (minutes(14), unchecked(A)),
+                (minutes(16), unchecked(A)),
+                (minutes(40), unchecked(A)),
+            ],
+        );
+
+        let events: Vec<_> = replayed.iter().map(|(events, _)| events).collect();
+        assert_eq!(events[0], &[]);
+        assert_eq!(
+            serde_json::to_value(events[1]).unwrap(),
+            json!([{
+                "kind": "ci.absent",
+                "head_sha": A,
+                "minutes": 16,
+                "url": poll(&[]).url,
+            }]),
+        );
+        assert_eq!(events[2], &[]);
+    }
+
+    #[test]
+    fn a_push_restarts_the_absence_clock() {
+        let steps = timed_steps(
+            unchecked(A),
+            vec![
+                (minutes(15), unchecked(A)),
+                (minutes(20), unchecked(B)),
+                (minutes(34), unchecked(B)),
+                (minutes(35), unchecked(B)),
+            ],
+        );
+
+        assert_eq!(
+            steps,
+            [
+                vec!["ci.absent"],
+                vec!["head.pushed"],
+                vec![],
+                vec!["ci.absent"]
+            ],
+        );
+    }
+
+    #[test]
+    fn a_check_reporting_after_absence_still_settles() {
+        let steps = timed_steps(
+            unchecked(A),
+            vec![
+                (minutes(15), unchecked(A)),
+                (
+                    minutes(16),
+                    on(A, vec![check("test", true, Assessment::Passed)]),
+                ),
+            ],
+        );
+
+        assert_eq!(steps, [vec!["ci.absent"], vec!["ci.settled Green"]]);
+    }
+
+    #[test]
+    fn a_head_checked_within_15_minutes_is_never_absent() {
+        let running = || on(A, vec![check("test", true, Assessment::Pending)]);
+
+        let steps = timed_steps(
+            unchecked(A),
+            vec![(minutes(5), running()), (minutes(30), running())],
+        );
+
+        assert_eq!(steps, [vec![], vec![]] as [Vec<String>; 2]);
     }
 
     fn mergeability(merge: Option<Merge>) -> Poll {
@@ -1266,7 +1436,7 @@ mod tests {
         let baseline = mergeability(Some(Merge::Clean));
         let merged = standing(TargetState::Merged, Some(Merge::Conflicted));
 
-        let (events, snapshot) = diff(&baseline.into(), merged);
+        let (events, snapshot) = after(baseline, merged);
 
         assert_eq!(
             events,

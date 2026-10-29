@@ -92,11 +92,11 @@ Starting sets:
 
 ```sh
 # A PR or MR until it lands
---on 'ci.settled' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
+--on 'ci.*' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
   --on 'thread.*' --ignore 'comment.* actor=@me' --ignore 'thread.* actor=@me'
 
 # Only until CI settles, to carry on with work that needs it green
---on 'ci.settled' --on 'state.*'
+--on 'ci.*' --on 'state.*'
 
 # A reply on an issue
 --on 'comment.* actor=@human' --on 'state.*' --ignore 'comment.* actor=@me'
@@ -107,7 +107,7 @@ Starting sets:
 
 What bites:
 
-- **A missing field never matches.** `ci.settled`, `head.pushed`, `merge.*`, and `thread.unresolved`
+- **A missing field never matches.** `ci.*`, `head.pushed`, `merge.*`, and `thread.unresolved`
   carry no actor, so `--ignore 'actor=@me'` never drops them, and `actor=@human` never matches them. An account whose
   bot flag the forge doesn't report matches neither `@bot` nor `@human`.
 - **`@me` is whoever `gh` or `glab` is signed in as.** When you post through the user's CLI, that is
@@ -119,7 +119,8 @@ What bites:
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
-  until every required check has reported. `ci.settled` is reported when the colour changes, so a second
+  until every required check has reported. So wait on `ci.*`, not only `ci.settled`: `ci.absent`
+  fires once per head after 15 minutes of watching with no check reported. `ci.settled` is reported when the colour changes, so a second
   check failing while CI is red wakes nothing.
 - **Nothing reports** a conflict clearing, or a job that isn't a deciding check finishing while
   other jobs decide. A GitLab `when: manual` job outside `rules:` is one: it defaults to
@@ -160,6 +161,9 @@ resolve from the current directory's repo. Elsewhere, take the host from the tar
   A GitHub `comment.created` stands outside any thread: answer it with `gh pr comment <n>` or
   `gh issue comment <n>`. A Slack event's `reply_to` is the parent's `ts`: reply in the thread
   through `chat.postMessage` with it as `thread_ts`.
+- **`ci.absent`** means no check has reported on `head_sha` in `minutes` of watching: the repo or
+  the changed paths may run no CI. Say so rather than waiting on CI; a check that reports later
+  still wakes `ci.settled`.
 - **`merge.conflicted`** means the head conflicts with its base. **`merge.behind`** means the forge
   wants the head updated before merging; ask before rebasing for it.
 - Each event's `url` links it on the web, for the line you report to the user.

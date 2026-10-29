@@ -170,6 +170,8 @@ impl Summary {
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use serde_json::json;
 
     use super::*;
@@ -189,7 +191,7 @@ mod tests {
             ..poll(&[])
         };
 
-        let summary = Summary::new(&target, &issue.into());
+        let summary = Summary::new(&target, &Snapshot::first(issue, UNIX_EPOCH));
 
         assert_eq!(
             serde_json::to_value(summary).unwrap(),

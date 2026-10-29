@@ -2386,7 +2386,7 @@ mod tests {
             include_str!("github/fixtures/poll_green_again.http"),
         ];
         (
-            Snapshot::from(first.clone()),
+            Snapshot::first(first.clone(), UNIX_EPOCH),
             diff::replay(first, rest.into_iter().map(poll_sandbox).collect()),
         )
     }
@@ -2450,8 +2450,8 @@ mod tests {
                 "timed-out",
                 Envelope {
                     targets: vec![
-                        Summary::new(&issue(), &issue_poll.into()),
-                        Summary::new(&sandbox, &ci_running.into()),
+                        Summary::new(&issue(), &Snapshot::first(issue_poll, UNIX_EPOCH)),
+                        Summary::new(&sandbox, &Snapshot::first(ci_running, UNIX_EPOCH)),
                     ],
                     ..Envelope::ended(Outcome::TimedOut)
                 },

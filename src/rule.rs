@@ -4,7 +4,8 @@ use crate::forge::Account;
 const COLOURS: [&str; 3] = ["amber", "green", "red"];
 
 /// Every event kind in v1 with the fields it carries, including kinds no backend reports yet.
-const KINDS: [Kind; 15] = [
+const KINDS: [Kind; 16] = [
+    ("ci.absent", &[]),
     ("ci.settled", &[Field::Colour]),
     ("comment.created", &[Field::Actor, Field::Body]),
     ("comment.edited", &[Field::Actor, Field::Body]),
@@ -426,6 +427,10 @@ mod tests {
         let thread_id = || "PRRT_1".to_owned();
         let reply_to = || "10".to_owned();
         for detail in [
+            Detail::CiAbsent {
+                head_sha: "abc123".to_owned(),
+                minutes: 15,
+            },
             settled(Colour::Red).detail,
             created().detail,
             Detail::CommentEdited {
