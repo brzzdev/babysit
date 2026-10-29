@@ -342,7 +342,7 @@ mod tests {
     use super::*;
     use crate::cli::Args;
     use crate::clock::SystemClock;
-    use crate::diff::{self, diff};
+    use crate::diff;
     use crate::envelope::{Envelope, Outcome, Summary};
     use crate::exec::{self, Output, Script};
     use crate::forge::{Snapshot, fatal_kind};
@@ -405,12 +405,7 @@ mod tests {
     }
 
     fn events(baseline: &str, next: Poll) -> Vec<diff::Event> {
-        diff(
-            &Snapshot::first(poll(baseline), UNIX_EPOCH),
-            next,
-            UNIX_EPOCH,
-        )
-        .0
+        diff::after(poll(baseline), next).0
     }
 
     fn printed(events: &[diff::Event]) -> Vec<Value> {
@@ -743,10 +738,7 @@ mod tests {
         let deleted = poll(include_str!("slack/fixtures/poll_deleted.http"));
         let replied = poll(include_str!("slack/fixtures/poll_replied.http"));
 
-        assert_eq!(
-            diff(&Snapshot::first(replied, UNIX_EPOCH), deleted, UNIX_EPOCH).0,
-            []
-        );
+        assert_eq!(diff::after(replied, deleted).0, []);
     }
 
     #[test]

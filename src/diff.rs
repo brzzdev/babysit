@@ -1,15 +1,16 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::time::UNIX_EPOCH;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
+use crate::clock::{SECONDS_PER_MINUTE, unix_seconds};
 use crate::forge::{
     Absence, Account, Assessment, Check, Ci, Colour, Comment, Merge, Poll, Position, Reported,
     Review, ReviewState, Snapshot, TargetState, Thread,
 };
 
-/// How long a head goes without a check before `ci.absent` reports it.
 const ABSENT_AFTER: Duration = Duration::from_mins(15);
-const SECONDS_PER_MINUTE: u64 = 60;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct Event {
@@ -160,7 +161,7 @@ impl Snapshot {
     pub fn first(poll: Poll, now: SystemTime) -> Self {
         Self {
             reported: Reported {
-                absence: absence(&poll, None, now).0,
+                absence: absence_after(&poll, None, now).0,
                 colour: poll.ci.as_ref().and_then(Ci::colour),
                 merge: poll.merge.filter(|_| poll.state == TargetState::Open),
             },
@@ -195,15 +196,15 @@ pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Sn
         }
     }
     // A new head starts uncoloured and unwatched, so returning to an earlier one settles it again.
-    let (previous, absent) = match (&baseline.head, &poll.head) {
+    let (previous, absence) = match (&baseline.head, &poll.head) {
         (Some(old_sha), Some(new_sha)) if old_sha != new_sha => {
             events.push(head_pushed(old_sha, new_sha, &poll));
             (None, None)
         }
         _ => (reported.colour, reported.absence),
     };
-    let (absence, absent) = absence(&poll, absent, now);
-    events.extend(absent);
+    let (absence, ci_absent) = absence_after(&poll, absence, now);
+    events.extend(ci_absent);
     // Unsettled CI keeps no colour, so settling again after a re-run is reported again.
     let colour = poll.ci.as_ref().and_then(Ci::colour);
     if let Some(ci) = &poll.ci
@@ -246,9 +247,9 @@ pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Sn
 
 /// A head's absence clock starts when babysit first sees it with no check, and stops once one
 /// reports; `ci.absent` reports it once it has run long enough.
-fn absence(
+fn absence_after(
     poll: &Poll,
-    absent: Option<Absence>,
+    before: Option<Absence>,
     now: SystemTime,
 ) -> (Option<Absence>, Option<Event>) {
     let Some(head) = &poll.head else {
@@ -257,26 +258,21 @@ fn absence(
     if poll.ci.is_some() {
         return (None, None);
     }
-    let since = match absent {
-        None => return (Some(Absence::Since(seconds(now))), None),
-        Some(Absence::Reported) => return (absent, None),
+    let now = unix_seconds(now);
+    let since = match before {
+        None => return (Some(Absence::Since(now)), None),
+        Some(Absence::Reported) => return (before, None),
         Some(Absence::Since(since)) => since,
     };
-    let watched = Duration::from_secs(seconds(now).saturating_sub(since));
-    if watched < ABSENT_AFTER {
-        return (absent, None);
+    let watched = now.saturating_sub(since);
+    if watched < ABSENT_AFTER.as_secs() {
+        return (before, None);
     }
     let detail = Detail::CiAbsent {
         head_sha: head.clone(),
-        minutes: watched.as_secs() / SECONDS_PER_MINUTE,
+        minutes: watched / SECONDS_PER_MINUTE,
     };
     (Some(Absence::Reported), Some(on_target(poll, detail)))
-}
-
-fn seconds(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// The comments `poll` created or edited since `baseline`, in or outside threads.
@@ -531,6 +527,12 @@ fn label(event: &Event) -> String {
     }
 }
 
+/// `diff` from `baseline` to `next`, both made at the epoch.
+#[cfg(test)]
+pub fn after(baseline: Poll, next: Poll) -> (Vec<Event>, Snapshot) {
+    diff(&Snapshot::first(baseline, UNIX_EPOCH), next, UNIX_EPOCH)
+}
+
 /// The events of each poll after `first` with the snapshot it leaves, reloading each snapshot as a
 /// restart would.
 #[cfg(test)]
@@ -561,7 +563,14 @@ pub fn replay_at(
 /// `replay`'s events as labels.
 #[cfg(test)]
 pub fn steps(first: Poll, rest: Vec<Poll>) -> Vec<Vec<String>> {
-    replay(first, rest)
+    let at_epoch = |poll| (UNIX_EPOCH, poll);
+    steps_at(at_epoch(first), rest.into_iter().map(at_epoch).collect())
+}
+
+/// `replay_at`'s events as labels.
+#[cfg(test)]
+pub fn steps_at(first: (SystemTime, Poll), rest: Vec<(SystemTime, Poll)>) -> Vec<Vec<String>> {
+    replay_at(first, rest)
         .into_iter()
         .map(|(events, _)| events.iter().map(label).collect())
         .collect()
@@ -629,10 +638,6 @@ mod tests {
             reviews,
             ..poll(&[])
         }
-    }
-
-    fn after(baseline: Poll, next: Poll) -> (Vec<Event>, Snapshot) {
-        diff(&Snapshot::first(baseline, UNIX_EPOCH), next, UNIX_EPOCH)
     }
 
     fn details(baseline: &Poll, next: Poll) -> Vec<Detail> {
@@ -1287,14 +1292,7 @@ mod tests {
     }
 
     fn minutes(minutes: u64) -> SystemTime {
-        UNIX_EPOCH + Duration::from_secs(minutes * SECONDS_PER_MINUTE)
-    }
-
-    fn timed_steps(first: Poll, rest: Vec<(SystemTime, Poll)>) -> Vec<Vec<String>> {
-        replay_at((minutes(0), first), rest)
-            .into_iter()
-            .map(|(events, _)| events.iter().map(label).collect())
-            .collect()
+        UNIX_EPOCH + Duration::from_mins(minutes)
     }
 
     #[test]
@@ -1324,8 +1322,8 @@ mod tests {
 
     #[test]
     fn a_push_restarts_the_absence_clock() {
-        let steps = timed_steps(
-            unchecked(A),
+        let steps = steps_at(
+            (minutes(0), unchecked(A)),
             vec![
                 (minutes(15), unchecked(A)),
                 (minutes(20), unchecked(B)),
@@ -1347,8 +1345,8 @@ mod tests {
 
     #[test]
     fn a_check_reporting_after_absence_still_settles() {
-        let steps = timed_steps(
-            unchecked(A),
+        let steps = steps_at(
+            (minutes(0), unchecked(A)),
             vec![
                 (minutes(15), unchecked(A)),
                 (
@@ -1365,12 +1363,12 @@ mod tests {
     fn a_head_checked_within_15_minutes_is_never_absent() {
         let running = || on(A, vec![check("test", true, Assessment::Pending)]);
 
-        let steps = timed_steps(
-            unchecked(A),
+        let steps = steps_at(
+            (minutes(0), unchecked(A)),
             vec![(minutes(5), running()), (minutes(30), running())],
         );
 
-        assert_eq!(steps, [vec![], vec![]] as [Vec<String>; 2]);
+        assert_eq!(steps, [Vec::<String>::new(), Vec::new()]);
     }
 
     fn mergeability(merge: Option<Merge>) -> Poll {

@@ -12,7 +12,7 @@ const DAYS_PER_YEAR: u64 = 365;
 const EPOCH_DAYS_SINCE_SHIFTED_ORIGIN: u64 = 719_468;
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_HOUR: u64 = 3_600;
-const SECONDS_PER_MINUTE: u64 = 60;
+pub const SECONDS_PER_MINUTE: u64 = 60;
 const SLEEP_SLICE: Duration = Duration::from_secs(1);
 const YEARS_PER_ERA: u64 = 400;
 
@@ -40,12 +40,15 @@ impl Clock for SystemClock {
     }
 }
 
+pub fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Formats `time` as RFC 3339 UTC to the second, using Howard Hinnant's `civil_from_days`.
 pub fn rfc3339(time: SystemTime) -> String {
-    let seconds = time
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let seconds = unix_seconds(time);
     let (days, second_of_day) = (seconds / SECONDS_PER_DAY, seconds % SECONDS_PER_DAY);
     let shifted = days + EPOCH_DAYS_SINCE_SHIFTED_ORIGIN;
     let era = shifted / DAYS_PER_ERA;
