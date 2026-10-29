@@ -139,7 +139,7 @@ present.
 
 | Kind                | Fields                                                                                           | `at` / `actor`             |
 | ------------------- | ------------------------------------------------------------------------------------------------ | -------------------------- |
-| `ci.absent`         | `head_sha`; `minutes`, how long babysit has watched the head with no check reported              | neither                    |
+| `ci.absent`         | `head_sha`; `minutes` since babysit first saw the head open with no check reported               | neither                    |
 | `ci.settled`        | `colour`; `head_sha`; `checks` and `warnings`, arrays of checks (below)                          | neither                    |
 | `comment.created`   | `comment_id`; `body`; `reply_to` (optional: GitLab's discussion id to reply under)               | both                       |
 | `comment.edited`    | `comment_id`; `body`, the new text; `thread_id` (optional, for a comment in a thread); `reply_to` (optional) | the edit, and its editor |
@@ -180,9 +180,10 @@ Until then CI is unsettled and reports nothing. **No deciding checks doesn't mea
 with no checks never settles, and one whose required checks haven't all reported never settles
 green.
 
-`ci.absent` reports such a head once it has been open 15 minutes, from when babysit first saw it,
-with no check reported: no GitHub check run or status, and no GitLab pipeline. It is reported once
-per head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
+`ci.absent` reports such a head 15 minutes after babysit first saw it open with no check reported:
+no GitHub check run or status, and no GitLab pipeline. On GitHub, a fork's pull request whose
+workflows wait on a maintainer's approval shows no check run either. It is reported once per
+head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
 reports the head again. A push starts the clock again for the new head, and so does reopening the
 target. A check reporting after `ci.absent` settles CI as usual, with `ci.settled`.
 

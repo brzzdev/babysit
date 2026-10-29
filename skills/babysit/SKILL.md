@@ -95,7 +95,7 @@ Starting sets:
 --on 'ci.*' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
   --on 'thread.*' --ignore 'comment.* actor=@me' --ignore 'thread.* actor=@me'
 
-# Only until CI settles, to carry on with work that needs it green
+# Only until CI settles or proves absent, to carry on with work that needs it green
 --on 'ci.*' --on 'state.*'
 
 # A reply on an issue
@@ -153,9 +153,9 @@ resolve from the current directory's repo. Elsewhere, take the host from the tar
   A GitLab `pipeline` check whose `conclusion` is `retargeted` means GitLab retargeted the MR and
   wants a new pipeline: `glab api -X POST 'projects/:fullpath/merge_requests/<iid>/pipelines'`.
 - **`ci.absent`** means no check has reported on `head_sha` in the `minutes` since babysit first
-  saw it: the repo, or the paths this head changes, may run no CI. Tell the user, and stop waiting
-  for green unless they expect CI; if you keep watching, a check that reports later still wakes
-  `ci.settled`.
+  saw it: the repo, or the paths this head changes, may run no CI, or on GitHub a fork's workflows
+  may wait on a maintainer's approval. Tell the user, and stop waiting for green unless they expect
+  CI; if you keep watching, a check that reports later still wakes `ci.settled`.
 - **Answer a thread** with its `reply_to`, which is the first comment's id on GitHub and the
   discussion id on GitLab:
   ```sh

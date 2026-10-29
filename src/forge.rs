@@ -201,7 +201,7 @@ impl Reported {
 #[serde(rename_all = "snake_case")]
 pub enum Absence {
     Reported,
-    /// When babysit first saw the head with no check, in seconds since the Unix epoch.
+    /// When the head's current clock started, in seconds since the Unix epoch.
     Since(u64),
 }
 
