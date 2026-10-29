@@ -2418,12 +2418,11 @@ mod tests {
             let events = std::mem::take(events)
                 .into_iter()
                 .filter(wakes)
-                .map(|seen| {
-                    envelope::Event::new(
-                        seen,
-                        SANDBOX.to_owned(),
-                        "2026-10-21T11:13:02Z".to_owned(),
-                    )
+                .map(|seen| envelope::Event {
+                    seen,
+                    target: SANDBOX.to_owned(),
+                    observed_at: "2026-10-21T11:13:02Z".to_owned(),
+                    truncated: false,
                 })
                 .collect();
             Envelope {

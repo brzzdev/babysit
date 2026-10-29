@@ -17,9 +17,9 @@ babysit --snapshot <PATH> --brief [--on RULE]... [--ignore RULE]... [--timeout D
 
 Pass `--brief`: bot reviews and summaries run to thousands of characters, mostly hidden HTML
 comments, and you read the envelope on every wake. It prints each `body` without HTML comments,
-its whitespace collapsed, cut to 200 characters ending in `…`, and marks a changed one
-`"truncated": true`. Rules still match the full body. Fetch the full text from the event's `url`
-when the cut part matters.
+its whitespace collapsed, cut to 200 characters ending in `…`, and sets `"truncated": true` on any
+event whose `body` it changed. `body^=` still matches the full body, so write a prefix against the
+forge's text. The full text stays at the event's `url`; read it when the cut part matters.
 
 A target is a web URL (`…/pull/<n>`, `…/issues/<n>`, `…/-/merge_requests/<n>`), a Slack thread's
 permalink (the parent's, or a reply's with its `?thread_ts=…&cid=…`), or inside a checkout `#<n>`

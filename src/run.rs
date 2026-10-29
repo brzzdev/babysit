@@ -360,13 +360,11 @@ impl<'a> Watch<'a> {
                 continue;
             }
             let observed_at = rfc3339(clock.now());
-            events.extend(seen.into_iter().map(|seen| {
-                let mut event =
-                    envelope::Event::new(seen, tracked.target.url.clone(), observed_at.clone());
-                if args.brief {
-                    event.shorten_body();
-                }
-                event
+            events.extend(seen.into_iter().map(|mut seen| envelope::Event {
+                truncated: args.brief && envelope::shorten_body(&mut seen.detail),
+                seen,
+                target: tracked.target.url.clone(),
+                observed_at: observed_at.clone(),
             }));
         }
         if events.is_empty() {
@@ -731,7 +729,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::envelope::Forge;
+    use crate::envelope::{BRIEF_BODY_CHARS, Forge};
     use crate::exec::{Output, Script};
     use crate::forge::{Account, Merge, Poll, TargetKind, TargetState, octocat, poll};
     use crate::reference::{self, Locus, Reference};
@@ -1289,7 +1287,7 @@ mod tests {
     fn brief_rules_match_the_full_body_and_print_it_cut() {
         let sandbox = Sandbox::new("brief");
         seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
-        let long = format!("{}tail", "a".repeat(200));
+        let long = format!("{}tail", "a".repeat(BRIEF_BODY_CHARS));
         let mut next = poll(&["1", "2", "3"]);
         next.comments[1].body = long.clone();
         let brief = Args {
@@ -1307,7 +1305,10 @@ mod tests {
         let [cut, short] = &envelope["events"].as_array().unwrap()[..] else {
             panic!("expected two events");
         };
-        assert_eq!(cut["body"], format!("{}…", "a".repeat(199)));
+        assert_eq!(
+            cut["body"],
+            format!("{}…", "a".repeat(BRIEF_BODY_CHARS - 1))
+        );
         assert_eq!(cut["truncated"], true);
         assert_eq!(short["body"], "comment 3");
         assert_eq!(short.get("truncated"), None);

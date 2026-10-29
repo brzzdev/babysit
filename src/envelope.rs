@@ -2,10 +2,10 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 
-use crate::diff;
+use crate::diff::{self, Detail};
 use crate::forge::{Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
 
-const BRIEF_BODY_CHARS: usize = 200;
+pub const BRIEF_BODY_CHARS: usize = 200;
 const COMMENT_CLOSE: &str = "-->";
 const COMMENT_OPEN: &str = "<!--";
 pub const EXIT_ERROR: u8 = 1;
@@ -130,28 +130,17 @@ impl Envelope {
     }
 }
 
-impl Event {
-    pub fn new(seen: diff::Event, target: String, observed_at: String) -> Self {
-        Self {
-            seen,
-            target,
-            observed_at,
-            truncated: false,
-        }
-    }
-
-    /// Shortens the body, if any, marking the event truncated when that changed it.
-    pub fn shorten_body(&mut self) {
-        let Some(body) = self.seen.detail.body_mut() else {
-            return;
-        };
-        let brief = brief(body);
-        self.truncated = brief != *body;
-        *body = brief;
-    }
+/// Whether shortening changed the body.
+pub fn shorten_body(detail: &mut Detail) -> bool {
+    let Some(body) = detail.body_mut() else {
+        return false;
+    };
+    let brief = brief(body);
+    let changed = brief != *body;
+    *body = brief;
+    changed
 }
 
-/// The body without HTML comments, its whitespace collapsed, cut to `BRIEF_BODY_CHARS`.
 fn brief(body: &str) -> String {
     let mut visible = String::new();
     let mut rest = body;
