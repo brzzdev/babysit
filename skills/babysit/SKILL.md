@@ -99,11 +99,11 @@ Starting sets:
 
 ```sh
 # A PR or MR until it lands
---on 'ci.settled' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
+--on 'ci.*' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
   --on 'thread.*' --ignore 'comment.* actor=@me' --ignore 'thread.* actor=@me'
 
-# Only until CI settles, to carry on with work that needs it green
---on 'ci.settled' --on 'state.*'
+# Only until CI settles or proves absent, to carry on with work that needs it green
+--on 'ci.*' --on 'state.*'
 
 # A reply on an issue
 --on 'comment.* actor=@human' --on 'state.*' --ignore 'comment.* actor=@me'
@@ -114,9 +114,10 @@ Starting sets:
 
 What bites:
 
-- **A missing field never matches.** `ci.settled`, `head.pushed`, `merge.*`, and `thread.unresolved`
+- **A missing field never matches.** `ci.*`, `head.pushed`, `merge.*`, and `thread.unresolved`
   carry no actor, so `--ignore 'actor=@me'` never drops them, and `actor=@human` never matches them. An account whose
-  bot flag the forge doesn't report matches neither `@bot` nor `@human`.
+  bot flag the forge doesn't report matches neither `@bot` nor `@human`. Only `ci.settled` carries
+  a `colour`, so `ci.* colour=red` never matches `ci.absent`.
 - **`@me` is whoever `gh` or `glab` is signed in as.** When you post through the user's CLI, that is
   the user too, so ignoring `@me` also hides their own comments, and on `state.*` it hides the merge
   or close they make. Scope it to `comment.*` and `thread.*`, and drop it when they review through
@@ -126,8 +127,9 @@ What bites:
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
-  until every required check has reported. `ci.settled` is reported when the colour changes, so a second
-  check failing while CI is red wakes nothing.
+  until every required check has reported, so wait on `ci.*`: its `ci.absent` covers a head no
+  check reports on. `ci.settled` is reported when the colour changes, so a second check failing
+  while CI is red wakes nothing.
 - **Nothing reports** a conflict clearing, or a job that isn't a deciding check finishing while
   other jobs decide. A GitLab `when: manual` job outside `rules:` is one: it defaults to
   `allow_failure: true`, while inside `rules:` it decides and holds CI amber.
@@ -157,6 +159,10 @@ resolve from the current directory's repo. Elsewhere, take the host from the tar
   --log-failed`, or `glab ci trace <job_id>`, adding `--repo <project URL>` outside the checkout.
   A GitLab `pipeline` check whose `conclusion` is `retargeted` means GitLab retargeted the MR and
   wants a new pipeline: `glab api -X POST 'projects/:fullpath/merge_requests/<iid>/pipelines'`.
+- **`ci.absent`** means no check has reported on `head_sha` in the `minutes` since babysit first
+  saw it: the repo, or the paths this head changes, may run no CI, or on GitHub a fork's workflows
+  may wait on a maintainer's approval. Tell the user, and stop waiting for green unless they expect
+  CI; if you keep watching, a check that reports later still wakes `ci.settled`.
 - **Answer a thread** with its `reply_to`, which is the first comment's id on GitHub and the
   discussion id on GitLab:
   ```sh

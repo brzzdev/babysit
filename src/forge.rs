@@ -182,6 +182,9 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reported {
+    /// The snapshot's head's absence clock, or that `ci.absent` reported the head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absence: Option<Absence>,
     /// The colour reported for the snapshot's head, kept only while its CI stays settled.
     pub colour: Option<Colour>,
     /// The last known mergeability, frozen while the target isn't open.
@@ -190,8 +193,16 @@ pub struct Reported {
 
 impl Reported {
     fn is_empty(&self) -> bool {
-        self.colour.is_none() && self.merge.is_none()
+        self.absence.is_none() && self.colour.is_none() && self.merge.is_none()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Absence {
+    Reported,
+    /// When the head's current clock started, in seconds since the Unix epoch.
+    Since(u64),
 }
 
 /// The current head's checks.
@@ -357,7 +368,10 @@ pub fn comment(id: &str) -> Comment {
 #[cfg(test)]
 pub fn poll(ids: &[&str]) -> Poll {
     Poll {
-        ci: None,
+        ci: Some(Ci {
+            checks: Vec::new(),
+            required_known: true,
+        }),
         comments: ids.iter().map(|id| comment(id)).collect(),
         head: Some("abc123".to_owned()),
         merge: None,

@@ -346,13 +346,13 @@ impl<'a> Watch<'a> {
             };
             tracked.evaluated = true;
             let Some(baseline) = tracked.polled.as_ref().or(tracked.stored.as_ref()) else {
-                let poll = Snapshot::from(poll);
+                let poll = Snapshot::first(poll, now);
                 let first = entry(&tracked.target, poll.clone());
                 tracked.polled = Some(poll);
                 file.save([first])?;
                 continue;
             };
-            let (mut seen, next) = diff(baseline, poll);
+            let (mut seen, next) = diff(baseline, poll, now);
             tracked.polled = Some(next);
             let me = viewer_on(viewers, host).and_then(|viewer| viewer.id.as_deref());
             seen.retain(|event| rule::wakes(&args.on, &args.ignore, event, me));
@@ -958,7 +958,7 @@ mod tests {
         file.save([Entry {
             forge_id: forge_id.to_owned(),
             url: url.to_owned(),
-            snapshot: poll(ids).into(),
+            snapshot: Snapshot::first(poll(ids), UNIX_EPOCH),
         }])
         .unwrap();
     }

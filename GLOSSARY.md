@@ -73,6 +73,12 @@ _Avoid_: Discussion, conversation
 
 ### CI
 
+**Absent CI**:
+An open target's head that no check has reported on in the 15 minutes since babysit first saw it
+open, reported as `ci.absent`. A push or a reopening restarts the clock, and a check reporting
+later still settles it.
+_Avoid_: No CI, missing checks
+
 **CI colour**:
 The verdict on CI for a target's latest commit: green (every deciding check passed), amber (no
 deciding check failed, but CI can't finish until someone acts), or red (a deciding check failed).

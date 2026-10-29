@@ -147,6 +147,7 @@ present.
 
 | Kind                | Fields                                                                                           | `at` / `actor`             |
 | ------------------- | ------------------------------------------------------------------------------------------------ | -------------------------- |
+| `ci.absent`         | `head_sha`; `minutes` since babysit first saw the head open with no check reported               | neither                    |
 | `ci.settled`        | `colour`; `head_sha`; `checks` and `warnings`, arrays of checks (below)                          | neither                    |
 | `comment.created`   | `comment_id`; `body`; `reply_to` (optional: GitLab's discussion id to reply under)               | both                       |
 | `comment.edited`    | `comment_id`; `body`, the new text; `thread_id` (optional, for a comment in a thread); `reply_to` (optional) | the edit, and its editor |
@@ -169,8 +170,8 @@ lowercase, except `retargeted`; `url` (nullable); and `job_id` (optional: a GitH
 GitLab job).
 
 Issues report only `comment.*` and `state.*` events, and a Slack thread only `comment.*`.
-`merge.*` events come only from an open target, and an event about the target as a whole
-(`ci.settled`, `head.pushed`, `merge.*`) has no `at` or `actor`. Within one target, events are
+`ci.absent` and `merge.*` events come only from an open target, and an event about the target as a
+whole (`ci.*`, `head.pushed`, `merge.*`) has no `at` or `actor`. Within one target, events are
 ordered by `at`, untimed ones last; targets follow the order they were given in.
 
 ### CI colour
@@ -186,6 +187,13 @@ ordered by `at`, untimed ones last; targets follow the order they were given in.
 Until then CI is unsettled and reports nothing. **No deciding checks doesn't mean green**: a head
 with no checks never settles, and one whose required checks haven't all reported never settles
 green.
+
+`ci.absent` reports such a head 15 minutes after babysit first saw it open with no check reported:
+no GitHub check run or status, and no GitLab pipeline. On GitHub, a fork's pull request whose
+workflows wait on a maintainer's approval shows no check run either. It is reported once per
+head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
+reports the head again. A push starts the clock again for the new head, and so does reopening the
+target. A check reporting after `ci.absent` settles CI as usual, with `ci.settled`.
 
 The **deciding checks** are, on GitHub, the base branch's required checks when it has any and every
 check when it has none; on GitLab, every job not allowed to fail, or the pipeline itself when no
