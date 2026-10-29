@@ -152,11 +152,11 @@ fn brief(body: &str) -> String {
             .map_or("", |end| &comment[end + COMMENT_CLOSE.len()..]);
     }
     visible.push_str(rest);
-    let words = visible.split_whitespace().collect::<Vec<_>>().join(" ");
-    if words.chars().count() <= BRIEF_BODY_CHARS {
-        return words;
+    let collapsed = visible.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= BRIEF_BODY_CHARS {
+        return collapsed;
     }
-    let mut cut: String = words.chars().take(BRIEF_BODY_CHARS - 1).collect();
+    let mut cut: String = collapsed.chars().take(BRIEF_BODY_CHARS - 1).collect();
     cut.push('…');
     cut
 }

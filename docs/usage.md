@@ -99,8 +99,8 @@ Where the forge doesn't say whether an account is a bot (its `bot` prints `null`
 neither `@bot` nor `@human`: `--on 'actor=@human'` won't wake on it, and `--ignore 'actor=@bot'`
 won't drop it.
 
-`body^=` matches the body as the forge returns it, exactly and case-sensitively, with no trimming
-and whatever `--brief` prints:
+`body^=` matches the body as the forge returns it, exactly and case-sensitively, with no trimming,
+whatever `--brief` prints:
 `comment.edited` matches its new text. A prefix can't be empty, and an empty body, such as GitLab's
 on every `review.submitted`, matches no prefix. It tells apart agents that post from one account
 by the prefix each starts its posts with:
