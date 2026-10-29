@@ -132,7 +132,7 @@ Every event prints as a JSON object: the fields of its kind, then the common one
 | `subject`     | The account it happened to; only on `review.withdrawn`, **absent** where unknown         |
 | `target`      | The target's URL                                                                         |
 | `observed_at` | When babysit saw it, RFC 3339                                                            |
-| `truncated`   | `true` when `--brief` changed the event's `body`; **absent** otherwise                   |
+| `truncated`   | `true` when `--brief` removed an HTML comment from the event's `body` or cut it; **absent** otherwise |
 
 An account is `{"bot": true | false | null, "login": "…"}`; `null` means the forge doesn't say.
 
