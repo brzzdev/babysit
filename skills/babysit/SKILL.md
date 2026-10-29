@@ -7,7 +7,7 @@ metadata:
 
 # Waiting with `babysit`
 
-Checked against babysit 0.3.0. Run `babysit --version` first; the caller's contract,
+Checked against babysit 0.4.0. Run `babysit --version` first; the caller's contract,
 [`docs/usage.md`](https://github.com/brzzdev/babysit/blob/main/docs/usage.md), is the authority
 when something here doesn't match.
 
