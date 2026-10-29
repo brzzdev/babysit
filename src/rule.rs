@@ -325,7 +325,9 @@ impl Term {
                     .iter()
                     .any(|selector| selector.matches(account, me))
             }),
-            Self::BodyPrefixes(prefixes) => body(&event.detail)
+            Self::BodyPrefixes(prefixes) => event
+                .detail
+                .body()
                 .is_some_and(|body| prefixes.iter().any(|prefix| body.starts_with(prefix))),
             Self::Words(field, words) => {
                 word(&event.detail, *field).is_some_and(|word| words.contains(&word.as_str()))
@@ -350,17 +352,6 @@ fn account(event: &Event, field: Field) -> Option<&Account> {
         Field::Actor => event.actor.as_ref(),
         Field::Subject => event.subject.as_ref(),
         Field::Body | Field::Colour | Field::State => None,
-    }
-}
-
-fn body(detail: &Detail) -> Option<&str> {
-    match detail {
-        Detail::CommentCreated { body, .. }
-        | Detail::CommentEdited { body, .. }
-        | Detail::ReviewSubmitted { body, .. }
-        | Detail::ThreadOpened { body, .. }
-        | Detail::ThreadReplied { body, .. } => Some(body),
-        _ => None,
     }
 }
 

@@ -360,10 +360,13 @@ impl<'a> Watch<'a> {
                 continue;
             }
             let observed_at = rfc3339(clock.now());
-            events.extend(seen.into_iter().map(|event| envelope::Event {
-                seen: event,
-                target: tracked.target.url.clone(),
-                observed_at: observed_at.clone(),
+            events.extend(seen.into_iter().map(|seen| {
+                let mut event =
+                    envelope::Event::new(seen, tracked.target.url.clone(), observed_at.clone());
+                if args.brief {
+                    event.shorten_body();
+                }
+                event
             }));
         }
         if events.is_empty() {
@@ -936,6 +939,7 @@ mod tests {
 
     fn args(targets: &[&str], snapshot: &Path, timeout: Option<u64>) -> Args {
         Args {
+            brief: false,
             ignore: Vec::new(),
             on: Vec::new(),
             targets: targets
@@ -1279,6 +1283,34 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(envelope["events"].as_array().unwrap().len(), 1);
         assert_eq!(envelope["events"][0]["comment_id"], "2");
+    }
+
+    #[test]
+    fn brief_rules_match_the_full_body_and_print_it_cut() {
+        let sandbox = Sandbox::new("brief");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let long = format!("{}tail", "a".repeat(200));
+        let mut next = poll(&["1", "2", "3"]);
+        next.comments[1].body = long.clone();
+        let brief = Args {
+            brief: true,
+            on: vec![
+                rule::parse(&format!("body^={long}")).unwrap(),
+                rule::parse("body^=comment").unwrap(),
+            ],
+            ..args(&[URL], &sandbox.snapshot(), Some(0))
+        };
+
+        let (code, envelope) = watch(&brief, vec![returns(URL, next)]);
+
+        assert_eq!(code, 0);
+        let [cut, short] = &envelope["events"].as_array().unwrap()[..] else {
+            panic!("expected two events");
+        };
+        assert_eq!(cut["body"], format!("{}…", "a".repeat(199)));
+        assert_eq!(cut["truncated"], true);
+        assert_eq!(short["body"], "comment 3");
+        assert_eq!(short.get("truncated"), None);
     }
 
     #[test]

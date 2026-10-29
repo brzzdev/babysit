@@ -7,7 +7,7 @@ last run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
 ## Invocation
 
 ```sh
-babysit [--on RULE]... [--ignore RULE]... --snapshot PATH [--interval DURATION] [--timeout DURATION] TARGET...
+babysit [--on RULE]... [--ignore RULE]... --snapshot PATH [--interval DURATION] [--timeout DURATION] [--brief] TARGET...
 ```
 
 | Flag                   | Default | Meaning                                                                                 |
@@ -17,6 +17,7 @@ babysit [--on RULE]... [--ignore RULE]... --snapshot PATH [--interval DURATION] 
 | `--snapshot <PATH>`    | required | The file that keeps what babysit has seen between runs                                 |
 | `--interval <DURATION>` | `30s`  | Time between polls of each target; must be longer than zero                             |
 | `--timeout <DURATION>` | none    | Wall-clock cap on the run; `0` polls each target once                                   |
+| `--brief`              | off     | Print each `body` shortened (see [Events](#events))                                     |
 | `-h`, `--help`         |         | Print help                                                                              |
 | `-V`, `--version`      |         | Print `babysit <version>`                                                               |
 
@@ -98,7 +99,8 @@ Where the forge doesn't say whether an account is a bot (its `bot` prints `null`
 neither `@bot` nor `@human`: `--on 'actor=@human'` won't wake on it, and `--ignore 'actor=@bot'`
 won't drop it.
 
-`body^=` matches the body as the forge returns it, exactly and case-sensitively, with no trimming:
+`body^=` matches the body as the forge returns it, exactly and case-sensitively, with no trimming
+and whatever `--brief` prints:
 `comment.edited` matches its new text. A prefix can't be empty, and an empty body, such as GitLab's
 on every `review.submitted`, matches no prefix. It tells apart agents that post from one account
 by the prefix each starts its posts with:
@@ -130,8 +132,14 @@ Every event prints as a JSON object: the fields of its kind, then the common one
 | `subject`     | The account it happened to; only on `review.withdrawn`, **absent** where unknown         |
 | `target`      | The target's URL                                                                         |
 | `observed_at` | When babysit saw it, RFC 3339                                                            |
+| `truncated`   | `true` when `--brief` changed the event's `body`; **absent** otherwise                   |
 
 An account is `{"bot": true | false | null, "login": "…"}`; `null` means the forge doesn't say.
+
+Under `--brief`, a `body` prints without its HTML comments, each run of whitespace as one space,
+trimmed, and cut at 200 characters, the last of them `…`. Characters are Unicode scalar values,
+so a cut never splits one. An unclosed `<!--` hides the rest of the body. The full text stays
+at the event's `url`.
 
 Presence: a field marked *optional* below is **absent** when it has no value. A field marked
 *nullable* is always present and prints `null` when it has no value. Everything else is always

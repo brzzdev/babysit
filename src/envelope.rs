@@ -5,6 +5,9 @@ use serde::Serialize;
 use crate::diff;
 use crate::forge::{Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
 
+const BRIEF_BODY_CHARS: usize = 200;
+const COMMENT_CLOSE: &str = "-->";
+const COMMENT_OPEN: &str = "<!--";
 pub const EXIT_ERROR: u8 = 1;
 const EXIT_TIMED_OUT: u8 = 3;
 const EXIT_WOKE: u8 = 0;
@@ -32,6 +35,8 @@ pub struct Event {
     pub seen: diff::Event,
     pub target: String,
     pub observed_at: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +130,48 @@ impl Envelope {
     }
 }
 
+impl Event {
+    pub fn new(seen: diff::Event, target: String, observed_at: String) -> Self {
+        Self {
+            seen,
+            target,
+            observed_at,
+            truncated: false,
+        }
+    }
+
+    /// Shortens the body, if any, marking the event truncated when that changed it.
+    pub fn shorten_body(&mut self) {
+        let Some(body) = self.seen.detail.body_mut() else {
+            return;
+        };
+        let brief = brief(body);
+        self.truncated = brief != *body;
+        *body = brief;
+    }
+}
+
+/// The body without HTML comments, its whitespace collapsed, cut to `BRIEF_BODY_CHARS`.
+fn brief(body: &str) -> String {
+    let mut visible = String::new();
+    let mut rest = body;
+    while let Some(start) = rest.find(COMMENT_OPEN) {
+        visible.push_str(&rest[..start]);
+        let comment = &rest[start + COMMENT_OPEN.len()..];
+        rest = comment
+            .find(COMMENT_CLOSE)
+            .map_or("", |end| &comment[end + COMMENT_CLOSE.len()..]);
+    }
+    visible.push_str(rest);
+    let words = visible.split_whitespace().collect::<Vec<_>>().join(" ");
+    if words.chars().count() <= BRIEF_BODY_CHARS {
+        return words;
+    }
+    let mut cut: String = words.chars().take(BRIEF_BODY_CHARS - 1).collect();
+    cut.push('…');
+    cut
+}
+
 impl Failure {
     /// The error that ends a run on this failure, or `None` when the deadline killed the call.
     pub fn into_error(self) -> Option<(Forge, ErrorKind, String)> {
@@ -174,6 +221,30 @@ mod tests {
 
     use super::*;
     use crate::forge::{Poll, poll};
+
+    #[test]
+    fn a_brief_body_drops_html_comments_and_collapses_whitespace() {
+        assert_eq!(
+            brief("  Fix\n\n<!-- hidden\n -->the  bug<!-- open"),
+            "Fix the bug"
+        );
+        assert_eq!(brief("<!-- only a comment -->"), "");
+        assert_eq!(brief("Short and plain"), "Short and plain");
+    }
+
+    #[test]
+    fn a_brief_body_cuts_characters_not_bytes() {
+        let long = "é".repeat(BRIEF_BODY_CHARS + 1);
+
+        let cut = brief(&long);
+
+        assert_eq!(cut.chars().count(), BRIEF_BODY_CHARS);
+        assert_eq!(cut, format!("{}…", "é".repeat(BRIEF_BODY_CHARS - 1)));
+        assert_eq!(
+            brief(&long[..2 * BRIEF_BODY_CHARS]),
+            long[..2 * BRIEF_BODY_CHARS]
+        );
+    }
 
     #[test]
     fn an_issue_summary_names_only_its_target_and_state() {
