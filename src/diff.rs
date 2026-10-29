@@ -245,8 +245,8 @@ pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Sn
     )
 }
 
-/// A head's absence clock starts when babysit first sees it with no check, and stops once one
-/// reports; `ci.absent` reports it once it has run long enough.
+/// A head's absence clock starts when babysit first sees it open with no check, and stops once one
+/// reports; `ci.absent` reports it once it has run long enough, and never again for that head.
 fn absence_after(
     poll: &Poll,
     before: Option<Absence>,
@@ -255,8 +255,11 @@ fn absence_after(
     let Some(head) = &poll.head else {
         return (None, None);
     };
+    if poll.state != TargetState::Open {
+        return (before, None);
+    }
     if poll.ci.is_some() {
-        return (None, None);
+        return (before.filter(|before| *before == Absence::Reported), None);
     }
     let now = unix_seconds(now);
     let since = match before {
@@ -1357,6 +1360,39 @@ mod tests {
         );
 
         assert_eq!(steps, [vec!["ci.absent"], vec!["ci.settled Green"]]);
+    }
+
+    #[test]
+    fn a_head_is_absent_once_even_when_its_only_check_disappears() {
+        let steps = steps_at(
+            (minutes(0), unchecked(A)),
+            vec![
+                (minutes(15), unchecked(A)),
+                (
+                    minutes(16),
+                    on(A, vec![check("test", true, Assessment::Pending)]),
+                ),
+                (minutes(17), unchecked(A)),
+                (minutes(40), unchecked(A)),
+            ],
+        );
+
+        assert_eq!(steps, [vec!["ci.absent"], vec![], vec![], vec![]]);
+    }
+
+    #[test]
+    fn a_target_that_is_not_open_is_never_absent() {
+        let merged = || Poll {
+            state: TargetState::Merged,
+            ..unchecked(A)
+        };
+
+        let steps = steps_at(
+            (minutes(0), merged()),
+            vec![(minutes(15), merged()), (minutes(40), merged())],
+        );
+
+        assert_eq!(steps, [Vec::<String>::new(), Vec::new()]);
     }
 
     #[test]

@@ -162,7 +162,7 @@ lowercase, except `retargeted`; `url` (nullable); and `job_id` (optional: a GitH
 GitLab job).
 
 Issues report only `comment.*` and `state.*` events, and a Slack thread only `comment.*`.
-`merge.*` events come only from an open target, and an event about the target as a whole
+`ci.absent` and `merge.*` events come only from an open target, and an event about the target as a whole
 (`ci.*`, `head.pushed`, `merge.*`) has no `at` or `actor`. Within one target, events are
 ordered by `at`, untimed ones last; targets follow the order they were given in.
 
@@ -181,8 +181,8 @@ with no checks never settles, and one whose required checks haven't all reported
 green.
 
 `ci.absent` reports such a head once it has gone 15 minutes, from when babysit first saw it,
-with no check reported: no GitHub check run or status, and no GitLab pipeline. It fires once per
-head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
+with no check reported: no GitHub check run or status, and no GitLab pipeline. It is reported once
+per head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
 reports the head again. A push starts the clock again for the new head. A check reporting after
 `ci.absent` settles CI as usual, with `ci.settled`.
 

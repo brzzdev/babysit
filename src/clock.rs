@@ -40,12 +40,6 @@ impl Clock for SystemClock {
     }
 }
 
-pub fn unix_seconds(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 /// Formats `time` as RFC 3339 UTC to the second, using Howard Hinnant's `civil_from_days`.
 pub fn rfc3339(time: SystemTime) -> String {
     let seconds = unix_seconds(time);
@@ -73,6 +67,12 @@ pub fn rfc3339(time: SystemTime) -> String {
         second_of_day % SECONDS_PER_HOUR / SECONDS_PER_MINUTE,
         second_of_day % SECONDS_PER_MINUTE,
     )
+}
+
+pub fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]
