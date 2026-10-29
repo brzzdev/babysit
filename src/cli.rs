@@ -35,7 +35,8 @@ pub struct Args {
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     pub timeout: Option<Duration>,
 
-    /// Print each body without HTML comments, its whitespace collapsed, cut to 200 characters
+    /// Print each body without HTML comments, with its whitespace collapsed, and cut to 200
+    /// characters
     #[arg(long)]
     pub brief: bool,
 }

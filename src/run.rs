@@ -360,11 +360,14 @@ impl<'a> Watch<'a> {
                 continue;
             }
             let observed_at = rfc3339(clock.now());
-            events.extend(seen.into_iter().map(|mut seen| envelope::Event {
-                truncated: args.brief && envelope::shorten_body(&mut seen.detail),
-                seen,
-                target: tracked.target.url.clone(),
-                observed_at: observed_at.clone(),
+            events.extend(seen.into_iter().map(|mut seen| {
+                let truncated = args.brief && seen.detail.body_mut().is_some_and(envelope::shorten);
+                envelope::Event {
+                    seen,
+                    target: tracked.target.url.clone(),
+                    observed_at: observed_at.clone(),
+                    truncated,
+                }
             }));
         }
         if events.is_empty() {

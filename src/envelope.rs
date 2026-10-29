@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 
-use crate::diff::{self, Detail};
+use crate::diff;
 use crate::forge::{Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
 
 pub const BRIEF_BODY_CHARS: usize = 200;
@@ -130,20 +130,10 @@ impl Envelope {
     }
 }
 
-/// Whether shortening hid any of the body's text.
-pub fn shorten_body(detail: &mut Detail) -> bool {
-    let Some(body) = detail.body_mut() else {
-        return false;
-    };
-    let (shortened, truncated) = brief(body);
-    *body = shortened;
-    truncated
-}
-
-/// The shortened body, and whether an HTML comment or the cut hid any of its text.
-fn brief(body: &str) -> (String, bool) {
+/// Shortens the body in place, answering whether an HTML comment or the cut hid any of its text.
+pub fn shorten(body: &mut String) -> bool {
     let mut visible = String::new();
-    let mut rest = body;
+    let mut rest = body.as_str();
     let mut hid_comment = false;
     while let Some(start) = rest.find(HTML_COMMENT_OPEN) {
         hid_comment = true;
@@ -154,13 +144,13 @@ fn brief(body: &str) -> (String, bool) {
             .map_or("", |end| &html_comment[end + HTML_COMMENT_CLOSE.len()..]);
     }
     visible.push_str(rest);
-    let collapsed = visible.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= BRIEF_BODY_CHARS {
-        return (collapsed, hid_comment);
+    *body = visible.split_whitespace().collect::<Vec<_>>().join(" ");
+    if body.chars().count() <= BRIEF_BODY_CHARS {
+        return hid_comment;
     }
-    let mut cut: String = collapsed.chars().take(BRIEF_BODY_CHARS - 1).collect();
-    cut.push('…');
-    (cut, true)
+    *body = body.chars().take(BRIEF_BODY_CHARS - 1).collect();
+    body.push('…');
+    true
 }
 
 impl Failure {
@@ -213,31 +203,39 @@ mod tests {
     use super::*;
     use crate::forge::{Poll, poll};
 
-    #[test]
-    fn a_brief_body_drops_html_comments_and_collapses_whitespace() {
-        let truncated = |body: &str| (body.to_owned(), true);
-        let whole = |body: &str| (body.to_owned(), false);
-
-        assert_eq!(
-            brief("  Fix\n\n<!-- hidden\n -->the  bug<!-- open"),
-            truncated("Fix the bug"),
-        );
-        assert_eq!(brief("<!-- only a comment -->"), truncated(""));
-        assert_eq!(brief("LGTM,\r\n  thanks\n"), whole("LGTM, thanks"));
-        assert_eq!(brief("Short and plain"), whole("Short and plain"));
+    fn shortened(body: &str) -> (String, bool) {
+        let mut body = body.to_owned();
+        let truncated = shorten(&mut body);
+        (body, truncated)
     }
 
     #[test]
-    fn a_brief_body_cuts_characters_not_bytes() {
+    fn a_shortened_body_drops_html_comments_and_collapses_whitespace() {
+        assert_eq!(
+            shortened("  Fix\n\n<!-- hidden\n -->the  bug<!-- open"),
+            ("Fix the bug".to_owned(), true),
+        );
+        assert_eq!(shortened("<!-- only a comment -->"), (String::new(), true));
+        assert_eq!(
+            shortened("LGTM,\r\n  thanks\n"),
+            ("LGTM, thanks".to_owned(), false),
+        );
+        assert_eq!(
+            shortened("Short and plain"),
+            ("Short and plain".to_owned(), false),
+        );
+    }
+
+    #[test]
+    fn a_shortened_body_is_cut_by_characters_not_bytes() {
         let long = "é".repeat(BRIEF_BODY_CHARS + 1);
-
-        let (cut, truncated) = brief(&long);
-
-        assert_eq!(cut.chars().count(), BRIEF_BODY_CHARS);
-        assert_eq!(cut, format!("{}…", "é".repeat(BRIEF_BODY_CHARS - 1)));
-        assert!(truncated);
         let at_limit = &long[..2 * BRIEF_BODY_CHARS];
-        assert_eq!(brief(at_limit), (at_limit.to_owned(), false));
+
+        assert_eq!(
+            shortened(&long),
+            (format!("{}…", "é".repeat(BRIEF_BODY_CHARS - 1)), true),
+        );
+        assert_eq!(shortened(at_limit), (at_limit.to_owned(), false));
     }
 
     #[test]
