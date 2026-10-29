@@ -2422,6 +2422,7 @@ mod tests {
                     seen,
                     target: SANDBOX.to_owned(),
                     observed_at: "2026-10-21T11:13:02Z".to_owned(),
+                    truncated: false,
                 })
                 .collect();
             Envelope {

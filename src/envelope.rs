@@ -5,9 +5,12 @@ use serde::Serialize;
 use crate::diff;
 use crate::forge::{Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
 
+pub const BRIEF_BODY_CHARS: usize = 200;
 pub const EXIT_ERROR: u8 = 1;
 const EXIT_TIMED_OUT: u8 = 3;
 const EXIT_WOKE: u8 = 0;
+const HTML_COMMENT_CLOSE: &str = "-->";
+const HTML_COMMENT_OPEN: &str = "<!--";
 
 /// What a run prints on stdout once it ends past validation.
 #[derive(Debug, Serialize)]
@@ -32,6 +35,8 @@ pub struct Event {
     pub seen: diff::Event,
     pub target: String,
     pub observed_at: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +130,29 @@ impl Envelope {
     }
 }
 
+/// Shortens the body in place, answering whether an HTML comment or the cut hid any of its text.
+pub fn shorten(body: &mut String) -> bool {
+    let mut visible = String::new();
+    let mut rest = body.as_str();
+    let mut hid_comment = false;
+    while let Some(start) = rest.find(HTML_COMMENT_OPEN) {
+        hid_comment = true;
+        visible.push_str(&rest[..start]);
+        let html_comment = &rest[start + HTML_COMMENT_OPEN.len()..];
+        rest = html_comment
+            .find(HTML_COMMENT_CLOSE)
+            .map_or("", |end| &html_comment[end + HTML_COMMENT_CLOSE.len()..]);
+    }
+    visible.push_str(rest);
+    *body = visible.split_whitespace().collect::<Vec<_>>().join(" ");
+    if body.chars().count() <= BRIEF_BODY_CHARS {
+        return hid_comment;
+    }
+    *body = body.chars().take(BRIEF_BODY_CHARS - 1).collect();
+    body.push('…');
+    true
+}
+
 impl Failure {
     /// The error that ends a run on this failure, or `None` when the deadline killed the call.
     pub fn into_error(self) -> Option<(Forge, ErrorKind, String)> {
@@ -174,6 +202,41 @@ mod tests {
 
     use super::*;
     use crate::forge::{Poll, poll};
+
+    fn shortened(body: &str) -> (String, bool) {
+        let mut body = body.to_owned();
+        let truncated = shorten(&mut body);
+        (body, truncated)
+    }
+
+    #[test]
+    fn a_shortened_body_drops_html_comments_and_collapses_whitespace() {
+        assert_eq!(
+            shortened("  Fix\n\n<!-- hidden\n -->the  bug<!-- open"),
+            ("Fix the bug".to_owned(), true),
+        );
+        assert_eq!(shortened("<!-- only a comment -->"), (String::new(), true));
+        assert_eq!(
+            shortened("LGTM,\r\n  thanks\n"),
+            ("LGTM, thanks".to_owned(), false),
+        );
+        assert_eq!(
+            shortened("Short and plain"),
+            ("Short and plain".to_owned(), false),
+        );
+    }
+
+    #[test]
+    fn a_shortened_body_is_cut_by_characters_not_bytes() {
+        let long = "é".repeat(BRIEF_BODY_CHARS + 1);
+        let at_limit = &long[..2 * BRIEF_BODY_CHARS];
+
+        assert_eq!(
+            shortened(&long),
+            (format!("{}…", "é".repeat(BRIEF_BODY_CHARS - 1)), true),
+        );
+        assert_eq!(shortened(at_limit), (at_limit.to_owned(), false));
+    }
 
     #[test]
     fn an_issue_summary_names_only_its_target_and_state() {

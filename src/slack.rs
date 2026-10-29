@@ -455,6 +455,7 @@ mod tests {
     /// `babysit --snapshot <snapshot> --timeout 0 <target>`, the thread answering `stdout`.
     fn run_once(snapshot: &Path, target: &str, stdout: &str) -> (u8, Value) {
         let args = Args {
+            brief: false,
             ignore: Vec::new(),
             on: Vec::new(),
             targets: vec![reference::parse_name(target).unwrap()],

@@ -34,6 +34,11 @@ pub struct Args {
     /// Wall-clock cap on the run; `0` polls once
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     pub timeout: Option<Duration>,
+
+    /// Print each body without HTML comments, with its whitespace collapsed, and cut to 200
+    /// characters
+    #[arg(long)]
+    pub brief: bool,
 }
 
 fn parse_duration(given: &str) -> Result<Duration, String> {

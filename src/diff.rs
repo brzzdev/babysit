@@ -105,6 +105,28 @@ pub struct CheckReport {
 }
 
 impl Detail {
+    pub fn body(&self) -> Option<&str> {
+        match self {
+            Self::CommentCreated { body, .. }
+            | Self::CommentEdited { body, .. }
+            | Self::ReviewSubmitted { body, .. }
+            | Self::ThreadOpened { body, .. }
+            | Self::ThreadReplied { body, .. } => Some(body),
+            _ => None,
+        }
+    }
+
+    pub fn body_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::CommentCreated { body, .. }
+            | Self::CommentEdited { body, .. }
+            | Self::ReviewSubmitted { body, .. }
+            | Self::ThreadOpened { body, .. }
+            | Self::ThreadReplied { body, .. } => Some(body),
+            _ => None,
+        }
+    }
+
     /// The kind as printed, matching the `serde` renames above.
     pub fn kind(&self) -> &'static str {
         match self {

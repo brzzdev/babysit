@@ -12,8 +12,15 @@ Checked against babysit 0.3.0. Run `babysit --version` first; the caller's contr
 when something here doesn't match.
 
 ```sh
-babysit --snapshot <PATH> [--on RULE]... [--ignore RULE]... [--timeout DURATION] TARGET...
+babysit --snapshot <PATH> --brief [--on RULE]... [--ignore RULE]... [--timeout DURATION] TARGET...
 ```
+
+Pass `--brief`: bot reviews and summaries run to thousands of characters, mostly hidden HTML
+comments, and you read the envelope on every wake. It prints each `body` without HTML comments,
+with its whitespace collapsed, and cut to 200 characters ending in `…`. An event whose `body` lost
+an HTML comment or was cut carries `"truncated": true`. `body^=` still matches the full body, so
+write a prefix against the forge's text. The full text stays at the event's `url`; read it when the
+cut part matters.
 
 A target is a web URL (`…/pull/<n>`, `…/issues/<n>`, `…/-/merge_requests/<n>`), a Slack thread's
 permalink (the parent's, or a reply's with its `?thread_ts=…&cid=…`), or inside a checkout `#<n>`
@@ -137,7 +144,7 @@ are progress for humans. Capture the envelope and the exit status apart, since a
 
 ```sh
 out="$(babysit …)"; exit_code=$?
-jq '.events[] | {kind, target, url, body, reply_to, path, line, colour, checks, warnings}' <<<"$out"
+jq '.events[] | {kind, target, url, body, truncated, reply_to, path, line, colour, checks, warnings}' <<<"$out"
 ```
 
 Run the forge commands below from the target's checkout: `{owner}`, `{repo}`, and `:fullpath`
