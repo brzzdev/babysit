@@ -1,6 +1,6 @@
 [package]
 name = "babysit"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 categories = ["command-line-utilities", "development-tools"]
 description = "Block until a pull request, merge request or issue thread does something an agent should act on"
