@@ -106,7 +106,7 @@ on every `review.submitted`, matches no prefix. It tells apart agents that post 
 by the prefix each starts its posts with:
 
 ```sh
---ignore "thread.* actor=@me body^=\"Paul's Claude:\""  # my own replies, not my other agent's
+--ignore "thread.* actor=@me body^=\"Paul’s Claude:\""  # my own replies, not my other agent's
 ```
 
 Examples:
