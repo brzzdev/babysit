@@ -123,7 +123,7 @@ What bites:
   or close they make. Scope it to `comment.*` and `thread.*`, and drop it when they review through
   the same account. Where another agent posts from that account too, ignoring `@me` hides its posts
   as well, so add the prefix your own posts start with:
-  `--ignore "thread.* actor=@me body^=\"Paul's Claude:\""`.
+  `--ignore "thread.* actor=@me body^=\"Paul’s Claude:\""`.
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
