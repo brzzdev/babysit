@@ -13,12 +13,18 @@ use crate::forge::{
 use crate::reference::{Locus, Reference};
 use crate::response;
 
-const AUTH_ERRORS: [&str; 7] = [
+const AUTH_ERRORS: [&str; 13] = [
+    "access_denied",
     "account_inactive",
+    "ekm_access_denied",
+    "enterprise_is_restricted",
     "invalid_auth",
     "missing_scope",
+    "no_permission",
     "not_allowed_token_type",
     "not_authed",
+    "org_login_required",
+    "team_access_not_granted",
     "token_expired",
     "token_revoked",
 ];
@@ -40,6 +46,8 @@ const CURL_FLAGS: [&str; 10] = [
     "--expand-header",
     "Authorization: Bearer {{BABYSIT_SLACK_TOKEN}}",
 ];
+/// The error for a call Slack can't accept, which a retry would only repeat.
+const ERROR_INVALID_ARGUMENTS: &str = "invalid_arguments";
 const ERROR_RATE_LIMITED: &str = "ratelimited";
 const HEADER_RETRY_AFTER: &str = "retry-after";
 const METHOD_AUTH_TEST: &str = "auth.test";
@@ -268,6 +276,9 @@ fn refused(error: &str, hints: Hints) -> Failure {
     if NOT_FOUND_ERRORS.contains(&error) {
         let message = format!("not found or not visible to {TOKEN_VARIABLE}'s user: {error}");
         return fatal(ErrorKind::TargetNotFound, &message);
+    }
+    if error == ERROR_INVALID_ARGUMENTS {
+        return fatal(ErrorKind::PollFailed, &format!("Slack answered {error}"));
     }
     transient(&format!("Slack answered {error}")).paced(hints)
 }
@@ -820,6 +831,28 @@ mod tests {
         assert_eq!(fatal_kind(&refused), ErrorKind::Auth);
         assert_eq!(fatal_kind(&missing), ErrorKind::TargetNotFound);
         assert_eq!(fatal_kind(&no_channel), ErrorKind::TargetNotFound);
+    }
+
+    #[test]
+    fn an_error_a_retry_cannot_clear_ends_the_poll() {
+        let refused = include_str!("slack/fixtures/poll_invalid_auth.http");
+        let expected = [
+            ("access_denied", ErrorKind::Auth),
+            ("ekm_access_denied", ErrorKind::Auth),
+            ("enterprise_is_restricted", ErrorKind::Auth),
+            ("invalid_arguments", ErrorKind::PollFailed),
+            ("no_permission", ErrorKind::Auth),
+            ("org_login_required", ErrorKind::Auth),
+            ("team_access_not_granted", ErrorKind::Auth),
+        ];
+
+        for (error, kind) in expected {
+            let stdout = refused.replace("invalid_auth", error);
+
+            let failure = poll_calls([replies("", &stdout)]).unwrap_err();
+
+            assert_eq!(fatal_kind(&failure), kind, "{error}");
+        }
     }
 
     #[test]
