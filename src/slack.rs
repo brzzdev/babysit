@@ -215,17 +215,18 @@ fn comment(target: &Target, channel: &str, parent: &str, message: Message) -> Co
         format!("{reply}?thread_ts={parent}&cid={channel}")
     };
     let bot = message.bot_id.is_some();
-    let actor = message
-        .user
-        .or(message.bot_id)
-        .map(|id| account(id, Some(bot)));
-    let edited = message.edited.unwrap_or_default();
+    let actor = message.user.or(message.bot_id).map(|id| account(id, bot));
     Comment {
-        actor,
+        actor: actor.clone(),
         at: time(&message.ts),
         body: message.text,
-        edited_at: edited.ts.as_deref().map(time),
-        editor: edited.user.map(|id| account(id, None)),
+        edited_at: message
+            .edited
+            .and_then(|edited| edited.ts)
+            .as_deref()
+            .map(time),
+        // Only the account that posted a Slack message can edit it.
+        editor: actor,
         id: message.ts,
         reply_to: Some(parent.to_owned()),
         review_id: None,
@@ -234,9 +235,9 @@ fn comment(target: &Target, channel: &str, parent: &str, message: Message) -> Co
 }
 
 /// A Slack user or integration, by an id that is also its login.
-fn account(id: String, bot: Option<bool>) -> Account {
+fn account(id: String, bot: bool) -> Account {
     Account {
-        bot,
+        bot: Some(bot),
         id: Some(id.clone()),
         login: id,
     }
@@ -326,10 +327,9 @@ struct Message {
     user: Option<String>,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct Edited {
     ts: Option<String>,
-    user: Option<String>,
 }
 
 #[cfg(test)]
@@ -606,7 +606,7 @@ mod tests {
                     "reply_to": "1792500000.000100",
                     "url": PERMALINK,
                     "at": "2026-10-20T12:45:00Z",
-                    "actor": { "bot": null, "login": "U0PAUL00001" },
+                    "actor": { "bot": false, "login": "U0PAUL00001" },
                 }),
                 json!({
                     "kind": "comment.edited",
@@ -616,7 +616,7 @@ mod tests {
                     "url": "https://brzz.slack.com/archives/C0A1B2C3D4E/p1792500060000200\
                             ?thread_ts=1792500000.000100&cid=C0A1B2C3D4E",
                     "at": "2026-10-20T12:45:20Z",
-                    "actor": { "bot": null, "login": "U0TEAMMATE1" },
+                    "actor": { "bot": false, "login": "U0TEAMMATE1" },
                 }),
             ],
         );
@@ -659,6 +659,51 @@ mod tests {
         );
         assert_eq!(wakes(&events, &["actor=@bot"], &[]), ["comment.created"]);
         assert_eq!(wakes(&events, &["actor=@human"], &[]), [""; 0]);
+    }
+
+    #[test]
+    fn an_integration_editing_its_message_is_ignored_as_bot() {
+        let bot = include_str!("slack/fixtures/poll_bot.http");
+        let updated = bot.replace("0.3.0 finished", "0.3.0 finished, all green");
+        assert_ne!(updated, bot);
+
+        let events = events(bot, poll(&updated));
+
+        assert_eq!(
+            events[0].actor,
+            Some(Account {
+                bot: Some(true),
+                id: Some("B0DEPLOY001".to_owned()),
+                login: "B0DEPLOY001".to_owned(),
+            }),
+        );
+        assert_eq!(wakes(&events, &[], &[]), ["comment.edited"]);
+        assert_eq!(wakes(&events, &[], &["comment.* actor=@bot"]), [""; 0]);
+    }
+
+    #[test]
+    fn a_human_edit_with_no_edited_block_wakes_on_human() {
+        let baseline = include_str!("slack/fixtures/poll.http");
+        let edited = baseline.replace(
+            r#""text":"Looking now""#,
+            r#""text":"Looking now, ten minutes""#,
+        );
+        assert_ne!(edited, baseline);
+
+        let events = events(baseline, poll(&edited));
+
+        assert_eq!(
+            events[0].actor,
+            Some(Account {
+                bot: Some(false),
+                id: Some("U0TEAMMATE1".to_owned()),
+                login: "U0TEAMMATE1".to_owned(),
+            }),
+        );
+        assert_eq!(
+            wakes(&events, &["comment.* actor=@human"], &[]),
+            ["comment.edited"]
+        );
     }
 
     #[test]
