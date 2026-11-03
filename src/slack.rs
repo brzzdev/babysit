@@ -221,11 +221,12 @@ fn comment(target: &Target, channel: &str, parent: &str, message: Message) -> Co
         .map(|id| account(id, Some(bot)));
     let edited = message.edited.unwrap_or_default();
     Comment {
+        // Only a message's author can edit it on Slack.
+        editor: actor.clone(),
         actor,
         at: time(&message.ts),
         body: message.text,
         edited_at: edited.ts.as_deref().map(time),
-        editor: edited.user.map(|id| account(id, None)),
         id: message.ts,
         reply_to: Some(parent.to_owned()),
         review_id: None,
@@ -329,7 +330,6 @@ struct Message {
 #[derive(Default, Deserialize)]
 struct Edited {
     ts: Option<String>,
-    user: Option<String>,
 }
 
 #[cfg(test)]
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn editing_the_parent_or_a_reply_is_a_comment_edited_by_its_editor() {
+    fn editing_the_parent_or_a_reply_is_a_comment_edited_by_its_author() {
         let edited = poll(include_str!("slack/fixtures/poll_edited.http"));
 
         let events = events(include_str!("slack/fixtures/poll.http"), edited);
@@ -606,7 +606,7 @@ mod tests {
                     "reply_to": "1792500000.000100",
                     "url": PERMALINK,
                     "at": "2026-10-20T12:45:00Z",
-                    "actor": { "bot": null, "login": "U0PAUL00001" },
+                    "actor": { "bot": false, "login": "U0PAUL00001" },
                 }),
                 json!({
                     "kind": "comment.edited",
@@ -616,7 +616,7 @@ mod tests {
                     "url": "https://brzz.slack.com/archives/C0A1B2C3D4E/p1792500060000200\
                             ?thread_ts=1792500000.000100&cid=C0A1B2C3D4E",
                     "at": "2026-10-20T12:45:20Z",
-                    "actor": { "bot": null, "login": "U0TEAMMATE1" },
+                    "actor": { "bot": false, "login": "U0TEAMMATE1" },
                 }),
             ],
         );
@@ -659,6 +659,46 @@ mod tests {
         );
         assert_eq!(wakes(&events, &["actor=@bot"], &[]), ["comment.created"]);
         assert_eq!(wakes(&events, &["actor=@human"], &[]), [""; 0]);
+    }
+
+    #[test]
+    fn an_integration_editing_its_message_wakes_on_bot() {
+        let bot = include_str!("slack/fixtures/poll_bot.http");
+        let updated = bot.replace("0.3.0 finished", "0.3.0 finished, all green");
+
+        let events = events(bot, poll(&updated));
+
+        assert_eq!(events[0].detail.kind(), "comment.edited");
+        assert_eq!(
+            events[0].actor.as_ref().and_then(|actor| actor.bot),
+            Some(true)
+        );
+        assert_eq!(wakes(&events, &[], &["comment.* actor=@bot"]), [""; 0]);
+    }
+
+    #[test]
+    fn a_human_edit_with_no_edited_block_wakes_on_human() {
+        let baseline = include_str!("slack/fixtures/poll.http");
+        let edited = baseline.replace(
+            r#""text":"Looking now""#,
+            r#""text":"Looking now, ten minutes""#,
+        );
+        assert_ne!(edited, baseline);
+
+        let events = events(baseline, poll(&edited));
+
+        assert_eq!(
+            events[0].actor,
+            Some(Account {
+                bot: Some(false),
+                id: Some("U0TEAMMATE1".to_owned()),
+                login: "U0TEAMMATE1".to_owned(),
+            }),
+        );
+        assert_eq!(
+            wakes(&events, &["comment.* actor=@human"], &[]),
+            ["comment.edited"]
+        );
     }
 
     #[test]

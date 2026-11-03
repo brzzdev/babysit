@@ -412,12 +412,12 @@ app's user token (`xoxp-`) with the `channels:history`, `groups:history`, `im:hi
 - **The parent and every reply are comments.** `comment_id` is the message's `ts`, `at` its time,
   `url` its permalink, and `body` its `text`. `reply_to` is the parent's `ts`, the `thread_ts`
   that `chat.postMessage` takes to reply in the thread.
-- **An edit to a message's text is `comment.edited`**, its `at` and `actor` the edit's time and
-  editor where Slack records them. A change to anything but the text, a reaction, and a deleted
-  message report nothing.
+- **An edit to a message's text is `comment.edited`**, its `at` the edit's time where Slack records
+  it, and its `actor` the message's author, since only the author can edit a Slack message. A change
+  to anything but the text, a reaction, and a deleted message report nothing.
 - **An account's `login` is the Slack user id** (`U…` or `W…`), or the `bot_id` of an integration
-  posting with no user. `bot` is `true` for a message carrying a `bot_id` and `false` otherwise; an
-  editor's `bot` is `null`.
+  posting with no user. `bot` is `true` for a message carrying a `bot_id` and `false` otherwise, for
+  an edit as for the message.
 - **Errors**: an unset `BABYSIT_SLACK_TOKEN`, and Slack's `not_authed`, `invalid_auth`,
   `token_revoked`, `token_expired`, `account_inactive`, `missing_scope`, and
   `not_allowed_token_type`, are `auth`; `channel_not_found` and `thread_not_found` are
