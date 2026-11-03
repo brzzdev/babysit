@@ -225,7 +225,7 @@ fn comment(target: &Target, channel: &str, parent: &str, message: Message) -> Co
             .and_then(|edited| edited.ts)
             .as_deref()
             .map(time),
-        // Only a message's author can edit it on Slack.
+        // Only the account that posted a Slack message can edit it.
         editor: actor,
         id: message.ts,
         reply_to: Some(parent.to_owned()),
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn editing_the_parent_or_a_reply_is_a_comment_edited_by_its_author() {
+    fn editing_the_parent_or_a_reply_is_a_comment_edited_by_its_editor() {
         let edited = poll(include_str!("slack/fixtures/poll_edited.http"));
 
         let events = events(include_str!("slack/fixtures/poll.http"), edited);
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn an_integration_editing_its_message_wakes_on_bot() {
+    fn an_integration_editing_its_message_is_ignored_as_bot() {
         let bot = include_str!("slack/fixtures/poll_bot.http");
         let updated = bot.replace("0.3.0 finished", "0.3.0 finished, all green");
         assert_ne!(updated, bot);

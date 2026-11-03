@@ -413,8 +413,8 @@ app's user token (`xoxp-`) with the `channels:history`, `groups:history`, `im:hi
   `url` its permalink, and `body` its `text`. `reply_to` is the parent's `ts`, the `thread_ts`
   that `chat.postMessage` takes to reply in the thread.
 - **An edit to a message's text is `comment.edited`**, its `at` the edit's time where Slack records
-  it, and its `actor` the message's author, since only the author can edit a Slack message. A change
-  to anything but the text, a reaction, and a deleted message report nothing.
+  it, and its `actor` the account that posted the message, since only that account can edit it. A
+  change to anything but the text, a reaction, and a deleted message report nothing.
 - **An account's `login` is the Slack user id** (`U…` or `W…`), or the `bot_id` of an integration
   posting with no user. `bot` is `true` for a message carrying a `bot_id` and `false` otherwise, for
   an edit as for the message.
