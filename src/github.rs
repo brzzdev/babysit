@@ -257,7 +257,7 @@ impl<E: Exec> GitHub<'_, E> {
                 rollup_state.as_deref(),
                 &checks.nodes,
                 &suites.nodes,
-                required_set(classic, rules.nodes).as_deref(),
+                required_checks(classic, rules.nodes).as_deref(),
             ),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
             head: Some(head),
@@ -710,13 +710,13 @@ struct DatabaseId {
 struct SuiteNode {
     check_runs: TotalCount,
     conclusion: Option<String>,
-    workflow_run: Option<SuiteWorkflowRun>,
+    workflow_run: Option<SuiteRun>,
 }
 
 #[derive(Deserialize)]
-struct SuiteWorkflowRun {
+struct SuiteRun {
     url: String,
-    workflow: Workflow,
+    workflow: WorkflowName,
 }
 
 #[derive(Deserialize)]
@@ -726,7 +726,7 @@ struct TotalCount {
 }
 
 #[derive(Deserialize)]
-struct Workflow {
+struct WorkflowName {
     name: String,
 }
 
@@ -966,7 +966,7 @@ impl ContextNode {
 
 /// The base branch's required checks from classic protection and rulesets, or `None` where
 /// classic protection couldn't be read.
-fn required_set(
+fn required_checks(
     classic: Option<Vec<Requirement>>,
     rules: Vec<RulesetRule>,
 ) -> Option<Vec<Requirement>> {
@@ -980,7 +980,7 @@ fn required_set(
 
 impl SuiteNode {
     /// The workflow run awaiting a maintainer's approval, where this suite is a held workflow.
-    fn held(&self) -> Option<&SuiteWorkflowRun> {
+    fn held(&self) -> Option<&SuiteRun> {
         if self.conclusion.as_deref() != Some(ACTION_REQUIRED) || self.check_runs.total_count > 0 {
             return None;
         }
@@ -1070,7 +1070,7 @@ fn ci(
     let held_deciding = !any_required || !required_known;
     checks.extend(suites.iter().filter_map(SuiteNode::held).map(|run| Check {
         assessment: Assessment::Waiting,
-        conclusion: "action_required".to_owned(),
+        conclusion: ACTION_REQUIRED.to_ascii_lowercase(),
         deciding: held_deciding,
         job_id: None,
         name: run.workflow.name.clone(),
