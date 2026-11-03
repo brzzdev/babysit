@@ -201,13 +201,12 @@ job decides or the pipeline was skipped. A retargeted merge request's one decidi
 failed check that doesn't decide is a **warning**: `checks` lists the deciding checks that failed or
 wait, and `warnings` the warnings.
 
-A **held workflow** is a GitHub Actions workflow on a fork's or first-time contributor's pull
-request that waits on a maintainer's approval before running any job. It is a check that waits,
-named after the workflow, with `conclusion` `action_required`, the workflow run's page, where a
-maintainer approves it, as its `url`, and no `job_id`. It decides unless the base has required checks
-and every one is known to have reported, since a required check yet to report may sit behind the
-approval. Once
-approved, its jobs report as checks of their own.
+A **held workflow** is a GitHub Actions workflow on a pull request's head that waits on a
+maintainer's approval before running any job, as on a fork's pull request. It is a check that
+waits, named after the workflow, with `conclusion` `action_required`, no `job_id`, and as its `url`
+the workflow run's page, where a maintainer approves it. It decides unless the base has required
+checks and every one is known to have reported, since a required check yet to report may sit
+behind the approval. Once approved, its jobs report as checks of their own.
 
 GitLab CI comes from the merge request's head pipeline. While GitLab names none, as after a
 retarget or a deleted head pipeline, it comes from the newest merge request pipeline that ran the

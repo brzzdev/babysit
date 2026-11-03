@@ -710,20 +710,19 @@ struct DatabaseId {
 struct SuiteNode {
     check_runs: TotalCount,
     conclusion: Option<String>,
-    /// Present only for GitHub Actions.
     workflow_run: Option<SuiteWorkflowRun>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TotalCount {
-    total_count: u64,
 }
 
 #[derive(Deserialize)]
 struct SuiteWorkflowRun {
     url: String,
     workflow: Workflow,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TotalCount {
+    total_count: u64,
 }
 
 #[derive(Deserialize)]
@@ -1068,10 +1067,10 @@ fn ci(
     // protection doesn't show.
     let required_known = all_reported && (expected_seen || rollup_state != Some(EXPECTED));
     // A required check yet to report may sit behind the approval.
-    let held_deciding = !(any_required && required_known);
+    let held_deciding = !any_required || !required_known;
     checks.extend(suites.iter().filter_map(SuiteNode::held).map(|run| Check {
         assessment: Assessment::Waiting,
-        conclusion: ACTION_REQUIRED.to_ascii_lowercase(),
+        conclusion: "action_required".to_owned(),
         deciding: held_deciding,
         job_id: None,
         name: run.workflow.name.clone(),
@@ -2312,7 +2311,6 @@ mod tests {
         })
     }
 
-    /// The recorded poll's head with `rollup` and the check suites `suites`, on `base`.
     fn with_suites(base: Value, rollup: &Value, suites: &Value) -> String {
         let commit = json!({
             "checkSuites": {
