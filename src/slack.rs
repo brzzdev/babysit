@@ -13,7 +13,7 @@ use crate::forge::{
 use crate::reference::{Locus, Reference};
 use crate::response;
 
-const AUTH_ERRORS: [&str; 13] = [
+const AUTH_ERRORS: [&str; 12] = [
     "access_denied",
     "account_inactive",
     "ekm_access_denied",
@@ -23,7 +23,6 @@ const AUTH_ERRORS: [&str; 13] = [
     "no_permission",
     "not_allowed_token_type",
     "not_authed",
-    "org_login_required",
     "team_access_not_granted",
     "token_expired",
     "token_revoked",
@@ -818,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn an_error_a_retry_cannot_clear_ends_the_poll() {
+    fn an_error_a_retry_cannot_clear_ends_the_run() {
         let refused = include_str!("slack/fixtures/poll_invalid_auth.http");
         let expected = [
             ("access_denied", ErrorKind::Auth),
@@ -828,7 +827,6 @@ mod tests {
             ("invalid_arguments", ErrorKind::PollFailed),
             ("invalid_auth", ErrorKind::Auth),
             ("no_permission", ErrorKind::Auth),
-            ("org_login_required", ErrorKind::Auth),
             ("team_access_not_granted", ErrorKind::Auth),
             ("thread_not_found", ErrorKind::TargetNotFound),
         ];

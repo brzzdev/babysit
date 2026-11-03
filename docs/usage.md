@@ -382,7 +382,7 @@ humans.
 | `auth`             | The CLI isn't signed in or was refused (401, 403), both `gh` and `glab` hold a token for a checkout remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | `gh`, `glab`, `git`, or `curl` isn't installed or not on `PATH`, or `curl` is older than 8.3 |
 | `lock_held`        | Another babysit run holds the `--snapshot` file                                              |
-| `poll_failed`      | A call to the forge failed 10 times in a row for one target, or once under `--timeout 0` or on Slack's `invalid_arguments` |
+| `poll_failed`      | A call to the forge failed 10 times in a row for one target, once under `--timeout 0`, or once on Slack's `invalid_arguments` |
 | `snapshot_io`      | The `--snapshot` file couldn't be read, locked, or written                                   |
 | `target_not_found` | The forge has no such target, it's gone or no longer visible, or it redirects to another host |
 
@@ -419,10 +419,10 @@ app's user token (`xoxp-`) with the `channels:history`, `groups:history`, `im:hi
 - **An account's `login` is the Slack user id** (`U…` or `W…`), or the `bot_id` of an integration
   posting with no user. `bot` is `true` for a message carrying a `bot_id` and `false` otherwise, for
   an edit as for the message.
-- **Errors**: an unset `BABYSIT_SLACK_TOKEN`, and Slack's `not_authed`, `invalid_auth`,
-  `token_revoked`, `token_expired`, `account_inactive`, `missing_scope`,
-  `not_allowed_token_type`, `access_denied`, `no_permission`, `team_access_not_granted`,
-  `org_login_required`, `ekm_access_denied`, and `enterprise_is_restricted`, are `auth`;
+- **Errors**: an unset `BABYSIT_SLACK_TOKEN`, and Slack's `access_denied`, `account_inactive`,
+  `ekm_access_denied`, `enterprise_is_restricted`, `invalid_auth`, `missing_scope`,
+  `no_permission`, `not_allowed_token_type`, `not_authed`, `team_access_not_granted`,
+  `token_expired`, and `token_revoked`, are `auth`;
   `channel_not_found` and `thread_not_found` are `target_not_found`; `invalid_arguments` is
   `poll_failed` at once. HTTP 429 or `ratelimited` is a rate limit, waited out by its
   `retry-after`. Anything else, such as `invalid_cursor`, fails the poll for a retry.
