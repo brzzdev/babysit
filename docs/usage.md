@@ -422,10 +422,10 @@ app's user token (`xoxp-`) with the `channels:history`, `groups:history`, `im:hi
 - **Errors**: an unset `BABYSIT_SLACK_TOKEN`, and Slack's `access_denied`, `account_inactive`,
   `ekm_access_denied`, `enterprise_is_restricted`, `invalid_auth`, `missing_scope`,
   `no_permission`, `not_allowed_token_type`, `not_authed`, `team_access_not_granted`,
-  `token_expired`, and `token_revoked`, are `auth`;
-  `channel_not_found` and `thread_not_found` are `target_not_found`; `invalid_arguments` is
-  `poll_failed` at once. HTTP 429 or `ratelimited` is a rate limit, waited out by its
-  `retry-after`. Anything else, such as `invalid_cursor`, fails the poll for a retry.
+  `token_expired`, and `token_revoked`, are `auth`; `channel_not_found` and `thread_not_found`
+  are `target_not_found`; `invalid_arguments` is `poll_failed` at once. HTTP 429 or
+  `ratelimited` is a rate limit, waited out by its `retry-after`. Anything else, such as
+  `invalid_cursor`, fails the poll for a retry.
 
 ## The snapshot file
 
