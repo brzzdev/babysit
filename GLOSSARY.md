@@ -88,6 +88,11 @@ _Avoid_: CI status, CI result
 A check that must pass for a target's CI to count as passed.
 _Avoid_: Blocking check, gate
 
+**Held workflow**:
+A GitHub Actions workflow on a pull request's head that waits on a maintainer's approval before
+running any job. It counts as a check that waits.
+_Avoid_: Pending approval, blocked workflow, waiting suite
+
 **Warning**:
 A failed check that isn't a deciding check.
 _Avoid_: Soft failure, allowed failure

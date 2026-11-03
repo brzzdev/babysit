@@ -10,6 +10,8 @@ query (
   $reviewsAfter: String
   $rules: Boolean = true
   $rulesAfter: String
+  $suites: Boolean = true
+  $suitesAfter: String
   $threads: Boolean = true
   $threadsAfter: String
 ) {
@@ -72,6 +74,24 @@ query (
       commits(last: 1) {
         nodes {
           commit {
+            checkSuites(first: 100, after: $suitesAfter) @include(if: $suites) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                checkRuns {
+                  totalCount
+                }
+                conclusion
+                workflowRun {
+                  url
+                  workflow {
+                    name
+                  }
+                }
+              }
+            }
             oid
             statusCheckRollup {
               state

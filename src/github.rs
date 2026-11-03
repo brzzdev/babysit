@@ -13,6 +13,7 @@ use crate::graphql::{Connection, Nodes, Paged, same_head};
 use crate::reference::{Locus, Reference};
 use crate::response::{self, Response};
 
+const ACTION_REQUIRED: &str = "ACTION_REQUIRED";
 const BOT_SUFFIX: &str = "[bot]";
 const CLI: &str = "gh";
 const EXIT_AUTH: i32 = 4;
@@ -175,6 +176,7 @@ impl<E: Exec> GitHub<'_, E> {
         let mut dismissals = Paged::new(Forge::GitHub, "dismissals");
         let mut reviews = Paged::new(Forge::GitHub, "reviews");
         let mut rules = Paged::new(Forge::GitHub, "rules");
+        let mut suites = Paged::new(Forge::GitHub, "suites");
         let mut threads = Paged::new(Forge::GitHub, "threads");
         let mut classic = None;
         let mut first: Option<(String, Standing)> = None;
@@ -184,6 +186,7 @@ impl<E: Exec> GitHub<'_, E> {
             && dismissals.done()
             && reviews.done()
             && rules.done()
+            && suites.done()
             && threads.done())
         {
             let mut variables = vec![("-f", format!("id={}", target.forge_id))];
@@ -192,23 +195,29 @@ impl<E: Exec> GitHub<'_, E> {
             variables.extend(dismissals.variable());
             variables.extend(reviews.variable());
             variables.extend(rules.variable());
+            variables.extend(suites.variable());
             variables.extend(threads.variable());
             let page: PullRequestPage = self
                 .query(target, POLL_QUERY, &variables, deadline, hints)?
                 .ok_or_else(|| gone(target))?;
             // CI is judged on the head only, so a latest listed commit that isn't it has none.
-            let rollup = page
+            let (rollup, head_suites) = page
                 .commits
                 .nodes
                 .into_iter()
                 .map(|node| node.commit)
                 .find(|commit| commit.oid == page.head_ref_oid)
-                .and_then(|commit| commit.status_check_rollup);
+                .map_or((None, None), |commit| {
+                    (commit.status_check_rollup, commit.check_suites)
+                });
             match &first {
                 None => {
                     // A head with no CI has no rollup, so there are no checks to page.
                     if rollup.is_none() {
                         checks.finish();
+                    }
+                    if head_suites.is_none() {
+                        suites.finish();
                     }
                     if page.base_ref.is_none() {
                         rules.finish();
@@ -224,6 +233,7 @@ impl<E: Exec> GitHub<'_, E> {
             dismissals.take(page.dismissals)?;
             reviews.take(page.reviews)?;
             rules.take(page.base_ref.and_then(|base| base.rules))?;
+            suites.take(head_suites)?;
             threads.take(page.review_threads)?;
         }
         let (head, standing) = first.expect("every poll fetches a first page");
@@ -243,17 +253,12 @@ impl<E: Exec> GitHub<'_, E> {
         let state = standing.lifecycle.state.into();
         let (state_changed_at, state_changed_by) = standing.change();
         Ok(Poll {
-            ci: rollup_state.map(|state| {
-                let rulesets = rules
-                    .nodes
-                    .into_iter()
-                    .filter_map(|rule| rule.parameters)
-                    .flat_map(|parameters| parameters.required_status_checks)
-                    .map(Requirement::from);
-                let required =
-                    classic.map(|classic| classic.into_iter().chain(rulesets).collect::<Vec<_>>());
-                ci(&state, &checks.nodes, required.as_deref())
-            }),
+            ci: ci(
+                rollup_state.as_deref(),
+                &checks.nodes,
+                &suites.nodes,
+                required_set(classic, rules.nodes).as_deref(),
+            ),
             comments: comments.nodes.into_iter().map(Comment::from).collect(),
             head: Some(head),
             merge,
@@ -651,6 +656,7 @@ struct CommitNode {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Commit {
+    check_suites: Option<Connection<SuiteNode>>,
     oid: String,
     status_check_rollup: Option<Rollup>,
 }
@@ -697,6 +703,32 @@ struct WorkflowRun {
 #[serde(rename_all = "camelCase")]
 struct DatabaseId {
     database_id: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuiteNode {
+    check_runs: TotalCount,
+    conclusion: Option<String>,
+    /// Present only for GitHub Actions.
+    workflow_run: Option<SuiteWorkflowRun>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TotalCount {
+    total_count: u64,
+}
+
+#[derive(Deserialize)]
+struct SuiteWorkflowRun {
+    url: String,
+    workflow: Workflow,
+}
+
+#[derive(Deserialize)]
+struct Workflow {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -933,9 +965,39 @@ impl ContextNode {
     }
 }
 
-/// The head's checks at their latest attempts, deciding on the required ones when any exist.
+/// The base branch's required checks from classic protection and rulesets, or `None` where
+/// classic protection couldn't be read.
+fn required_set(
+    classic: Option<Vec<Requirement>>,
+    rules: Vec<RulesetRule>,
+) -> Option<Vec<Requirement>> {
+    let rulesets = rules
+        .into_iter()
+        .filter_map(|rule| rule.parameters)
+        .flat_map(|parameters| parameters.required_status_checks)
+        .map(Requirement::from);
+    classic.map(|classic| classic.into_iter().chain(rulesets).collect())
+}
+
+impl SuiteNode {
+    /// The workflow run awaiting a maintainer's approval, where this suite is a held workflow.
+    fn held(&self) -> Option<&SuiteWorkflowRun> {
+        if self.conclusion.as_deref() != Some(ACTION_REQUIRED) || self.check_runs.total_count > 0 {
+            return None;
+        }
+        self.workflow_run.as_ref()
+    }
+}
+
+/// The head's checks at their latest attempts, deciding on the required ones when any exist, or
+/// `None` where the head has neither a rollup nor a held workflow.
 /// `required` is `None` where the base branch's required set couldn't be read.
-fn ci(rollup_state: &str, contexts: &[ContextNode], required: Option<&[Requirement]>) -> Ci {
+fn ci(
+    rollup_state: Option<&str>,
+    contexts: &[ContextNode],
+    suites: &[SuiteNode],
+    required: Option<&[Requirement]>,
+) -> Option<Ci> {
     let any_required = required.is_some_and(|required| !required.is_empty())
         || contexts.iter().any(ContextNode::is_required);
     // A required check yet to report holds green back but not amber: GitHub doesn't list the
@@ -969,7 +1031,7 @@ fn ci(rollup_state: &str, contexts: &[ContextNode], required: Option<&[Requireme
         ContextNode::StatusContext(status) => status.state == EXPECTED,
         ContextNode::CheckRun(_) => false,
     });
-    let checks = contexts
+    let mut checks: Vec<Check> = contexts
         .iter()
         .filter_map(|context| {
             let deciding = context.is_required() || !any_required;
@@ -1002,12 +1064,26 @@ fn ci(rollup_state: &str, contexts: &[ContextNode], required: Option<&[Requireme
             }
         })
         .collect();
-    Ci {
-        checks,
-        // An expecting rollup with no expected context awaits a required check the base's
-        // protection doesn't show.
-        required_known: all_reported && (expected_seen || rollup_state != EXPECTED),
+    // An expecting rollup with no expected context awaits a required check the base's
+    // protection doesn't show.
+    let required_known = all_reported && (expected_seen || rollup_state != Some(EXPECTED));
+    // A required check yet to report may sit behind the approval.
+    let held_deciding = !(any_required && required_known);
+    checks.extend(suites.iter().filter_map(SuiteNode::held).map(|run| Check {
+        assessment: Assessment::Waiting,
+        conclusion: ACTION_REQUIRED.to_ascii_lowercase(),
+        deciding: held_deciding,
+        job_id: None,
+        name: run.workflow.name.clone(),
+        url: Some(run.url.clone()),
+    }));
+    if rollup_state.is_none() && checks.is_empty() {
+        return None;
     }
+    Some(Ci {
+        checks,
+        required_known,
+    })
 }
 
 /// A completed run without a conclusion, or a word this mapping doesn't know, is unsettled.
@@ -1015,7 +1091,7 @@ fn check_run_assessment(status: &str, conclusion: Option<&str>) -> Assessment {
     match (conclusion, status) {
         (Some("SUCCESS" | "NEUTRAL" | "SKIPPED"), _) => Assessment::Passed,
         (Some("CANCELLED" | "FAILURE" | "STARTUP_FAILURE" | "TIMED_OUT"), _) => Assessment::Failed,
-        (Some("ACTION_REQUIRED" | "STALE"), _) | (None, "WAITING") => Assessment::Waiting,
+        (Some(ACTION_REQUIRED | "STALE"), _) | (None, "WAITING") => Assessment::Waiting,
         _ => Assessment::Pending,
     }
 }
@@ -1267,7 +1343,7 @@ mod tests {
         let call = format!(
             "gh api -i --hostname github.com graphql -f query={POLL_QUERY} -f id={POLLED_ID} \
              -F checks=false -F comments=false -F dismissals=false -f reviewsAfter=REVIEWS_1 \
-             -F rules=false -F threads=false"
+             -F rules=false -F suites=false -F threads=false"
         );
         (call, Ok(gh(code, stdout, "")))
     }
@@ -1280,7 +1356,7 @@ mod tests {
                 POLL_QUERY,
                 &format!(
                     "-f id={POLLED_ID} -F checks=false -F comments=false -F dismissals=false -f reviewsAfter=REVIEWS_1 \
-                     -F rules=false -F threads=false"
+                     -F rules=false -F suites=false -F threads=false"
                 ),
                 include_str!("github/fixtures/poll_page_2.http"),
             ),
@@ -2220,6 +2296,110 @@ mod tests {
         let ci = ci_of(&with_ci(Value::Null, rollup("SUCCESS", &passed))).unwrap();
 
         assert!(!ci.required_known);
+    }
+
+    const HELD_RUN_URL: &str = "https://github.com/cli/cli/actions/runs/39640741606";
+
+    /// A GitHub Actions suite on the head with `runs` check runs, as recorded on `cli/cli`.
+    fn suite(conclusion: &str, runs: u64) -> Value {
+        json!({
+            "checkRuns": { "totalCount": runs },
+            "conclusion": conclusion,
+            "workflowRun": {
+                "url": HELD_RUN_URL,
+                "workflow": { "name": "Unit and Integration Tests" },
+            },
+        })
+    }
+
+    /// The recorded poll's head with `rollup` and the check suites `suites`, on `base`.
+    fn with_suites(base: Value, rollup: &Value, suites: &Value) -> String {
+        let commit = json!({
+            "checkSuites": {
+                "pageInfo": { "hasNextPage": false, "endCursor": "MQ" },
+                "nodes": suites,
+            },
+            "oid": HEAD,
+            "statusCheckRollup": rollup,
+        });
+        replaced(
+            include_str!("github/fixtures/poll.http"),
+            [
+                ("/data/node/baseRef", base),
+                ("/data/node/commits/nodes/0/commit", commit),
+            ],
+        )
+    }
+
+    fn passed(name: &str) -> Value {
+        check_run(name, "COMPLETED", Some("SUCCESS"), ACTIONS_APP_ID)
+    }
+
+    #[test]
+    fn a_held_workflow_holds_ci_amber_beside_a_passing_check() {
+        let contexts = json!([passed("Netlify")]);
+        let suites = json!([suite("ACTION_REQUIRED", 0)]);
+        let base = protected(&[], &json!([]));
+
+        let ci = ci_of(&with_suites(base, &rollup("SUCCESS", &contexts), &suites)).unwrap();
+
+        assert_eq!(ci.colour(), Some(Colour::Amber));
+        assert_eq!(
+            ci.checks[1],
+            Check {
+                assessment: Assessment::Waiting,
+                conclusion: "action_required".to_owned(),
+                deciding: true,
+                job_id: None,
+                name: "Unit and Integration Tests".to_owned(),
+                url: Some(HELD_RUN_URL.to_owned()),
+            },
+        );
+    }
+
+    #[test]
+    fn a_held_workflow_alone_is_ci_that_settles_amber() {
+        let suites = json!([suite("ACTION_REQUIRED", 0)]);
+
+        let ci = ci_of(&with_suites(
+            protected(&[], &json!([])),
+            &Value::Null,
+            &suites,
+        ));
+
+        assert_eq!(ci.unwrap().colour(), Some(Colour::Amber));
+    }
+
+    #[test]
+    fn a_held_workflow_decides_until_every_required_check_is_known_to_have_reported() {
+        let suites = json!([suite("ACTION_REQUIRED", 0)]);
+        let contexts = json!([required(passed("test"))]);
+        let colour = |base: Value| {
+            ci_of(&with_suites(base, &rollup("SUCCESS", &contexts), &suites))
+                .unwrap()
+                .colour()
+        };
+
+        assert_eq!(
+            colour(protected(&["test", "lint"], &json!([]))),
+            Some(Colour::Amber)
+        );
+        assert_eq!(colour(Value::Null), Some(Colour::Amber));
+        assert_eq!(
+            colour(protected(&["test"], &json!([]))),
+            Some(Colour::Green)
+        );
+    }
+
+    #[test]
+    fn an_approved_suite_is_judged_by_its_check_runs_alone() {
+        let contexts = json!([passed("test")]);
+        let suites = json!([suite("ACTION_REQUIRED", 3), suite("SUCCESS", 0)]);
+        let base = protected(&[], &json!([]));
+
+        let ci = ci_of(&with_suites(base, &rollup("SUCCESS", &contexts), &suites)).unwrap();
+
+        assert_eq!(ci.checks.len(), 1);
     }
 
     /// Recorded while `gate` awaited approval: `after` (`needs: gate`) is absent from the rollup.
