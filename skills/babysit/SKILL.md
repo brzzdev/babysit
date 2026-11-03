@@ -159,10 +159,13 @@ resolve from the current directory's repo. Elsewhere, take the host from the tar
   --log-failed`, or `glab ci trace <job_id>`, adding `--repo <project URL>` outside the checkout.
   A GitLab `pipeline` check whose `conclusion` is `retargeted` means GitLab retargeted the MR and
   wants a new pipeline: `glab api -X POST 'projects/:fullpath/merge_requests/<iid>/pipelines'`.
+  A GitHub check with `conclusion` `action_required`, no `job_id`, and a workflow run page
+  (`…/actions/runs/<id>`) as its `url` is a held workflow, waiting on a maintainer's approval
+  there. Tell the user and leave the approval to them, since it runs code from outside the repo.
 - **`ci.absent`** means no check has reported on `head_sha` in the `minutes` since babysit first
-  saw it: the repo, or the paths this head changes, may run no CI, or on GitHub a fork's workflows
-  may wait on a maintainer's approval. Tell the user, and stop waiting for green unless they expect
-  CI; if you keep watching, a check that reports later still wakes `ci.settled`.
+  saw it: the repo, or the paths this head changes, may run no CI. Tell the user, and stop
+  waiting for green unless they expect CI; if you keep watching, a check that reports later still
+  wakes `ci.settled`.
 - **Answer a thread** with its `reply_to`, which is the first comment's id on GitHub and the
   discussion id on GitLab:
   ```sh

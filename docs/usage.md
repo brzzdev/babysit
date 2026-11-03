@@ -181,7 +181,7 @@ ordered by `at`, untimed ones last; targets follow the order they were given in.
 | Colour  | When                                                                                       |
 | ------- | ------------------------------------------------------------------------------------------ |
 | `red`   | A deciding check failed. Red settles at once, even while other checks are still pending.   |
-| `amber` | No deciding check failed or is pending, and at least one waits on someone: a GitHub check asking for action, a stale or waiting run, or a required status expected but not posted; a GitLab manual job, a skipped pipeline in a project that doesn't allow merging on one, or a finished pipeline GitLab set aside when it retargeted the merge request, which waits on a new pipeline. |
+| `amber` | No deciding check failed or is pending, and at least one waits on someone: a GitHub check asking for action, a held workflow, a stale or waiting run, or a required status expected but not posted; a GitLab manual job, a skipped pipeline in a project that doesn't allow merging on one, or a finished pipeline GitLab set aside when it retargeted the merge request, which waits on a new pipeline. |
 | `green` | Every deciding check passed and, on GitHub, every required check has reported.            |
 
 Until then CI is unsettled and reports nothing. **No deciding checks doesn't mean green**: a head
@@ -189,8 +189,7 @@ with no checks never settles, and one whose required checks haven't all reported
 green.
 
 `ci.absent` reports such a head 15 minutes after babysit first saw it open with no check reported:
-no GitHub check run or status, and no GitLab pipeline. On GitHub, a fork's pull request whose
-workflows wait on a maintainer's approval shows no check run either. It is reported once per
+no GitHub check run, status, or held workflow, and no GitLab pipeline. It is reported once per
 head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
 reports the head again. A push starts the clock again for the new head, and so does reopening the
 target. A check reporting after `ci.absent` settles CI as usual, with `ci.settled`.
@@ -201,6 +200,13 @@ job decides or the pipeline was skipped. A retargeted merge request's one decidi
 `pipeline`, with `conclusion` `retargeted` and the merge request's pipelines page as its `url`. A
 failed check that doesn't decide is a **warning**: `checks` lists the deciding checks that failed or
 wait, and `warnings` the warnings.
+
+A **held workflow** is a GitHub Actions workflow on a pull request's head that waits on a
+maintainer's approval before running any job, as on a fork's pull request. It is a check that
+waits, named after the workflow, with `conclusion` `action_required`, no `job_id`, and as its `url`
+the workflow run's page, where a maintainer approves it. It decides unless the base has required
+checks and every one is known to have reported, since a required check yet to report may sit
+behind the approval. Once approved, its jobs report as checks of their own.
 
 GitLab CI comes from the merge request's head pipeline. While GitLab names none, as after a
 retarget or a deleted head pipeline, it comes from the newest merge request pipeline that ran the
