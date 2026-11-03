@@ -215,18 +215,18 @@ fn comment(target: &Target, channel: &str, parent: &str, message: Message) -> Co
         format!("{reply}?thread_ts={parent}&cid={channel}")
     };
     let bot = message.bot_id.is_some();
-    let actor = message
-        .user
-        .or(message.bot_id)
-        .map(|id| account(id, Some(bot)));
-    let edited = message.edited.unwrap_or_default();
+    let actor = message.user.or(message.bot_id).map(|id| account(id, bot));
     Comment {
-        // Only a message's author can edit it on Slack.
-        editor: actor.clone(),
-        actor,
+        actor: actor.clone(),
         at: time(&message.ts),
         body: message.text,
-        edited_at: edited.ts.as_deref().map(time),
+        edited_at: message
+            .edited
+            .and_then(|edited| edited.ts)
+            .as_deref()
+            .map(time),
+        // Only a message's author can edit it on Slack.
+        editor: actor,
         id: message.ts,
         reply_to: Some(parent.to_owned()),
         review_id: None,
@@ -235,9 +235,9 @@ fn comment(target: &Target, channel: &str, parent: &str, message: Message) -> Co
 }
 
 /// A Slack user or integration, by an id that is also its login.
-fn account(id: String, bot: Option<bool>) -> Account {
+fn account(id: String, bot: bool) -> Account {
     Account {
-        bot,
+        bot: Some(bot),
         id: Some(id.clone()),
         login: id,
     }
@@ -327,7 +327,7 @@ struct Message {
     user: Option<String>,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct Edited {
     ts: Option<String>,
 }
@@ -665,14 +665,19 @@ mod tests {
     fn an_integration_editing_its_message_wakes_on_bot() {
         let bot = include_str!("slack/fixtures/poll_bot.http");
         let updated = bot.replace("0.3.0 finished", "0.3.0 finished, all green");
+        assert_ne!(updated, bot);
 
         let events = events(bot, poll(&updated));
 
-        assert_eq!(events[0].detail.kind(), "comment.edited");
         assert_eq!(
-            events[0].actor.as_ref().and_then(|actor| actor.bot),
-            Some(true)
+            events[0].actor,
+            Some(Account {
+                bot: Some(true),
+                id: Some("B0DEPLOY001".to_owned()),
+                login: "B0DEPLOY001".to_owned(),
+            }),
         );
+        assert_eq!(wakes(&events, &[], &[]), ["comment.edited"]);
         assert_eq!(wakes(&events, &[], &["comment.* actor=@bot"]), [""; 0]);
     }
 
