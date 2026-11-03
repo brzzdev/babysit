@@ -382,13 +382,13 @@ humans.
 | `auth`             | The CLI isn't signed in or was refused (401, 403), both `gh` and `glab` hold a token for a checkout remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | `gh`, `glab`, `git`, or `curl` isn't installed or not on `PATH`, or `curl` is older than 8.3 |
 | `lock_held`        | Another babysit run holds the `--snapshot` file                                              |
-| `poll_failed`      | A call to the forge failed 10 times in a row for one target, or once under `--timeout 0` or for a Slack error a retry can't clear |
+| `poll_failed`      | A call to the forge failed 10 times in a row for one target, or once under `--timeout 0` or on Slack's `invalid_arguments` |
 | `snapshot_io`      | The `--snapshot` file couldn't be read, locked, or written                                   |
 | `target_not_found` | The forge has no such target, it's gone or no longer visible, or it redirects to another host |
 
 A failed call is retried at the interval until 10 in a row fail for one target; a success resets
-the count. An `auth`, `target_not_found`, or `cli_missing` failure, or a Slack error a retry can't
-clear, isn't retried: it ends the run.
+the count. An `auth`, `target_not_found`, or `cli_missing` failure, or Slack's `invalid_arguments`,
+isn't retried: it ends the run.
 Every call due in a round is still made, so a wake in the same round wins: the run prints `woke`
 with `error: null`, and the failing target's entry stays unsaved, so the next run meets the error
 again. Each call to a CLI gets 60 seconds. A rate limit isn't a failure: babysit waits for the

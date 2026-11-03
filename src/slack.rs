@@ -46,7 +46,6 @@ const CURL_FLAGS: [&str; 10] = [
     "--expand-header",
     "Authorization: Bearer {{BABYSIT_SLACK_TOKEN}}",
 ];
-/// The error for a call Slack can't accept, which a retry would only repeat.
 const ERROR_INVALID_ARGUMENTS: &str = "invalid_arguments";
 const ERROR_RATE_LIMITED: &str = "ratelimited";
 const HEADER_RETRY_AFTER: &str = "retry-after";
@@ -277,10 +276,11 @@ fn refused(error: &str, hints: Hints) -> Failure {
         let message = format!("not found or not visible to {TOKEN_VARIABLE}'s user: {error}");
         return fatal(ErrorKind::TargetNotFound, &message);
     }
+    let message = format!("Slack answered {error}");
     if error == ERROR_INVALID_ARGUMENTS {
-        return fatal(ErrorKind::PollFailed, &format!("Slack answered {error}"));
+        return fatal(ErrorKind::PollFailed, &message);
     }
-    transient(&format!("Slack answered {error}")).paced(hints)
+    transient(&message).paced(hints)
 }
 
 fn rate_limited(hints: Hints) -> Failure {
@@ -818,32 +818,19 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_token_is_auth_and_a_missing_thread_is_not_found() {
-        let refused = include_str!("slack/fixtures/poll_invalid_auth.http");
-        let missing = include_str!("slack/fixtures/poll_thread_not_found.http");
-
-        let no_channel = missing.replace("thread_not_found", "channel_not_found");
-
-        let refused = poll_calls([replies("", refused)]).unwrap_err();
-        let missing = poll_calls([replies("", missing)]).unwrap_err();
-        let no_channel = poll_calls([replies("", &no_channel)]).unwrap_err();
-
-        assert_eq!(fatal_kind(&refused), ErrorKind::Auth);
-        assert_eq!(fatal_kind(&missing), ErrorKind::TargetNotFound);
-        assert_eq!(fatal_kind(&no_channel), ErrorKind::TargetNotFound);
-    }
-
-    #[test]
     fn an_error_a_retry_cannot_clear_ends_the_poll() {
         let refused = include_str!("slack/fixtures/poll_invalid_auth.http");
         let expected = [
             ("access_denied", ErrorKind::Auth),
+            ("channel_not_found", ErrorKind::TargetNotFound),
             ("ekm_access_denied", ErrorKind::Auth),
             ("enterprise_is_restricted", ErrorKind::Auth),
             ("invalid_arguments", ErrorKind::PollFailed),
+            ("invalid_auth", ErrorKind::Auth),
             ("no_permission", ErrorKind::Auth),
             ("org_login_required", ErrorKind::Auth),
             ("team_access_not_granted", ErrorKind::Auth),
+            ("thread_not_found", ErrorKind::TargetNotFound),
         ];
 
         for (error, kind) in expected {
