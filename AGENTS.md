@@ -15,7 +15,6 @@ Serves the `babysit` skill. Forgejo is planned, not in v1.
 
 ## Style
 
-- Keep dependencies minimal
 - Use the Oxford comma in a list of three or more
 
 ## Agent skills
