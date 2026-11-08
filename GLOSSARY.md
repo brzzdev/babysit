@@ -24,6 +24,10 @@ _Avoid_: Refresh, check, sync
 Everything babysit knows about a target at one moment.
 _Avoid_: State, status
 
+**Snapshot file**:
+The caller-owned file that keeps one baseline per target between runs.
+_Avoid_: State file, cache
+
 **Target**:
 A single pull request, merge request, issue, or Slack thread being watched.
 _Avoid_: Item, watch
