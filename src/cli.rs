@@ -143,7 +143,8 @@ mod tests {
     #[test]
     fn rejects_malformed_arguments_before_running() {
         for args in [
-            &["babysit", "https://github.com/o/r/pull/1"][..],
+            &["babysit"][..],
+            &["babysit", "https://github.com/o/r/pull/1"],
             &["babysit", "--snapshot", "s.json"],
             &[
                 "babysit",

@@ -374,7 +374,7 @@ A target the forge can't find:
 | ---- | ----------- | -------------------------------------------------------------------------- |
 | 0    | `woke`      | At least one event matched the rules                                       |
 | 0    | none        | `forget` deleted the snapshot file, or there was nothing to delete         |
-| 1    | `error`     | The run failed; `error` says why                                           |
+| 1    | `error`     | babysit failed; `error` says why                                           |
 | 2    | none        | A usage error: the message is on stderr and **no envelope** is printed     |
 | 3    | `timed_out` | `--timeout` passed without a wake                                          |
 
