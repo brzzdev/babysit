@@ -51,7 +51,8 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 3. **Wait.** Start the same command without `--timeout` as a background job, before you deal with
    anything step 2 showed, so anything landing meanwhile wakes it. It runs until a wake, `met`, or
    an error; `met` ends an `--until` wait, so go to step 6:
-   - **Claude Code**: `run_in_background`. The harness re-invokes you when it exits, however long
+   - **Claude Code**: `run_in_background`, with stdout sent to its own file as in
+     [Acting on a wake](#acting-on-a-wake). The harness re-invokes you when it exits, however long
      that takes.
    - **Codex**: the command keeps running in its session but nothing re-invokes you, so poll it
      with an empty `write_stdin` until it exits. `codex exec` kills it when the turn ends, so keep
@@ -172,12 +173,13 @@ alternatives, repeated `--until` ORed. Its fields are the summary's: `state` (`c
 ## Acting on a wake
 
 stdout carries only the envelope; lines on stderr prefixed `babysit:` (retries, rate-limit waits)
-are progress for humans. Capture the envelope and the exit status apart, since a pipe reports
-`jq`'s status instead:
+are progress for humans. Send stdout to its own file and record the exit status, in the foreground
+and the background alike: a pipe reports `jq`'s status instead, and a background job's output
+mixes the envelope with stderr and the harness's own lines.
 
 ```sh
-out="$(babysit …)"; exit_code=$?
-jq '.events[] | {kind, target, url, body, truncated, reply_to, path, line, colour, checks, warnings}' <<<"$out"
+babysit … >"$snap.envelope"; echo "exit=$?"
+jq '.events[] | {kind, target, url, body, truncated, reply_to, path, line, colour, checks, warnings}' "$snap.envelope"
 ```
 
 Run the forge commands below from the target's checkout: `{owner}`, `{repo}`, and `:fullpath`
