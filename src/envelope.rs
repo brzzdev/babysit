@@ -3,11 +3,12 @@ use std::io::{self, Write};
 use serde::Serialize;
 
 use crate::diff;
-use crate::forge::{Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
+use crate::forge::{Absence, Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
 
 pub const BRIEF_BODY_CHARS: usize = 200;
 pub const EXIT_ERROR: u8 = 1;
 pub const EXIT_FORGOTTEN: u8 = 0;
+const EXIT_MET: u8 = 0;
 const EXIT_TIMED_OUT: u8 = 3;
 const EXIT_WOKE: u8 = 0;
 const HTML_COMMENT_CLOSE: &str = "-->";
@@ -26,6 +27,7 @@ pub struct Envelope {
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Error,
+    Met,
     TimedOut,
     Woke,
 }
@@ -53,6 +55,7 @@ pub struct Summary {
 pub struct ChangeSummary {
     pub head: Option<String>,
     pub colour: Option<Colour>,
+    pub absent_ci: bool,
     pub merge: Option<Merge>,
     pub unresolved_threads: usize,
 }
@@ -71,6 +74,7 @@ pub struct Error {
 pub enum ErrorKind {
     Auth,
     CliMissing,
+    ConditionUnfit,
     LockHeld,
     PollFailed,
     SnapshotIo,
@@ -119,6 +123,7 @@ impl Envelope {
     pub fn exit_code(&self) -> u8 {
         match self.outcome {
             Outcome::Error => EXIT_ERROR,
+            Outcome::Met => EXIT_MET,
             Outcome::TimedOut => EXIT_TIMED_OUT,
             Outcome::Woke => EXIT_WOKE,
         }
@@ -183,10 +188,12 @@ impl Summary {
             change: (target.kind == TargetKind::ChangeRequest).then(|| ChangeSummary {
                 head: poll.head.clone(),
                 colour: snapshot.reported.colour,
-                merge: snapshot
-                    .reported
-                    .merge
-                    .filter(|_| poll.state == TargetState::Open),
+                absent_ci: poll.state == TargetState::Open
+                    && poll.ci.is_none()
+                    && snapshot.reported.absence == Some(Absence::Reported),
+                merge: snapshot.reported.merge.filter(|_| {
+                    poll.state == TargetState::Open && snapshot.reported.merge_head == poll.head
+                }),
                 unresolved_threads: poll
                     .threads
                     .iter()
@@ -204,7 +211,17 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::forge::{Poll, poll};
+    use crate::forge::{Poll, Reported, poll};
+
+    fn pull_request() -> Target {
+        Target {
+            forge: Forge::GitHub,
+            forge_id: "PR_1".to_owned(),
+            host: "github.com".to_owned(),
+            kind: TargetKind::ChangeRequest,
+            url: "https://github.com/o/r/pull/1".to_owned(),
+        }
+    }
 
     fn shortened(body: &str) -> (String, bool) {
         let mut body = body.to_owned();
@@ -239,6 +256,60 @@ mod tests {
             (format!("{}…", "é".repeat(BRIEF_BODY_CHARS - 1)), true),
         );
         assert_eq!(shortened(at_limit), (at_limit.to_owned(), false));
+    }
+
+    #[test]
+    fn a_head_reported_absent_is_absent_ci_only_while_open_and_unchecked() {
+        let target = pull_request();
+        let reported = |poll: Poll| Snapshot {
+            reported: Reported {
+                absence: Some(Absence::Reported),
+                ..Reported::default()
+            },
+            poll,
+        };
+        let unchecked = || Poll {
+            ci: None,
+            ..poll(&[])
+        };
+        let absent_ci = |poll| {
+            Summary::new(&target, &reported(poll))
+                .change
+                .unwrap()
+                .absent_ci
+        };
+
+        assert!(absent_ci(unchecked()));
+        assert!(!absent_ci(poll(&[])));
+        assert!(!absent_ci(Poll {
+            state: TargetState::Merged,
+            ..unchecked()
+        }));
+    }
+
+    #[test]
+    fn a_push_hides_the_old_heads_mergeability_until_the_forge_recomputes() {
+        let target = pull_request();
+        let at = |head: &str, merge| Poll {
+            head: Some(head.to_owned()),
+            merge,
+            ..poll(&[])
+        };
+        let merge = |snapshot: &Snapshot| Summary::new(&target, snapshot).change.unwrap().merge;
+        let clean = Snapshot::first(at("abc123", Some(Merge::Clean)), UNIX_EPOCH);
+
+        let (_, recomputing) = diff::diff(&clean, at("def456", None), UNIX_EPOCH);
+        let (_, recomputed) = diff::diff(
+            &recomputing,
+            at("def456", Some(Merge::Conflicted)),
+            UNIX_EPOCH,
+        );
+        let (_, unchanged) = diff::diff(&clean, at("abc123", None), UNIX_EPOCH);
+
+        assert_eq!(merge(&clean), Some(Merge::Clean));
+        assert_eq!(merge(&recomputing), None);
+        assert_eq!(merge(&recomputed), Some(Merge::Conflicted));
+        assert_eq!(merge(&unchanged), Some(Merge::Clean));
     }
 
     #[test]

@@ -181,11 +181,13 @@ impl Snapshot {
     /// A first poll, made at `now`, as baseline: its colour, and an open target's mergeability,
     /// count as reported, and a head with no check starts its absence clock.
     pub fn first(poll: Poll, now: SystemTime) -> Self {
+        let merge = poll.merge.filter(|_| poll.state == TargetState::Open);
         Self {
             reported: Reported {
                 absence: absence_after(&poll, None, now).0,
                 colour: poll.ci.as_ref().and_then(Ci::colour),
-                merge: poll.merge.filter(|_| poll.state == TargetState::Open),
+                merge,
+                merge_head: merge.and(poll.head.clone()),
             },
             poll,
         }
@@ -240,9 +242,9 @@ pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Sn
         events.push(state_changed(&poll));
     }
     // Only an open target's mergeability is news, so a merge reports nothing but itself.
-    let merge = match poll.merge {
-        Some(merge) if poll.state == TargetState::Open => Some(merge),
-        _ => reported.merge,
+    let (merge, merge_head) = match poll.merge {
+        Some(merge) if poll.state == TargetState::Open => (Some(merge), poll.head.clone()),
+        _ => (reported.merge, reported.merge_head.clone()),
     };
     // Mergeability first known after computing is already on the target, so it reports nothing.
     if let Some(changed) = merge
@@ -262,6 +264,7 @@ pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Sn
                 absence,
                 colour,
                 merge,
+                merge_head,
             },
         },
     )
@@ -603,7 +606,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::forge::{comment, octocat, poll};
+    use crate::forge::{check, comment, octocat, on, poll};
 
     const MERGE_REQUEST: &str = "https://gitlab.com/g/p/-/merge_requests/1";
     const THREAD: &str = "PRRT_1";
@@ -1047,28 +1050,6 @@ mod tests {
 
     const A: &str = "aaa111";
     const B: &str = "bbb222";
-
-    fn check(name: &str, deciding: bool, assessment: Assessment) -> Check {
-        Check {
-            assessment,
-            conclusion: format!("{assessment:?}").to_lowercase(),
-            deciding,
-            job_id: Some(format!("{name}-job")),
-            name: name.to_owned(),
-            url: Some(format!("https://github.com/o/r/actions/runs/1/job/{name}")),
-        }
-    }
-
-    fn on(head: &str, checks: Vec<Check>) -> Poll {
-        Poll {
-            ci: Some(Ci {
-                checks,
-                required_known: true,
-            }),
-            head: Some(head.to_owned()),
-            ..poll(&[])
-        }
-    }
 
     #[test]
     fn an_issue_reports_only_its_comments_and_state() {

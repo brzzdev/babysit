@@ -435,7 +435,7 @@ mod tests {
         let (on, ignore) = (parse(on), parse(ignore));
         events
             .iter()
-            .filter(|event| rule::wakes(&on, &ignore, event, Some(ME)))
+            .filter(|event| rule::wakes(&on, &ignore, rule::Unruled::Every, event, Some(ME)))
             .map(|event| event.detail.kind().to_owned())
             .collect()
     }
@@ -468,6 +468,7 @@ mod tests {
             brief: false,
             ignore: Vec::new(),
             on: Vec::new(),
+            until: Vec::new(),
             targets: vec![reference::parse_name(target).unwrap()],
             snapshot: snapshot.to_owned(),
             interval: Duration::from_secs(30),

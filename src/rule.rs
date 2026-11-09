@@ -1,7 +1,11 @@
 use crate::diff::{Detail, Event};
-use crate::forge::Account;
+use crate::forge::{Account, Colour, ReviewState};
 
-const COLOURS: [&str; 3] = ["amber", "green", "red"];
+pub const COLOURS: [(&str, Colour); 3] = [
+    ("amber", Colour::Amber),
+    ("green", Colour::Green),
+    ("red", Colour::Red),
+];
 
 /// Every event kind in v1 with the fields it carries, including kinds no backend reports yet.
 const KINDS: [Kind; 16] = [
@@ -28,7 +32,11 @@ const KINDS: [Kind; 16] = [
 
 const QUOTE: char = '"';
 
-const STATES: [&str; 3] = ["approved", "changes_requested", "commented"];
+const STATES: [(&str, ReviewState); 3] = [
+    ("approved", ReviewState::Approved),
+    ("changes_requested", ReviewState::ChangesRequested),
+    ("commented", ReviewState::Commented),
+];
 
 type Kind = (&'static str, &'static [Field]);
 
@@ -53,7 +61,8 @@ enum Field {
 enum Term {
     Accounts(Field, Vec<Selector>),
     BodyPrefixes(Vec<String>),
-    Words(Field, Vec<&'static str>),
+    Colours(Vec<Colour>),
+    States(Vec<ReviewState>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,8 +122,8 @@ fn kinds(pattern: Option<&str>) -> Result<Vec<Kind>, String> {
     Ok(covered)
 }
 
-/// The rule's whitespace-separated words, a double-quoted run staying whole inside its word.
-fn split(given: &str) -> Result<Vec<&str>, String> {
+/// The whitespace-separated words of a rule or condition, a double-quoted run staying whole.
+pub fn split(given: &str) -> Result<Vec<&str>, String> {
     let mut words = Vec::new();
     let mut start = None;
     let mut quoted = false;
@@ -182,13 +191,13 @@ fn term(word: &str) -> Result<Term, String> {
             Term::Accounts(field, values.map(selector).collect::<Result<_, _>>()?)
         }
         Field::Body => Term::BodyPrefixes(values.map(body_prefix).collect::<Result<_, _>>()?),
-        Field::Colour => Term::Words(field, words(values, &COLOURS, field)?),
-        Field::State => Term::Words(field, words(values, &STATES, field)?),
+        Field::Colour => Term::Colours(words(values, &COLOURS, field.name())?),
+        Field::State => Term::States(words(values, &STATES, field.name())?),
     })
 }
 
 /// A term's comma-separated values, each bare or double-quoted with `\"` and `\\` as escapes.
-fn values(word: &str, given: &str) -> Result<Vec<String>, String> {
+pub fn values(word: &str, given: &str) -> Result<Vec<String>, String> {
     let mut values = Vec::new();
     let mut rest = given;
     loop {
@@ -230,7 +239,7 @@ fn unquote(given: &str) -> (String, &str) {
     (value, "")
 }
 
-fn outside_a_value(word: &str) -> String {
+pub fn outside_a_value(word: &str) -> String {
     format!("`{word}` has a quote outside a value; quote a whole value after `=`")
 }
 
@@ -255,21 +264,21 @@ fn selector(value: &str) -> Result<Selector, String> {
     }
 }
 
-fn words<'a>(
+pub fn words<'a, T: Copy>(
     values: impl Iterator<Item = &'a str>,
-    known: &[&'static str],
-    field: Field,
-) -> Result<Vec<&'static str>, String> {
+    known: &[(&str, T)],
+    field: &str,
+) -> Result<Vec<T>, String> {
     values
         .map(|value| {
             known
                 .iter()
-                .copied()
-                .find(|word| *word == value)
+                .find(|(word, _)| *word == value)
+                .map(|(_, meant)| *meant)
                 .ok_or_else(|| {
+                    let known: Vec<_> = known.iter().map(|(word, _)| *word).collect();
                     format!(
-                        "`{value}` is not a {}: use {}",
-                        field.name(),
+                        "`{value}` is not a valid `{field}`: use {}",
                         known.join(", ")
                     )
                 })
@@ -277,11 +286,30 @@ fn words<'a>(
         .collect()
 }
 
-/// Whether `event` wakes the run: it matches at least one `on` rule (or there are none) and no
-/// `ignore` rule. `me` is the viewer's account id on the event's forge.
-pub fn wakes(on: &[Rule], ignore: &[Rule], event: &Event, me: Option<&str>) -> bool {
+/// What wakes a run with no `on` rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unruled {
+    Every,
+    Nothing,
+}
+
+/// Whether `event` wakes the run: it matches at least one `on` rule, or there are none and
+/// `unruled` is `Every`, and no `ignore` rule. `me` is the viewer's account id on the event's
+/// forge.
+pub fn wakes(
+    on: &[Rule],
+    ignore: &[Rule],
+    unruled: Unruled,
+    event: &Event,
+    me: Option<&str>,
+) -> bool {
     let matches = |rule: &Rule| rule.matches(event, me);
-    (on.is_empty() || on.iter().any(matches)) && !ignore.iter().any(matches)
+    let woken = if on.is_empty() {
+        unruled == Unruled::Every
+    } else {
+        on.iter().any(matches)
+    };
+    woken && !ignore.iter().any(matches)
 }
 
 /// Whether any of `rules` names `@me`.
@@ -314,8 +342,10 @@ impl Field {
 impl Term {
     fn field(&self) -> Field {
         match self {
-            Self::Accounts(field, _) | Self::Words(field, _) => *field,
+            Self::Accounts(field, _) => *field,
             Self::BodyPrefixes(_) => Field::Body,
+            Self::Colours(_) => Field::Colour,
+            Self::States(_) => Field::State,
         }
     }
 
@@ -330,9 +360,13 @@ impl Term {
                 .detail
                 .body()
                 .is_some_and(|body| prefixes.iter().any(|prefix| body.starts_with(prefix))),
-            Self::Words(field, words) => {
-                word(&event.detail, *field).is_some_and(|word| words.contains(&word.as_str()))
+            Self::Colours(colours) => {
+                matches!(&event.detail, Detail::CiSettled { colour, .. } if colours.contains(colour))
             }
+            Self::States(states) => matches!(
+                &event.detail,
+                Detail::ReviewSubmitted { state, .. } if states.contains(state)
+            ),
         }
     }
 }
@@ -356,20 +390,10 @@ fn account(event: &Event, field: Field) -> Option<&Account> {
     }
 }
 
-/// The field's value in its printed form.
-fn word(detail: &Detail, field: Field) -> Option<String> {
-    let value = match (field, detail) {
-        (Field::Colour, Detail::CiSettled { colour, .. }) => serde_json::to_value(colour),
-        (Field::State, Detail::ReviewSubmitted { state, .. }) => serde_json::to_value(state),
-        _ => return None,
-    };
-    value.ok()?.as_str().map(str::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::{Colour, Position, ReviewState};
+    use crate::forge::Position;
 
     fn event(detail: Detail) -> Event {
         Event {
@@ -410,7 +434,7 @@ mod tests {
     }
 
     fn woken(on: &[&str], ignore: &[&str], event: &Event) -> bool {
-        wakes(&rules(on), &rules(ignore), event, None)
+        wakes(&rules(on), &rules(ignore), Unruled::Every, event, None)
     }
 
     #[test]
@@ -479,6 +503,20 @@ mod tests {
     #[test]
     fn every_event_wakes_without_rules() {
         assert!(woken(&[], &[], &created()));
+    }
+
+    #[test]
+    fn without_rules_nothing_wakes_a_run_unruled_to_nothing() {
+        let created = created();
+
+        assert!(!wakes(&[], &[], Unruled::Nothing, &created, None));
+        assert!(wakes(
+            &rules(&["comment.*"]),
+            &[],
+            Unruled::Nothing,
+            &created,
+            None
+        ));
     }
 
     #[test]
@@ -596,12 +634,13 @@ mod tests {
         );
         let me = rules(&["actor=@me"]);
 
-        assert!(wakes(&me, &[], &mine, Some("U_1")));
-        assert!(!wakes(&me, &[], &mine, Some("U_2")));
-        assert!(!wakes(&me, &[], &mine, None));
+        assert!(wakes(&me, &[], Unruled::Every, &mine, Some("U_1")));
+        assert!(!wakes(&me, &[], Unruled::Every, &mine, Some("U_2")));
+        assert!(!wakes(&me, &[], Unruled::Every, &mine, None));
         assert!(!wakes(
             &me,
             &[],
+            Unruled::Every,
             &by(account("octocat", Some(false)), created()),
             Some("U_1")
         ));
@@ -637,8 +676,8 @@ mod tests {
             }),
         );
 
-        assert!(!wakes(&[], &ignore, &claude, Some("U_1")));
-        assert!(wakes(&[], &ignore, &codex, Some("U_1")));
+        assert!(!wakes(&[], &ignore, Unruled::Every, &claude, Some("U_1")));
+        assert!(wakes(&[], &ignore, Unruled::Every, &codex, Some("U_1")));
     }
 
     #[test]

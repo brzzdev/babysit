@@ -2578,7 +2578,7 @@ mod tests {
 
     fn wakes(event: &diff::Event) -> bool {
         let on = WORKED_LOOP_RULES.map(|rule| rule::parse(rule).unwrap());
-        rule::wakes(&on, &[], event, None)
+        rule::wakes(&on, &[], rule::Unruled::Every, event, None)
     }
 
     fn printed(envelope: &Envelope) -> String {
@@ -2616,6 +2616,7 @@ mod tests {
         )]);
         let (issue_poll, _) = GitHub::new(&issue_exec).poll(&issue(), None).unwrap();
         let ci_running = poll_sandbox(include_str!("github/fixtures/poll_red_pending.http"));
+        let ci_settled = poll_sandbox(include_str!("github/fixtures/poll_green.http"));
         let not_found = resolve_with(Ok(gh(
             1,
             include_str!("github/fixtures/resolve_not_found.http"),
@@ -2633,6 +2634,16 @@ mod tests {
                         Summary::new(&sandbox, &Snapshot::first(ci_running, UNIX_EPOCH)),
                     ],
                     ..Envelope::ended(Outcome::TimedOut)
+                },
+            ),
+            (
+                "met",
+                Envelope {
+                    targets: vec![Summary::new(
+                        &sandbox,
+                        &Snapshot::first(ci_settled, UNIX_EPOCH),
+                    )],
+                    ..Envelope::ended(Outcome::Met)
                 },
             ),
             (
@@ -2655,6 +2666,7 @@ mod tests {
                 "woke-thread",
                 "woke-red",
                 "timed-out",
+                "met",
                 "error",
                 "worked-loop"
             ],

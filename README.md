@@ -53,6 +53,7 @@ human opens a line thread, it prints one JSON envelope and exits 0:
       "state": "open",
       "head": "683bf59580d1f4e7a42d6aa1d918477aa94b1730",
       "colour": "green",
+      "absent_ci": false,
       "merge": "clean",
       "unresolved_threads": 1
     }
