@@ -1,13 +1,40 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use crate::reference::{self, Name};
 use crate::rule::{self, Rule};
 
 #[derive(Debug, Parser)]
-#[command(name = "babysit", version, about, long_about = None)]
+#[command(
+    name = "babysit",
+    version,
+    about,
+    long_about = None,
+    args_conflicts_with_subcommands = true,
+    disable_help_subcommand = true,
+    subcommand_negates_reqs = true,
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    #[command(flatten)]
+    pub run: Option<Args>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Delete a snapshot file, keeping its `.lock`, so the next run records a fresh baseline
+    Forget {
+        /// The snapshot file to delete
+        #[arg(long, value_name = "PATH")]
+        snapshot: PathBuf,
+    },
+}
+
+#[derive(Debug, clap::Args)]
 pub struct Args {
     /// Wake only on events matching at least one such rule, such as `'thread.* actor=@human'`;
     /// repeatable
@@ -73,6 +100,8 @@ fn parse_interval(given: &str) -> Result<Duration, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -102,9 +131,20 @@ mod tests {
     }
 
     #[test]
+    fn forget_takes_only_a_snapshot_path() {
+        let cli = Cli::try_parse_from(["babysit", "forget", "--snapshot", "s.json"]).unwrap();
+
+        assert!(cli.run.is_none());
+        assert!(
+            matches!(cli.command, Some(Command::Forget { snapshot }) if snapshot == Path::new("s.json"))
+        );
+    }
+
+    #[test]
     fn rejects_malformed_arguments_before_running() {
         for args in [
-            &["babysit", "https://github.com/o/r/pull/1"][..],
+            &["babysit"][..],
+            &["babysit", "https://github.com/o/r/pull/1"],
             &["babysit", "--snapshot", "s.json"],
             &[
                 "babysit",
@@ -128,8 +168,20 @@ mod tests {
                 "x",
                 "https://github.com/o/r/pull/1",
             ],
+            &["babysit", "forget"],
+            &["babysit", "forget", "--snapshot", "s.json", "#1"],
+            &[
+                "babysit",
+                "forget",
+                "--snapshot",
+                "s.json",
+                "--timeout",
+                "0",
+            ],
+            &["babysit", "--snapshot", "s.json", "forget"],
+            &["babysit", "help"],
         ] {
-            assert!(Args::try_parse_from(args).is_err(), "{args:?}");
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
         }
     }
 }

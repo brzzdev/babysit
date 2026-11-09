@@ -8,7 +8,11 @@ last run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
 
 ```sh
 babysit [--on RULE]... [--ignore RULE]... --snapshot PATH [--interval DURATION] [--timeout DURATION] [--brief] TARGET...
+babysit forget --snapshot PATH
 ```
+
+The first form is a run; `forget` deletes a snapshot file (see
+[Forgetting a snapshot file](#forgetting-a-snapshot-file)). The flags below are the run's.
 
 | Flag                   | Default | Meaning                                                                                 |
 | ---------------------- | ------- | --------------------------------------------------------------------------------------- |
@@ -369,13 +373,15 @@ A target the forge can't find:
 | Exit | Outcome     | Meaning                                                                    |
 | ---- | ----------- | -------------------------------------------------------------------------- |
 | 0    | `woke`      | At least one event matched the rules                                       |
-| 1    | `error`     | The run failed; `error` says why                                           |
+| 0    | none        | `forget` deleted the snapshot file, or there was nothing to delete         |
+| 1    | `error`     | babysit failed; `error` says why                                           |
 | 2    | none        | A usage error: the message is on stderr and **no envelope** is printed     |
 | 3    | `timed_out` | `--timeout` passed without a wake                                          |
 
 Usage errors are found before any forge is polled: a malformed flag, rule, duration, or target; a
 checkout reference babysit can't place; a duration past what the clock can hold; or a `--snapshot`
-file that isn't a babysit snapshot file of this version.
+file that isn't a babysit snapshot file of this version (for `forget`, one that isn't a babysit
+snapshot file at all).
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a
 forge's, such as the snapshot file, or `git`, `gh auth token`, or `glab config get token` failing
@@ -436,8 +442,8 @@ app's user token (`xoxp-`) with the `channels:history`, `groups:history`, `im:hi
 ## The snapshot file
 
 The `--snapshot` file belongs to the caller. It holds one baseline per target, keyed by the
-target's URL, so one file can serve several targets and several runs. Keep it between runs; delete
-it to start over.
+target's URL, so one file can serve several targets and several runs. Keep it between runs;
+forget it to start over.
 
 - **The first poll only records a baseline.** A target with no entry is polled once and that
   snapshot saved at once, without reporting anything: what is already true, such as red CI or an
@@ -456,6 +462,25 @@ it to start over.
   `<PATH>.tmp` and an atomic rename.
 - A target whose URL moved on the same host keeps its baseline. A file reused for a different
   target at the same URL starts that target afresh.
+
+### Forgetting a snapshot file
+
+`babysit forget --snapshot PATH` deletes the file, so the next run against `PATH` records a fresh
+baseline for every target it held. It takes no targets and no other flags, and calls no forge,
+`git`, `gh`, `glab`, or `curl`. In order:
+
+1. When neither `PATH` nor `PATH.lock` exists, even when the directory is missing, it exits 0,
+   prints nothing, and creates nothing.
+2. It takes `PATH.lock` as a run does, without waiting. While another run holds it, it prints the
+   `lock_held` envelope and exits 1, leaving every file as it was.
+3. A `PATH` that isn't a babysit snapshot file of any version, older or newer, is a usage error:
+   exit 2, the reason on stderr, and the file left alone.
+4. It deletes `PATH` and any leftover `PATH.tmp`, keeps `PATH.lock`, and exits 0 with nothing on
+   stdout. The lock stays because deleting it while another run opens it would let two runs each
+   lock a different file.
+
+A file it can't read, lock, or delete is `snapshot_io`, exit 1. Its envelopes have `forge` and
+`target` set to `null`, and `targets` empty.
 
 ## A worked loop
 

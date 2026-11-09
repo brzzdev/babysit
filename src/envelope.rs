@@ -7,6 +7,7 @@ use crate::forge::{Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetS
 
 pub const BRIEF_BODY_CHARS: usize = 200;
 pub const EXIT_ERROR: u8 = 1;
+pub const EXIT_FORGOTTEN: u8 = 0;
 const EXIT_TIMED_OUT: u8 = 3;
 const EXIT_WOKE: u8 = 0;
 const HTML_COMMENT_CLOSE: &str = "-->";

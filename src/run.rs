@@ -1,17 +1,20 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::ops::ControlFlow;
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use crate::cli::Args;
 use crate::clock::{Clock, rfc3339};
 use crate::diff::diff;
-use crate::envelope::{self, EXIT_ERROR, Envelope, ErrorKind, Forge, Outcome, Summary};
+use crate::envelope::{
+    self, EXIT_ERROR, EXIT_FORGOTTEN, Envelope, ErrorKind, Forge, Outcome, Summary,
+};
 use crate::exec::Exec;
 use crate::forge::{Backend, Failure, Hints, Snapshot, Target};
 use crate::reference::Reference;
 use crate::rule;
-use crate::snapshot_file::{Entry, OpenError, SnapshotFile};
+use crate::snapshot_file::{self, Entry, SnapshotFile};
 use crate::target::{self, Locator};
 
 /// Consecutive failed polls of one target that end the run.
@@ -66,15 +69,7 @@ pub fn run(
     let snapshot_path = args.snapshot.display();
     let mut file = match SnapshotFile::open(&args.snapshot) {
         Ok(file) => file,
-        Err(OpenError::Invalid(message)) => return Err(UsageError(message)),
-        Err(OpenError::LockHeld) => {
-            let message = format!("{snapshot_path} is locked by another babysit run");
-            return Ok(fail_locally(stdout, ErrorKind::LockHeld, message));
-        }
-        Err(OpenError::Io(error)) => {
-            let message = format!("{snapshot_path}: {error}");
-            return Ok(fail_locally(stdout, ErrorKind::SnapshotIo, message));
-        }
+        Err(error) => return fail_on_snapshot_file(stdout, &args.snapshot, error),
     };
     let located = Locator::new(exec, call_deadline).locate_all(&args.targets);
     let references = match located {
@@ -674,6 +669,33 @@ fn entry(target: &Target, snapshot: Snapshot) -> Entry {
         url: target.url.clone(),
         snapshot,
     }
+}
+
+/// Deletes the snapshot file at `path`, touching no forge.
+pub fn forget(path: &Path, stdout: &mut impl Write) -> Result<u8, UsageError> {
+    match snapshot_file::forget(path) {
+        Ok(()) => Ok(EXIT_FORGOTTEN),
+        Err(error) => fail_on_snapshot_file(stdout, path, error),
+    }
+}
+
+fn fail_on_snapshot_file(
+    stdout: &mut impl Write,
+    path: &Path,
+    error: snapshot_file::Error,
+) -> Result<u8, UsageError> {
+    let (kind, message) = match error {
+        snapshot_file::Error::Invalid(message) => return Err(UsageError(message)),
+        snapshot_file::Error::LockHeld => (
+            ErrorKind::LockHeld,
+            format!("{} is locked by another babysit run", path.display()),
+        ),
+        snapshot_file::Error::Io(error) => (
+            ErrorKind::SnapshotIo,
+            format!("{}: {error}", path.display()),
+        ),
+    };
+    Ok(fail_locally(stdout, kind, message))
 }
 
 fn fail_locally(stdout: &mut impl Write, kind: ErrorKind, message: String) -> u8 {
@@ -1481,6 +1503,127 @@ mod tests {
             assert!(code.is_err(), "{contents:?}");
             assert_eq!(fs::read(sandbox.snapshot()).unwrap(), contents);
         }
+    }
+
+    fn forget_into(snapshot: &Path) -> (Result<u8, UsageError>, String) {
+        let mut stdout = Vec::new();
+        let code = forget(snapshot, &mut stdout);
+        (code, String::from_utf8(stdout).unwrap())
+    }
+
+    #[test]
+    fn forgetting_a_snapshot_file_deletes_it_and_its_temp_file_but_keeps_the_lock() {
+        let sandbox = Sandbox::new("forget");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        fs::write(sandbox.snapshot().with_added_extension("tmp"), "{").unwrap();
+
+        let (code, stdout) = forget_into(&sandbox.snapshot());
+
+        assert_eq!(code.unwrap(), 0);
+        assert_eq!(stdout, "");
+        let left: Vec<_> = fs::read_dir(&sandbox.dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["snapshot.json.lock"]);
+    }
+
+    #[test]
+    fn forgetting_where_neither_the_file_nor_its_lock_exists_creates_nothing() {
+        let sandbox = Sandbox::new("forget-nothing");
+
+        for snapshot in [
+            sandbox.snapshot(),
+            sandbox.dir.join("missing/snapshot.json"),
+        ] {
+            let (code, stdout) = forget_into(&snapshot);
+
+            assert_eq!(code.unwrap(), 0);
+            assert_eq!(stdout, "");
+        }
+        assert_eq!(fs::read_dir(&sandbox.dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn forgetting_a_snapshot_file_another_run_holds_is_lock_held() {
+        let sandbox = Sandbox::new("forget-lock");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let before = saved(&sandbox.snapshot());
+        let _run = SnapshotFile::open(&sandbox.snapshot()).unwrap();
+
+        let (code, stdout) = forget_into(&sandbox.snapshot());
+
+        assert_eq!(code.unwrap(), 1);
+        let envelope: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(envelope["error"]["kind"], "lock_held");
+        assert_eq!(envelope["error"]["forge"], Value::Null);
+        assert_eq!(envelope["error"]["target"], Value::Null);
+        assert_eq!(saved(&sandbox.snapshot()), before);
+    }
+
+    #[test]
+    fn forgetting_a_file_that_isnt_a_snapshot_file_is_a_usage_error() {
+        let sandbox = Sandbox::new("forget-foreign");
+        for contents in [
+            &b"not json"[..],
+            b"[]",
+            br#"{"targets": {}}"#,
+            br#"{"version": 1, "targets": []}"#,
+            br#"{"version": "1", "targets": {}}"#,
+        ] {
+            fs::write(sandbox.snapshot(), contents).unwrap();
+
+            let (code, stdout) = forget_into(&sandbox.snapshot());
+
+            assert!(code.is_err(), "{contents:?}");
+            assert_eq!(stdout, "");
+            assert_eq!(fs::read(sandbox.snapshot()).unwrap(), contents);
+        }
+    }
+
+    #[test]
+    fn forgetting_a_snapshot_file_of_another_version_deletes_it() {
+        let sandbox = Sandbox::new("forget-version");
+        for contents in [
+            r#"{"version": 0, "targets": {}}"#,
+            r#"{"version": 2, "targets": {"u": {"shape": "unknown"}}}"#,
+        ] {
+            fs::write(sandbox.snapshot(), contents).unwrap();
+
+            let (code, _) = forget_into(&sandbox.snapshot());
+
+            assert_eq!(code.unwrap(), 0, "{contents}");
+            assert!(!sandbox.snapshot().exists());
+        }
+    }
+
+    #[test]
+    fn forgetting_a_file_babysit_cannot_delete_is_snapshot_io() {
+        let sandbox = Sandbox::new("forget-io");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        fs::set_permissions(&sandbox.dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let (code, stdout) = forget_into(&sandbox.snapshot());
+
+        assert_eq!(code.unwrap(), 1);
+        let envelope: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(envelope["error"]["kind"], "snapshot_io");
+        assert!(sandbox.snapshot().exists());
+    }
+
+    #[test]
+    fn a_run_after_forgetting_records_a_fresh_baseline() {
+        let sandbox = Sandbox::new("forget-rerun");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        forget_into(&sandbox.snapshot()).0.unwrap();
+
+        let (code, envelope) = watch(
+            &args(&[URL], &sandbox.snapshot(), Some(0)),
+            vec![returns(URL, poll(&["1", "2"]))],
+        );
+
+        assert_eq!(code, 3);
+        assert_eq!(envelope, timed_out(&[summary(URL)]));
     }
 
     #[test]

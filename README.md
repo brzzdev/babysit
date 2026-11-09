@@ -61,7 +61,8 @@ human opens a line thread, it prints one JSON envelope and exits 0:
 }
 ```
 
-The agent acts on the events, then runs the same command again.
+The agent acts on the events, then runs the same command again. Once it's done with the loop,
+`babysit forget --snapshot .babysit.json` deletes the file, leaving the next run a fresh baseline.
 
 Rules, event kinds, the envelope, exit codes, and the snapshot file are all in the
 [usage reference](docs/usage.md).
