@@ -196,8 +196,9 @@ jq '.events[] | {kind, target, url, body, truncated, reply_to, path, line, colou
 In the background, the harness's output file mixes the envelope with stderr and its own lines, so
 pass `--out` with a file only this run writes, never the snapshot file. stdout stays empty, the
 harness reports the exit status, and the file holds one whole envelope once the run ends. babysit
-deletes an earlier run's file once the run starts, so no file means the run ended without an
-envelope: killed, or failing to write it (exit 1). After exit 2, read stderr, not the file:
+deletes an earlier run's file once it holds the snapshot's lock, so no file means the run ended
+without an envelope: killed, or failing to write it (exit 1). After exit 2, read stderr, not the
+file:
 
 ```sh
 babysit --out "$snap.wait.json" …

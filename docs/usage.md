@@ -463,7 +463,8 @@ settled, which ends after one round:
 
 A run with `--out wait.json --until 'colour=green,red,amber'` on a running GitLab job, which ends
 once the job finishes. stdout stays empty, and `wait.json` holds the envelope. A job's summary has
-only `head` and `colour` past `state`:
+only `head` and `colour` past `state`. Started on a job that reads amber before it has run, such as
+an unplayed manual job, the same run ends `met` at once:
 
 <!-- checked: met-job -->
 ```json

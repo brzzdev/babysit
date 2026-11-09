@@ -28,4 +28,4 @@ X-Runtime: 0.134903
 X-Ua-Compatible: IE=edge
 X-Xss-Protection: 1; mode=block
 
-{"data":{"project":{"fullPath":"gitlab-org/gitlab","job":{"finishedAt":null,"name":"e2e:test-on-cng","pipeline":{"sha":"4e9958dd6ba051c02d5eb240c65fbc34aab6a675","status":"RUNNING"},"status":"RUNNING"}}}}
+{"data":{"project":{"job":{"finishedAt":null,"name":"e2e:test-on-cng","pipeline":{"sha":"4e9958dd6ba051c02d5eb240c65fbc34aab6a675","status":"RUNNING"},"status":"RUNNING"},"webUrl":"https://gitlab.com/gitlab-org/gitlab"}}}

@@ -1,6 +1,5 @@
 query ($id: CiPipelineID!, $jobs: Boolean = true, $jobsAfter: String, $project: ID!) {
   project(fullPath: $project) {
-    fullPath
     pipeline(id: $id) {
       finishedAt
       id
@@ -26,5 +25,6 @@ query ($id: CiPipelineID!, $jobs: Boolean = true, $jobsAfter: String, $project: 
       sha
       status
     }
+    webUrl
   }
 }

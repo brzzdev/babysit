@@ -1,6 +1,5 @@
 query ($id: JobID!, $project: ID!) {
   project(fullPath: $project) {
-    fullPath
     job(id: $id) {
       finishedAt
       name
@@ -12,5 +11,6 @@ query ($id: JobID!, $project: ID!) {
       }
       status
     }
+    webUrl
   }
 }

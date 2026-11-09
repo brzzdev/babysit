@@ -196,7 +196,7 @@ impl Summary {
                 head: poll.head.clone(),
                 colour: snapshot.reported.colour,
             }),
-            change: target.kind.has_change().then(|| ChangeSummary {
+            change: target.kind.is_change_request().then(|| ChangeSummary {
                 absent_ci: poll.state == TargetState::Open
                     && poll.ci.is_none()
                     && snapshot.reported.absence == Some(Absence::Reported),

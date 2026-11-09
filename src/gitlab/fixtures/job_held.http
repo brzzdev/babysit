@@ -1,31 +1,31 @@
 HTTP/2.0 200 OK
 Cache-Control: max-age=0, private, must-revalidate
 Cf-Cache-Status: DYNAMIC
-Cf-Ray: a57cc2694e99f060-MAN
-Content-Security-Policy: base-uri 'self'; child-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ 'self' https://gitlab.com/assets/ blob: data:; connect-src 'self' https://gitlab.com wss://gitlab.com https://sentry.gitlab.net https://new-sentry.gitlab.net https://customers.gitlab.com https://snowplow.trx.gitlab.net https://sourcegraph.com https://collector.prd-278964.gl-product-analytics.com https://analytics.gitlab.com snowplowprd.trx.gitlab.net; default-src 'self'; font-src 'self'; form-action 'self' https: http:; frame-ancestors 'self'; frame-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ https://www.youtube.com https://embed.figma.com https://www.figma.com; img-src 'self' data: blob: http: https:; manifest-src 'self'; media-src 'self' data: blob: http: https:; object-src 'none'; report-uri https://new-sentry.gitlab.net/api/4/security/?sentry_key=f5573e26de8f4293b285e556c35dfd6e&sentry_environment=gprd; script-src 'strict-dynamic' 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://www.recaptcha.net/ https://apis.google.com https://*.zuora.com/apps/PublicHostedPageLite.do 'nonce-d6jNFKRFsxJm5EyD0oW3og=='; style-src 'self' 'unsafe-inline'; worker-src 'self' https://gitlab.com/assets/ blob: data:
+Cf-Ray: a57ce4e4dbb20ab7-MAN
+Content-Security-Policy: base-uri 'self'; child-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ 'self' https://gitlab.com/assets/ blob: data:; connect-src 'self' https://gitlab.com wss://gitlab.com https://sentry.gitlab.net https://new-sentry.gitlab.net https://customers.gitlab.com https://snowplow.trx.gitlab.net https://sourcegraph.com https://collector.prd-278964.gl-product-analytics.com https://analytics.gitlab.com snowplowprd.trx.gitlab.net; default-src 'self'; font-src 'self'; form-action 'self' https: http:; frame-ancestors 'self'; frame-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ https://www.youtube.com https://embed.figma.com https://www.figma.com; img-src 'self' data: blob: http: https:; manifest-src 'self'; media-src 'self' data: blob: http: https:; object-src 'none'; report-uri https://new-sentry.gitlab.net/api/4/security/?sentry_key=f5573e26de8f4293b285e556c35dfd6e&sentry_environment=gprd; script-src 'strict-dynamic' 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://www.recaptcha.net/ https://apis.google.com https://*.zuora.com/apps/PublicHostedPageLite.do 'nonce-398SI8PIcsNQRE16Uk2ivQ=='; style-src 'self' 'unsafe-inline'; worker-src 'self' https://gitlab.com/assets/ blob: data:
 Content-Type: application/json; charset=utf-8
-Date: Mon, 09 Nov 2026 12:18:20 GMT
-Etag: W/"0013d8122bd15fe6fc75c378ce530335"
-Gitlab-Lb: haproxy-main-16-lb-gprd
-Gitlab-Sv: api-gke-us-east1-b
+Date: Mon, 09 Nov 2026 12:41:52 GMT
+Etag: W/"999600dae5387b2cdbc35b244488fade"
+Gitlab-Lb: haproxy-main-http-us-east1-d-57cbd9d876-cx4pp
+Gitlab-Sv: api-gke-us-east1-d
 Nel: {"max_age": 0}
 Permissions-Policy: interest-cohort=()
 Ratelimit-Limit: 2000
 Ratelimit-Name: throttle_authenticated_api
-Ratelimit-Observed: 36
-Ratelimit-Remaining: 1964
-Ratelimit-Reset: 1794226740
+Ratelimit-Observed: 39
+Ratelimit-Remaining: 1961
+Ratelimit-Reset: 1794228120
 Referrer-Policy: strict-origin-when-cross-origin
 Server: cloudflare
 Strict-Transport-Security: max-age=31536000
 Vary: Origin
 X-Content-Type-Options: nosniff
 X-Frame-Options: SAMEORIGIN
-X-Gitlab-Meta: {"correlation_id":"a57cc2694e99f060-MAN","version":"1"}
+X-Gitlab-Meta: {"correlation_id":"a57ce4e4dbb20ab7-MAN","version":"1"}
 X-Permitted-Cross-Domain-Policies: none
-X-Request-Id: a57cc2694e99f060-MAN
-X-Runtime: 0.158922
+X-Request-Id: a57ce4e4dbb20ab7-MAN
+X-Runtime: 0.147463
 X-Ua-Compatible: IE=edge
 X-Xss-Protection: 1; mode=block
 
-{"data":{"project":{"fullPath":"gitlab-org/cloud-native/gitlab-operator","job":{"finishedAt":null,"name":"create_review_ocp","pipeline":{"sha":"74f2a57707c80b11ca9fdfcfc7b6d2a27ba1fd48","status":"MANUAL"},"status":"CREATED"}}}}
+{"data":{"project":{"job":{"finishedAt":null,"name":"create_review_ocp","pipeline":{"sha":"74f2a57707c80b11ca9fdfcfc7b6d2a27ba1fd48","status":"MANUAL"},"status":"CREATED"},"webUrl":"https://gitlab.com/gitlab-org/cloud-native/gitlab-operator"}}}

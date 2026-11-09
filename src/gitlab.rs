@@ -219,8 +219,7 @@ impl<E: Exec> GitLab<'_, E> {
             let message = format!("{} is not found or not visible to glab", reference.given);
             return Err(fatal(ErrorKind::TargetNotFound, &message));
         };
-        let origin = web_origin(&reference.given);
-        target.url = format!("{origin}/{}/-/{}/{number}", found.full_path, api.resource);
+        target.url = format!("{}/-/{}/{number}", found.web_url, api.resource);
         Ok((target, hints))
     }
 
@@ -877,12 +876,11 @@ struct CiJob {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CiProject {
-    full_path: String,
     job: Option<CiJob>,
     pipeline: Option<Pipeline>,
+    web_url: String,
 }
 
-/// The pipeline a job belongs to.
 #[derive(Deserialize)]
 struct JobPipeline {
     sha: String,
@@ -1174,10 +1172,16 @@ mod tests {
     const BRIDGE: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860976382";
     const FAILED_PIPELINE: &str = "https://gitlab.com/gitlab-org/cli/-/pipelines/3044291302";
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
+    /// The variable asking a pipeline poll for the page after the first.
+    const JOBS_AFTER: &str = " -f jobsAfter=JOBS_1";
+    const JOBS_CURSOR: &str = "JOBS_1";
     const HEAD: &str = "25892092f1db0711fcea689c27db39f6d928d2eb";
     const MANUAL_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941139";
     /// The recorded head pipeline's merge commit.
     const MERGE_SHA: &str = "d29dd22357102fba3709a18e01c6a96e025174a3";
+    /// Where a pipeline poll's reply holds the pipeline.
+    const PIPELINE: &str = "/data/project/pipeline";
+    const PIPELINE_JOBS: &str = "/data/project/pipeline/jobs";
     const PLAIN_MR_ID: &str = "552726042";
     /// The fixture's `Ratelimit-Reset`.
     const RESET: u64 = 1_792_533_720;
@@ -2233,9 +2237,18 @@ mod tests {
     fn resolves_a_job_or_bridge_to_a_url_built_from_its_project() {
         let job = ci_resolve(MANUAL_JOB, include_str!("gitlab/fixtures/job_manual.http"));
         let bridge = ci_resolve(BRIDGE, include_str!("gitlab/fixtures/job_bridge.http"));
+        let insecure = MANUAL_JOB.replace("https://", "http://");
+        let (call, _) = ci_call(MANUAL_JOB, "", "");
+        let over_http = resolve_url(
+            &insecure,
+            &call,
+            include_str!("gitlab/fixtures/job_manual.http"),
+            0,
+        );
 
         assert_eq!(job.unwrap(), ci_target(MANUAL_JOB));
         assert_eq!(bridge.unwrap(), ci_target(BRIDGE));
+        assert_eq!(over_http.unwrap().url, MANUAL_JOB);
     }
 
     #[test]
@@ -2363,12 +2376,12 @@ mod tests {
     #[test]
     fn a_pipeline_pages_its_jobs_to_their_end() {
         let full = include_str!("gitlab/fixtures/pipeline_failed.http");
-        let jobs = "/data/project/pipeline/jobs";
-        let first = edited_at(full, jobs, |jobs| {
+
+        let first = edited_at(full, PIPELINE_JOBS, |jobs| {
             jobs["nodes"].as_array_mut().unwrap().truncate(10);
-            jobs["pageInfo"] = json!({"hasNextPage": true, "endCursor": "JOBS_1"});
+            jobs["pageInfo"] = json!({"hasNextPage": true, "endCursor": JOBS_CURSOR});
         });
-        let second = edited_at(full, jobs, |jobs| {
+        let second = edited_at(full, PIPELINE_JOBS, |jobs| {
             jobs["nodes"].as_array_mut().unwrap().drain(..10);
         });
 
@@ -2376,7 +2389,7 @@ mod tests {
             &ci_target(FAILED_PIPELINE),
             [
                 ci_call(FAILED_PIPELINE, "", &first),
-                ci_call(FAILED_PIPELINE, " -f jobsAfter=JOBS_1", &second),
+                ci_call(FAILED_PIPELINE, JOBS_AFTER, &second),
             ],
         );
 
@@ -2434,10 +2447,10 @@ mod tests {
     #[test]
     fn a_retry_landing_between_pipeline_pages_fails_the_poll() {
         let full = include_str!("gitlab/fixtures/pipeline_failed.http");
-        let first = edited_at(full, "/data/project/pipeline/jobs", |jobs| {
-            jobs["pageInfo"] = json!({"hasNextPage": true, "endCursor": "JOBS_1"});
+        let first = edited_at(full, PIPELINE_JOBS, |jobs| {
+            jobs["pageInfo"] = json!({"hasNextPage": true, "endCursor": JOBS_CURSOR});
         });
-        let retried = edited_at(full, "/data/project/pipeline/newest/nodes/0", |newest| {
+        let retried = edited_at(full, &format!("{PIPELINE}/newest/nodes/0"), |newest| {
             newest["id"] = json!("gid://gitlab/Ci::Build/17856600999");
         });
 
@@ -2445,7 +2458,7 @@ mod tests {
             &ci_target(FAILED_PIPELINE),
             [
                 ci_call(FAILED_PIPELINE, "", &first),
-                ci_call(FAILED_PIPELINE, " -f jobsAfter=JOBS_1", &retried),
+                ci_call(FAILED_PIPELINE, JOBS_AFTER, &retried),
             ],
         );
 
@@ -2455,7 +2468,7 @@ mod tests {
     #[test]
     fn retrying_a_job_reopens_its_finished_pipeline() {
         let failed = include_str!("gitlab/fixtures/pipeline_failed.http");
-        let retried = edited_at(failed, "/data/project/pipeline", |pipeline| {
+        let retried = edited_at(failed, PIPELINE, |pipeline| {
             pipeline["status"] = json!("RUNNING");
         });
 
@@ -2471,7 +2484,7 @@ mod tests {
     fn a_skipped_pipeline_passes_with_no_merge_for_it_to_block() {
         let skipped = edited_at(
             include_str!("gitlab/fixtures/pipeline_failed.http"),
-            "/data/project/pipeline",
+            PIPELINE,
             |pipeline| {
                 pipeline["status"] = json!("SKIPPED");
                 pipeline["jobs"]["nodes"] = json!([]);

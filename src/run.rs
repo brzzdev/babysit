@@ -64,9 +64,7 @@ pub fn run(
     if let Some(out) = &args.out
         && snapshot_file::collides(&args.snapshot, out)
     {
-        return Err(UsageError(
-            "--out must not write over the snapshot file, its `.lock`, or its `.tmp`".to_owned(),
-        ));
+        return Err(out_collides());
     }
     let deadline = args
         .timeout
@@ -79,6 +77,12 @@ pub fn run(
         Ok(file) => file,
         Err(error) => return fail_on_snapshot_file(stdout, &args.snapshot, error),
     };
+    // Taking the lock creates its file, so a link there now shows where it leads.
+    if let Some(out) = &args.out
+        && snapshot_file::collides(&args.snapshot, out)
+    {
+        return Err(out_collides());
+    }
     let located = Locator::new(exec, call_deadline).locate_all(&args.targets);
     let references = match located {
         Ok(references) => references,
@@ -133,6 +137,10 @@ pub fn run(
         return Ok(EXIT_ERROR);
     }
     Ok(envelope.exit_code())
+}
+
+fn out_collides() -> UsageError {
+    UsageError("--out must not write over the snapshot file, its `.lock`, or its `.tmp`".to_owned())
 }
 
 /// Every call the run still has to make: names to resolve, viewers to look up, targets to poll.
@@ -1831,6 +1839,25 @@ mod tests {
 
         assert!(code.is_err());
         assert_eq!(saved(&sandbox.snapshot()), before);
+    }
+
+    #[test]
+    fn an_out_file_a_dangling_lock_link_leads_to_is_a_usage_error_once_locked() {
+        let sandbox = Sandbox::new("lock-link");
+        let out = sandbox.dir.join("wait.json");
+        std::os::unix::fs::symlink(&out, sandbox.dir.join("snapshot.json.lock")).unwrap();
+
+        let (code, _) = watch_into(
+            &Args {
+                out: Some(out.clone()),
+                ..args(&[URL], &sandbox.snapshot(), None)
+            },
+            Vec::new(),
+            &mut OutFile::new(&out),
+        );
+
+        assert!(code.is_err());
+        assert!(out.exists());
     }
 
     #[test]

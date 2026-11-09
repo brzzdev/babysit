@@ -106,7 +106,9 @@ impl Term {
     /// Whether a target of `kind` has a summary carrying the term's field.
     fn fits(&self, kind: TargetKind) -> bool {
         match self {
-            Self::AbsentCi(_) | Self::Merge(_) | Self::UnresolvedThreads(_) => kind.has_change(),
+            Self::AbsentCi(_) | Self::Merge(_) | Self::UnresolvedThreads(_) => {
+                kind.is_change_request()
+            }
             Self::Colour(_) => kind.has_ci(),
             Self::State(_) => true,
         }
