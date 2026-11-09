@@ -31,18 +31,32 @@ use crate::slack::Slack;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let code = match cli.command {
-        Some(Command::Forget { snapshot }) => run::forget(&snapshot, &mut io::stdout().lock()),
-        None => watch(
-            &cli.run
-                .expect("clap requires the run arguments when no subcommand is given"),
+    let (code, subcommand) = match cli.command {
+        Some(Command::Forget { snapshot }) => (
+            run::forget(&snapshot, &mut io::stdout().lock()),
+            Some("forget"),
+        ),
+        None => (
+            watch(
+                &cli.run
+                    .expect("clap requires the run arguments when no subcommand is given"),
+            ),
+            None,
         ),
     };
     match code {
         Ok(code) => ExitCode::from(code),
-        Err(UsageError(message)) => Cli::command()
-            .error(ErrorKind::ValueValidation, message)
-            .exit(),
+        Err(UsageError(message)) => {
+            let mut command = Cli::command();
+            command.build();
+            let command = match subcommand {
+                Some(name) => command
+                    .find_subcommand_mut(name)
+                    .expect("the subcommand that ran is one clap parsed"),
+                None => &mut command,
+            };
+            command.error(ErrorKind::ValueValidation, message).exit()
+        }
     }
 }
 

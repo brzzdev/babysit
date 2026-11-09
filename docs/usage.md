@@ -380,7 +380,8 @@ A target the forge can't find:
 
 Usage errors are found before any forge is polled: a malformed flag, rule, duration, or target; a
 checkout reference babysit can't place; a duration past what the clock can hold; or a `--snapshot`
-file that isn't a babysit snapshot file of this version, or for `forget`, of any version.
+file that isn't a babysit snapshot file of this version (for `forget`, one that isn't a babysit
+snapshot file at all).
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a
 forge's, such as the snapshot file, or `git`, `gh auth token`, or `glab config get token` failing
@@ -466,7 +467,7 @@ forget it to start over.
 
 `babysit forget --snapshot PATH` deletes the file, so the next run against `PATH` records a fresh
 baseline for every target it held. It takes no targets and no other flags, and calls no forge,
-`git`, or `curl`. In order:
+`git`, `gh`, `glab`, or `curl`. In order:
 
 1. When neither `PATH` nor `PATH.lock` exists, even when the directory is missing, it exits 0,
    prints nothing, and creates nothing.

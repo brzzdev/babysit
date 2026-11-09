@@ -13,6 +13,7 @@ use crate::rule::{self, Rule};
     about,
     long_about = None,
     args_conflicts_with_subcommands = true,
+    disable_help_subcommand = true,
     subcommand_negates_reqs = true,
 )]
 pub struct Cli {
@@ -177,6 +178,7 @@ mod tests {
                 "0",
             ],
             &["babysit", "--snapshot", "s.json", "forget"],
+            &["babysit", "help"],
         ] {
             assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
         }
