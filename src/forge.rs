@@ -45,6 +45,11 @@ pub enum TargetKind {
 }
 
 impl TargetKind {
+    /// Whether the target's summary carries `absent_ci`, `merge`, and `unresolved_threads`.
+    pub fn has_change(self) -> bool {
+        self == Self::ChangeRequest
+    }
+
     /// Whether the target has a CI colour.
     pub fn has_ci(self) -> bool {
         match self {

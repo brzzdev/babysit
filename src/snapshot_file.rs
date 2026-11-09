@@ -94,7 +94,9 @@ impl SnapshotFile {
 /// Replaces the file at `path` with `bytes` through `<path>.tmp`, so a reader sees all or nothing.
 pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp_path = temp_path(path);
-    let mut temp = File::create(&temp_path)?;
+    // Created afresh, so an existing link there is never followed.
+    remove_if_present(&temp_path)?;
+    let mut temp = File::create_new(&temp_path)?;
     temp.write_all(bytes)?;
     temp.sync_all()?;
     fs::rename(&temp_path, path)
@@ -223,6 +225,25 @@ mod tests {
         for out in ["s.json.wait.json", "t.json"] {
             assert!(!collides(&snapshot, &dir.join(out)), "{out}");
         }
+    }
+
+    #[test]
+    fn a_replace_never_writes_through_a_link_left_at_its_temp_path() {
+        let dir = std::env::temp_dir().join(format!("babysit-{}-replace", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("other.json");
+        fs::write(&other, "other").unwrap();
+        std::os::unix::fs::symlink(&other, dir.join("out.json.tmp")).unwrap();
+
+        replace(&dir.join("out.json"), b"{}").unwrap();
+        let (out, other) = (
+            fs::read_to_string(dir.join("out.json")).unwrap(),
+            fs::read_to_string(&other).unwrap(),
+        );
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!((out.as_str(), other.as_str()), ("{}", "other"));
     }
 
     #[test]

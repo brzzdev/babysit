@@ -166,10 +166,10 @@ malformed condition or an unknown field is a usage error.
   latest baseline, as a `timed_out` run does, so the events of its last round count as seen.
 - **With rules**, whichever comes first ends the run. When one round both wakes and meets the
   conditions, it ends `woke`. A run with `--until` and no `--on` wakes on no event at all.
-- **Only a pull or merge request** carries `absent_ci`, `merge`, and `unresolved_threads`, and
-  only a pull or merge request, a job, or a pipeline carries `colour`. A target none of whose conditions tests only
-  fields it carries can never meet them, so the run ends with `condition_unfit` once it resolves:
-  `colour=green` on an issue or Slack thread, or `merge=clean` on a job.
+- **Only a pull or merge request** carries `absent_ci`, `merge`, and `unresolved_threads`, and only
+  a pull or merge request, a job, or a pipeline carries `colour`. A target none of whose conditions
+  tests only fields it carries can never meet them, so the run ends with `condition_unfit` once it
+  resolves: `colour=green` on an issue or Slack thread, or `merge=clean` on a job.
 
 Waiting for CI to settle or prove absent, or the target to merge or close, takes one run. The
 `state` condition ends it on a target already closed, whose CI may never settle, and the `state.*`

@@ -303,7 +303,7 @@ impl<E: Exec> GitLab<'_, E> {
             jobs.take(page.jobs.take())?;
             match &first {
                 None => first = Some(page),
-                Some(first) if first.newest() != page.newest() => {
+                Some(first) if first.newest_job_id() != page.newest_job_id() => {
                     return Err(transient("a job was retried between pages"));
                 }
                 Some(_) => {}
@@ -1009,7 +1009,7 @@ impl Pipeline {
         )
     }
 
-    fn newest(&self) -> Option<&str> {
+    fn newest_job_id(&self) -> Option<&str> {
         let newest = self.newest.as_ref()?.nodes.first()?;
         Some(newest.id.as_str())
     }

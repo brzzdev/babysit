@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use serde::Serialize;
 
 use crate::diff;
-use crate::forge::{Absence, Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
+use crate::forge::{Absence, Colour, Failure, Merge, Snapshot, Target, TargetState};
 
 pub const BRIEF_BODY_CHARS: usize = 200;
 pub const EXIT_ERROR: u8 = 1;
@@ -196,7 +196,7 @@ impl Summary {
                 head: poll.head.clone(),
                 colour: snapshot.reported.colour,
             }),
-            change: (target.kind == TargetKind::ChangeRequest).then(|| ChangeSummary {
+            change: target.kind.has_change().then(|| ChangeSummary {
                 absent_ci: poll.state == TargetState::Open
                     && poll.ci.is_none()
                     && snapshot.reported.absence == Some(Absence::Reported),
@@ -237,7 +237,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::forge::{Poll, Reported, poll};
+    use crate::forge::{Poll, Reported, TargetKind, poll};
 
     fn pull_request() -> Target {
         Target {
