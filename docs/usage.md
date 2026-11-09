@@ -142,9 +142,9 @@ malformed condition or an unknown field is a usage error.
 
 - **A target meets** the run's conditions when its summary passes at least one `--until`; repeated
   `--until` conditions are ORed. A field the summary holds as `null` matches no value.
-- **The run's conditions are met** once every target meets them. babysit checks after every round,
-  the first poll's included, so a condition that already holds ends the run after one round:
-  unlike a rule, a condition sees what was already true.
+- **The run's conditions are met** once every target meets them. babysit tests them after every
+  round, the first poll's included, so a condition that already holds ends the run after one
+  round: unlike a rule, a condition sees what was already true.
 - **A met run** prints `outcome: "met"` with empty `events` and exits 0. It saves each target's
   latest baseline, as a `timed_out` run does, so the events of its last round count as seen.
 - **With rules**, whichever comes first ends the run. When one round both wakes and meets the

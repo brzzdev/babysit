@@ -93,7 +93,7 @@ pub fn fit(conditions: &[Condition], kind: TargetKind) -> bool {
         || kind == TargetKind::ChangeRequest
         || conditions
             .iter()
-            .any(|condition| !condition.terms.iter().any(Term::needs_change))
+            .any(|condition| !condition.terms.iter().any(Term::needs_change_request))
 }
 
 /// Whether `summary` passes at least one of `conditions`.
@@ -105,7 +105,7 @@ pub fn met(conditions: &[Condition], summary: &Summary) -> bool {
 
 impl Term {
     /// Whether the term tests a field only a pull or merge request's summary carries.
-    fn needs_change(&self) -> bool {
+    fn needs_change_request(&self) -> bool {
         match self {
             Self::AbsentCi(_) | Self::Colour(_) | Self::Merge(_) | Self::UnresolvedThreads(_) => {
                 true

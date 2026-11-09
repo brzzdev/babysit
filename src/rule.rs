@@ -277,7 +277,10 @@ pub fn words<'a, T: Copy>(
                 .map(|(_, meant)| *meant)
                 .ok_or_else(|| {
                     let known: Vec<_> = known.iter().map(|(word, _)| *word).collect();
-                    format!("`{value}` is not a {field}: use {}", known.join(", "))
+                    format!(
+                        "`{value}` is not a valid `{field}`: use {}",
+                        known.join(", ")
+                    )
                 })
         })
         .collect()
