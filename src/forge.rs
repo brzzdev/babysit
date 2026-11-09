@@ -383,3 +383,27 @@ pub fn poll(ids: &[&str]) -> Poll {
         url: "https://github.com/o/r/pull/1".to_owned(),
     }
 }
+
+#[cfg(test)]
+pub fn check(name: &str, deciding: bool, assessment: Assessment) -> Check {
+    Check {
+        assessment,
+        conclusion: format!("{assessment:?}").to_lowercase(),
+        deciding,
+        job_id: Some(format!("{name}-job")),
+        name: name.to_owned(),
+        url: Some(format!("https://github.com/o/r/actions/runs/1/job/{name}")),
+    }
+}
+
+#[cfg(test)]
+pub fn on(head: &str, checks: Vec<Check>) -> Poll {
+    Poll {
+        ci: Some(Ci {
+            checks,
+            required_known: true,
+        }),
+        head: Some(head.to_owned()),
+        ..poll(&[])
+    }
+}

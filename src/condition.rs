@@ -67,10 +67,10 @@ fn term(word: &str) -> Result<(&str, Term), String> {
     let values = rule::values(word, given)?;
     let values = values.iter().map(String::as_str);
     let term = match name {
-        "absent_ci" => Term::AbsentCi(words(values, &ABSENT_CI, name)?),
-        "colour" => Term::Colour(words(values, &COLOURS, name)?),
-        "merge" => Term::Merge(words(values, &MERGES, name)?),
-        "state" => Term::State(words(values, &STATES, name)?),
+        "absent_ci" => Term::AbsentCi(rule::words(values, &ABSENT_CI, name)?),
+        "colour" => Term::Colour(rule::words(values, &COLOURS, name)?),
+        "merge" => Term::Merge(rule::words(values, &MERGES, name)?),
+        "state" => Term::State(rule::words(values, &STATES, name)?),
         "unresolved_threads" => {
             Term::UnresolvedThreads(values.map(count).collect::<Result<_, _>>()?)
         }
@@ -86,29 +86,10 @@ fn term(word: &str) -> Result<(&str, Term), String> {
 
 fn count(value: &str) -> Result<usize, String> {
     let invalid = || format!("`{value}` is not a whole number");
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid());
     }
     value.parse().map_err(|_| invalid())
-}
-
-fn words<'a, T: Copy>(
-    values: impl Iterator<Item = &'a str>,
-    known: &[(&str, T)],
-    field: &str,
-) -> Result<Vec<T>, String> {
-    values
-        .map(|value| {
-            known
-                .iter()
-                .find(|(word, _)| *word == value)
-                .map(|(_, meant)| *meant)
-                .ok_or_else(|| {
-                    let known: Vec<_> = known.iter().map(|(word, _)| *word).collect();
-                    format!("`{value}` is not a {field}: use {}", known.join(", "))
-                })
-        })
-        .collect()
 }
 
 /// Whether a target of `kind` can meet at least one of `conditions`, or there are none.

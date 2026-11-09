@@ -40,14 +40,17 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
    Its directory must already exist, or the run fails with `snapshot_io`. Give each loop its own
    file: events a run's rules ignore still count as seen, so a file shared by loops with different
    rules loses events, and one file allows one run at a time (`lock_held`).
-2. **Take stock**, unless the loop waits only for a state through `--until` (see
-   [Conditions](#conditions)), which sees what is already true. The first poll of a target only
-   records its **baseline**: red CI or an open thread that is already there never wakes. Run once with `--timeout 0`, which polls each target
-   once and exits 3 (on a resumed snapshot it can wake instead: act on its events too), and read `targets[]`: `state`, `colour` (`null` while CI is unsettled), `merge`,
-   and `unresolved_threads`. Each red or amber `colour`, `conflicted` `merge`, and nonzero
-   `unresolved_threads` it shows is yours to deal with: none of them will wake you.
+2. **Take stock**, except in an `--until` wait such as the CI-only set below: skip to step 3,
+   since a condition sees what is already true (see [Conditions](#conditions)). The first poll of
+   a target only records its **baseline**: red CI or an open thread that is already there never
+   wakes. Run once with `--timeout 0`, which polls each target once and exits 3 (on a resumed
+   snapshot it can wake instead: act on its events too), and read `targets[]`: `state`, `colour`
+   (`null` while CI is unsettled), `merge`, and `unresolved_threads`. Each red or amber `colour`,
+   `conflicted` `merge`, and nonzero `unresolved_threads` it shows is yours to deal with: none of
+   them will wake you.
 3. **Wait.** Start the same command without `--timeout` as a background job, before you deal with
-   what step 2 showed, so anything landing meanwhile wakes it. It runs until a wake, `met`, or an error:
+   anything step 2 showed, so anything landing meanwhile wakes it. It runs until a wake, `met`, or
+   an error; `met` ends an `--until` wait, so go to step 6:
    - **Claude Code**: `run_in_background`. The harness re-invokes you when it exits, however long
      that takes.
    - **Codex**: the command keeps running in its session but nothing re-invokes you, so poll it
@@ -75,7 +78,7 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 | Exit | `outcome`   | Do                                                                              |
 | ---- | ----------- | ------------------------------------------------------------------------------- |
 | 0    | `woke`      | Act on `events`, then re-run                                                    |
-| 0    | `met`       | Every target meets an `--until`: read `targets[]`, the state that met it        |
+| 0    | `met`       | Every target meets an `--until`. Read `targets[]` for the state that met it, carry on, and forget the snapshot file |
 | 1    | `error`     | Read `error.kind` (below). Exit 1 with `outcome: "woke"` means the save failed after printing: act on the events, and expect them again |
 | 2    | none        | A usage error: no envelope on stdout, the reason on stderr. Fix the command     |
 | 3    | `timed_out` | No wake before `--timeout`: step 2's usual exit, or recheck what the timeout was for, then re-run |
@@ -84,7 +87,7 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 | ------------------ | ------------------------------------------------------------------------------- |
 | `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, both hold a token for the remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | Tell the user which of `gh`, `glab`, `git`, or `curl` is missing, or that `curl` is older than 8.3 |
-| `condition_unfit`  | An issue or Slack thread can't meet an `--until` on `colour`, `absent_ci`, `merge`, or `unresolved_threads`. Fix the command |
+| `condition_unfit`  | The target is an issue or Slack thread, and every `--until` tests a field only a PR or MR carries (`colour`, `absent_ci`, `merge`, `unresolved_threads`). Fix the command |
 | `lock_held`        | Another run owns this snapshot file. Wait for it, or use another file; the `.lock` file stays, so leave it |
 | `poll_failed`      | The forge failed 10 calls in a row, once under `--timeout 0`, or once on Slack's `invalid_arguments`. Report it before starting another run |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |
@@ -113,8 +116,7 @@ Starting sets:
 --on 'ci.*' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
   --on 'thread.*' --ignore 'comment.* actor=@me' --ignore 'thread.* actor=@me'
 
-# Only until CI settles or proves absent, to carry on with work that needs it green: one run,
-# no stock check, ending `met` at once when CI has already settled
+# Only until CI settles or proves absent, to carry on with work that needs it green: one run
 --until 'colour=green,red,amber' --until 'absent_ci=true' --on 'state.*'
 
 # A reply on an issue
@@ -139,9 +141,9 @@ What bites:
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
-  until every required check has reported, so wait on `ci.*`, or `--until 'absent_ci=true'` beside
-  the colours: `ci.absent` covers a head no check reports on. `ci.settled` is reported when the colour changes, so a second check failing
-  while CI is red wakes nothing.
+  until every required check has reported, so wait on `ci.*`, whose `ci.absent` covers a head no
+  check reports on, or pair `--until 'absent_ci=true'` with the colours. `ci.settled` is reported
+  when the colour changes, so a second check failing while CI is red wakes nothing.
 - **Nothing reports** a conflict clearing, or a job that isn't a deciding check finishing while
   other jobs decide. A GitLab `when: manual` job outside `rules:` is one: it defaults to
   `allow_failure: true`, while inside `rules:` it decides and holds CI amber.
@@ -160,7 +162,7 @@ alternatives, repeated `--until` ORed. Its fields are the summary's: `state` (`o
 `false`), `merge` (`clean`, `behind`, `conflicted`), and `unresolved_threads` (a number).
 
 - **With `--on`, whichever comes first ends the run**, and a round that does both ends `woke`.
-- **With no `--on`, no event wakes** the run, unlike a run with neither.
+- **With no `--on`, the run ends only on `met`, `--timeout`, or an error.**
 - **`absent_ci` stays `true`** on later runs sharing the snapshot file, after an earlier run took
   the `ci.absent` wake, until a check reports or a push restarts the clock.
 

@@ -1,7 +1,7 @@
 use crate::diff::{Detail, Event};
 use crate::forge::Account;
 
-const COLOURS: [&str; 3] = ["amber", "green", "red"];
+const COLOURS: [(&str, &str); 3] = [("amber", "amber"), ("green", "green"), ("red", "red")];
 
 /// Every event kind in v1 with the fields it carries, including kinds no backend reports yet.
 const KINDS: [Kind; 16] = [
@@ -28,7 +28,11 @@ const KINDS: [Kind; 16] = [
 
 const QUOTE: char = '"';
 
-const STATES: [&str; 3] = ["approved", "changes_requested", "commented"];
+const STATES: [(&str, &str); 3] = [
+    ("approved", "approved"),
+    ("changes_requested", "changes_requested"),
+    ("commented", "commented"),
+];
 
 type Kind = (&'static str, &'static [Field]);
 
@@ -182,8 +186,8 @@ fn term(word: &str) -> Result<Term, String> {
             Term::Accounts(field, values.map(selector).collect::<Result<_, _>>()?)
         }
         Field::Body => Term::BodyPrefixes(values.map(body_prefix).collect::<Result<_, _>>()?),
-        Field::Colour => Term::Words(field, words(values, &COLOURS, field)?),
-        Field::State => Term::Words(field, words(values, &STATES, field)?),
+        Field::Colour => Term::Words(field, words(values, &COLOURS, field.name())?),
+        Field::State => Term::Words(field, words(values, &STATES, field.name())?),
     })
 }
 
@@ -255,23 +259,21 @@ fn selector(value: &str) -> Result<Selector, String> {
     }
 }
 
-fn words<'a>(
+/// Each value's meaning in `known`, a table of each word with what it means.
+pub fn words<'a, T: Copy>(
     values: impl Iterator<Item = &'a str>,
-    known: &[&'static str],
-    field: Field,
-) -> Result<Vec<&'static str>, String> {
+    known: &[(&str, T)],
+    field: &str,
+) -> Result<Vec<T>, String> {
     values
         .map(|value| {
             known
                 .iter()
-                .copied()
-                .find(|word| *word == value)
+                .find(|(word, _)| *word == value)
+                .map(|(_, meant)| *meant)
                 .ok_or_else(|| {
-                    format!(
-                        "`{value}` is not a {}: use {}",
-                        field.name(),
-                        known.join(", ")
-                    )
+                    let known: Vec<_> = known.iter().map(|(word, _)| *word).collect();
+                    format!("`{value}` is not a {field}: use {}", known.join(", "))
                 })
         })
         .collect()

@@ -603,7 +603,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::forge::{comment, octocat, poll};
+    use crate::forge::{check, comment, octocat, on, poll};
 
     const MERGE_REQUEST: &str = "https://gitlab.com/g/p/-/merge_requests/1";
     const THREAD: &str = "PRRT_1";
@@ -1047,28 +1047,6 @@ mod tests {
 
     const A: &str = "aaa111";
     const B: &str = "bbb222";
-
-    fn check(name: &str, deciding: bool, assessment: Assessment) -> Check {
-        Check {
-            assessment,
-            conclusion: format!("{assessment:?}").to_lowercase(),
-            deciding,
-            job_id: Some(format!("{name}-job")),
-            name: name.to_owned(),
-            url: Some(format!("https://github.com/o/r/actions/runs/1/job/{name}")),
-        }
-    }
-
-    fn on(head: &str, checks: Vec<Check>) -> Poll {
-        Poll {
-            ci: Some(Ci {
-                checks,
-                required_known: true,
-            }),
-            head: Some(head.to_owned()),
-            ..poll(&[])
-        }
-    }
 
     #[test]
     fn an_issue_reports_only_its_comments_and_state() {

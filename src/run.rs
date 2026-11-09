@@ -43,7 +43,7 @@ impl<'a> Backends<'a> {
 #[derive(Debug)]
 pub struct UsageError(pub String);
 
-/// Watches the targets until one wakes, they meet the conditions, it times out, or one fails; prints, saves and returns the exit code.
+/// Watches the targets until the run ends; prints, saves and returns the exit code.
 pub fn run(
     args: &Args,
     backends: &Backends,
@@ -303,7 +303,7 @@ impl<'a> Watch<'a> {
     ) -> io::Result<Option<Envelope>> {
         let mut failed = None;
         if self
-            .resolve_due(args, backends, clock, file, stderr, &mut failed)
+            .resolve_due(&args.until, backends, clock, file, stderr, &mut failed)
             .is_break()
             || self
                 .look_up_due(backends, clock, stderr, &mut failed)
@@ -397,7 +397,7 @@ impl<'a> Watch<'a> {
     /// breaks when the deadline killed a call.
     fn resolve_due(
         &mut self,
-        args: &Args,
+        conditions: &[Condition],
         backends: &Backends,
         clock: &impl Clock,
         file: &mut SnapshotFile,
@@ -442,7 +442,7 @@ impl<'a> Watch<'a> {
                 failed.get_or_insert(Envelope::from_failure(failure, pending.given));
                 continue;
             }
-            if !condition::fit(&args.until, target.kind) {
+            if !condition::fit(conditions, target.kind) {
                 failed.get_or_insert(unfit(&target));
                 continue;
             }
@@ -793,7 +793,7 @@ mod tests {
     use crate::envelope::{BRIEF_BODY_CHARS, Forge};
     use crate::exec::{Output, Script};
     use crate::forge::{
-        Absence, Account, Assessment, Check, Ci, Merge, Poll, TargetKind, TargetState, octocat,
+        Absence, Account, Assessment, Merge, Poll, TargetKind, TargetState, check, octocat, on,
         poll,
     };
     use crate::reference::{self, Locus, Reference};
@@ -1020,11 +1020,20 @@ mod tests {
     }
 
     fn seed(snapshot: &Path, url: &str, forge_id: &str, ids: &[&str]) {
-        let mut file = SnapshotFile::open(snapshot).unwrap();
+        seed_snapshot(
+            snapshot,
+            url,
+            forge_id,
+            Snapshot::first(poll(ids), UNIX_EPOCH),
+        );
+    }
+
+    fn seed_snapshot(path: &Path, url: &str, forge_id: &str, snapshot: Snapshot) {
+        let mut file = SnapshotFile::open(path).unwrap();
         file.save([Entry {
             forge_id: forge_id.to_owned(),
             url: url.to_owned(),
-            snapshot: Snapshot::first(poll(ids), UNIX_EPOCH),
+            snapshot,
         }])
         .unwrap();
     }
@@ -2583,18 +2592,8 @@ mod tests {
 
     fn with_ci(ids: &[&str], assessment: Assessment) -> Poll {
         Poll {
-            ci: Some(Ci {
-                checks: vec![Check {
-                    assessment,
-                    conclusion: format!("{assessment:?}").to_lowercase(),
-                    deciding: true,
-                    job_id: None,
-                    name: "check".to_owned(),
-                    url: None,
-                }],
-                required_known: true,
-            }),
-            ..poll(ids)
+            comments: poll(ids).comments,
+            ..on("abc123", vec![check("test", true, assessment)])
         }
     }
 
@@ -2775,14 +2774,7 @@ mod tests {
         };
         let mut reported = Snapshot::first(no_ci.clone(), UNIX_EPOCH);
         reported.reported.absence = Some(Absence::Reported);
-        SnapshotFile::open(&sandbox.snapshot())
-            .unwrap()
-            .save([Entry {
-                forge_id: NODE_ID.to_owned(),
-                url: URL.to_owned(),
-                snapshot: reported,
-            }])
-            .unwrap();
+        seed_snapshot(&sandbox.snapshot(), URL, NODE_ID, reported);
         let args = until(args(&[URL], &sandbox.snapshot(), None), &["absent_ci=true"]);
 
         let traced = trace(&args, vec![returns(URL, no_ci)]);
