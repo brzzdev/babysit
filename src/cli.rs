@@ -19,7 +19,6 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// `None` only under a subcommand.
     #[command(flatten)]
     pub run: Option<Args>,
 }

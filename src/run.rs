@@ -7,7 +7,9 @@ use std::time::{Duration, SystemTime};
 use crate::cli::Args;
 use crate::clock::{Clock, rfc3339};
 use crate::diff::diff;
-use crate::envelope::{self, EXIT_ERROR, Envelope, ErrorKind, Forge, Outcome, Summary};
+use crate::envelope::{
+    self, EXIT_ERROR, EXIT_FORGOTTEN, Envelope, ErrorKind, Forge, Outcome, Summary,
+};
 use crate::exec::Exec;
 use crate::forge::{Backend, Failure, Hints, Snapshot, Target};
 use crate::reference::Reference;
@@ -15,7 +17,6 @@ use crate::rule;
 use crate::snapshot_file::{self, Entry, SnapshotFile};
 use crate::target::{self, Locator};
 
-const EXIT_FORGOTTEN: u8 = 0;
 /// Consecutive failed polls of one target that end the run.
 const GIVE_UP_AFTER: u32 = 10;
 const RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
@@ -1510,15 +1511,6 @@ mod tests {
         (code, String::from_utf8(stdout).unwrap())
     }
 
-    fn listing(dir: &Path) -> Vec<String> {
-        let mut names: Vec<_> = fs::read_dir(dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        names
-    }
-
     #[test]
     fn forgetting_a_snapshot_file_deletes_it_and_its_temp_file_but_keeps_the_lock() {
         let sandbox = Sandbox::new("forget");
@@ -1529,7 +1521,11 @@ mod tests {
 
         assert_eq!(code.unwrap(), 0);
         assert_eq!(stdout, "");
-        assert_eq!(listing(&sandbox.dir), ["snapshot.json.lock"]);
+        let left: Vec<_> = fs::read_dir(&sandbox.dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["snapshot.json.lock"]);
     }
 
     #[test]
@@ -1545,7 +1541,7 @@ mod tests {
             assert_eq!(code.unwrap(), 0);
             assert_eq!(stdout, "");
         }
-        assert_eq!(listing(&sandbox.dir), Vec::<String>::new());
+        assert_eq!(fs::read_dir(&sandbox.dir).unwrap().count(), 0);
     }
 
     #[test]

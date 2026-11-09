@@ -60,13 +60,14 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
    last wake can wake the next run. Stop when a run wakes on `state.merged` or `state.closed`, or
    `targets[].state` reads `merged` or `closed`, when the goal you were waiting for is reached, or
    on an error you can't fix.
-6. **Forget the snapshot file** once the loop is over for good:
+6. **Forget the snapshot file** when step 5 stops on a merge, a close, or your goal. Keep it after
+   an error, so a resumed loop picks up where it left off:
    ```sh
    babysit forget --snapshot "$snap"
    ```
-   It deletes the file and any `.tmp` beside it, keeps the `.lock`, and exits 0 with nothing to
-   delete. While a run still holds the file it fails with `lock_held`: stop that run, wait for it to
-   exit, and forget again. A file that isn't a snapshot file is a usage error, exit 2.
+   It exits 0, also when there is nothing to delete. `lock_held` means a run still holds the file:
+   stop it if it's your own background run, wait for it to exit, and forget again; otherwise leave
+   the file.
 
 ## Exit status
 
