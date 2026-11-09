@@ -74,7 +74,7 @@ pub fn run(
         Ok(file) => file,
         Err(error) => {
             let envelope = snapshot_file_failure(&args.snapshot, error)?;
-            return Ok(print(&envelope, stdout, args, stderr));
+            return Ok(print(&envelope, stdout, args.out.as_deref(), stderr));
         }
     };
     // Taking the lock creates its file, so a link there now shows where it leads.
@@ -84,7 +84,7 @@ pub fn run(
         Ok(references) => references,
         Err((given, error)) => {
             let envelope = unresolved(given, error)?;
-            return Ok(print(&envelope, stdout, args, stderr));
+            return Ok(print(&envelope, stdout, args.out.as_deref(), stderr));
         }
     };
     // A run that ends without an envelope then leaves no earlier run's to mistake for its own.
@@ -115,7 +115,7 @@ pub fn run(
             Some(Summary::new(&tracked.target, snapshot))
         })
         .collect();
-    if !wrote(&envelope, stdout, args, stderr) {
+    if !wrote(&envelope, stdout, args.out.as_deref(), stderr) {
         return Ok(EXIT_ERROR);
     }
     // The envelope has already reported the write that failed.
@@ -755,7 +755,10 @@ fn entry(target: &Target, snapshot: Snapshot) -> Entry {
 pub fn forget(path: &Path, stdout: &mut impl Write) -> Result<u8, UsageError> {
     match snapshot_file::forget(path) {
         Ok(()) => Ok(EXIT_FORGOTTEN),
-        Err(error) => Ok(report(stdout, &snapshot_file_failure(path, error)?)),
+        Err(error) => {
+            let envelope = snapshot_file_failure(path, error)?;
+            Ok(print(&envelope, stdout, None, &mut io::sink()))
+        }
     }
 }
 
@@ -802,8 +805,13 @@ fn unresolved(given: &str, error: target::Error) -> Result<Envelope, UsageError>
 }
 
 /// Writes the envelope, returning the run's exit code.
-fn print(envelope: &Envelope, stdout: &mut impl Write, args: &Args, stderr: &mut impl Write) -> u8 {
-    if wrote(envelope, stdout, args, stderr) {
+fn print(
+    envelope: &Envelope,
+    stdout: &mut impl Write,
+    out: Option<&Path>,
+    stderr: &mut impl Write,
+) -> u8 {
+    if wrote(envelope, stdout, out, stderr) {
         envelope.exit_code()
     } else {
         EXIT_ERROR
@@ -815,13 +823,13 @@ fn print(envelope: &Envelope, stdout: &mut impl Write, args: &Args, stderr: &mut
 fn wrote(
     envelope: &Envelope,
     stdout: &mut impl Write,
-    args: &Args,
+    out: Option<&Path>,
     stderr: &mut impl Write,
 ) -> bool {
     let Err(error) = envelope.write(stdout) else {
         return true;
     };
-    if let Some(out) = &args.out {
+    if let Some(out) = out {
         let _ = writeln!(
             stderr,
             "babysit: could not write {}: {error}",
@@ -829,13 +837,6 @@ fn wrote(
         );
     }
     false
-}
-
-fn report(stdout: &mut impl Write, envelope: &Envelope) -> u8 {
-    match envelope.write(stdout) {
-        Ok(()) => envelope.exit_code(),
-        Err(_) => EXIT_ERROR,
-    }
 }
 
 #[cfg(test)]

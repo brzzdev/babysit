@@ -197,7 +197,6 @@ impl<E: Exec> Backend for GitLab<'_, E> {
 }
 
 impl<E: Exec> GitLab<'_, E> {
-    /// A job or pipeline, its URL built from the project's full path, since a bridge has none.
     /// A job, bridges included, its URL built from its project's, since a bridge has none.
     fn resolve_job(
         &self,
@@ -1164,6 +1163,7 @@ mod tests {
     const FAILED_PIPELINE: &str = "https://gitlab.com/gitlab-org/cli/-/pipelines/3044291302";
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
     const HEAD: &str = "25892092f1db0711fcea689c27db39f6d928d2eb";
+    const JOB: &str = "/data/project/job";
     const JOBS_CURSOR: &str = "JOBS_1";
     const MANUAL_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941139";
     /// The recorded head pipeline's merge commit.
@@ -2219,6 +2219,11 @@ mod tests {
         (call, Ok(Output::exited(0, stdout)))
     }
 
+    /// The variable asking a pipeline poll for the page after the first.
+    fn jobs_after() -> String {
+        format!(" -f jobsAfter={JOBS_CURSOR}")
+    }
+
     fn ci_resolve(url: &str, stdout: &str) -> Result<Target, Failure> {
         resolve_url(url, &ci_call(url, "", stdout).0, stdout, 0)
     }
@@ -2249,7 +2254,7 @@ mod tests {
     fn job_at(status: &str, finished_at: Option<&str>) -> String {
         edited_at(
             include_str!("gitlab/fixtures/job_manual.http"),
-            "/data/project/job",
+            JOB,
             |job| {
                 job["status"] = json!(status);
                 job["finishedAt"] = json!(finished_at);
@@ -2439,11 +2444,7 @@ mod tests {
             &ci_target(FAILED_PIPELINE),
             [
                 ci_call(FAILED_PIPELINE, "", &first),
-                ci_call(
-                    FAILED_PIPELINE,
-                    &format!(" -f jobsAfter={JOBS_CURSOR}"),
-                    &second,
-                ),
+                ci_call(FAILED_PIPELINE, &jobs_after(), &second),
             ],
         );
 
@@ -2479,7 +2480,7 @@ mod tests {
         let blocked_job =
             "https://gitlab.com/gitlab-org/cloud-native/gitlab-operator/-/jobs/17778139797";
         let stdout = include_str!("gitlab/fixtures/job_blocked.http");
-        let queued = edited_at(stdout, "/data/project/job/pipeline", |pipeline| {
+        let queued = edited_at(stdout, &format!("{JOB}/pipeline"), |pipeline| {
             pipeline["status"] = json!("RUNNING");
         });
 
@@ -2513,11 +2514,7 @@ mod tests {
             &ci_target(FAILED_PIPELINE),
             [
                 ci_call(FAILED_PIPELINE, "", &first),
-                ci_call(
-                    FAILED_PIPELINE,
-                    &format!(" -f jobsAfter={JOBS_CURSOR}"),
-                    &retried,
-                ),
+                ci_call(FAILED_PIPELINE, &jobs_after(), &retried),
             ],
         );
 

@@ -72,7 +72,8 @@ release, or a post-merge pipeline on the default branch.
   to unsettled and settles again in the same run.
 - **A bridge**, or trigger job, is a job: its `/-/jobs/<id>` URL resolves to it, with the status
   GitLab reports for it, which follows its downstream pipeline only under `strategy: depend`.
-  Watch the downstream pipeline itself by its own URL, in whichever project it runs.
+  A bridge has no log, so `glab ci trace` on its `job_id` finds nothing: watch the downstream
+  pipeline itself by its own URL, in whichever project it runs.
 - **Retrying a job in a pipeline** reopens the pipeline, which reports `state.reopened` and
   settles again.
 
