@@ -1,0 +1,25 @@
+query ($id: CiPipelineID!, $project: ID!, $jobsAfter: String) {
+  project(fullPath: $project) {
+    fullPath
+    pipeline(id: $id) {
+      finishedAt
+      id
+      jobs(first: 100, after: $jobsAfter, retried: false) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          allowFailure
+          id
+          name
+          status
+          webPath
+        }
+      }
+      path
+      sha
+      status
+    }
+  }
+}

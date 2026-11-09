@@ -90,10 +90,9 @@ fn count(value: &str) -> Result<usize, String> {
 /// Whether a target of `kind` can meet at least one of `conditions`, or there are none.
 pub fn fit(conditions: &[Condition], kind: TargetKind) -> bool {
     conditions.is_empty()
-        || kind == TargetKind::ChangeRequest
         || conditions
             .iter()
-            .any(|condition| !condition.terms.iter().any(Term::needs_change_request))
+            .any(|condition| condition.terms.iter().all(|term| term.fits(kind)))
 }
 
 /// Whether `summary` passes at least one of `conditions`.
@@ -104,13 +103,14 @@ pub fn met(conditions: &[Condition], summary: &Summary) -> bool {
 }
 
 impl Term {
-    /// Whether the term tests a field only a pull or merge request's summary carries.
-    fn needs_change_request(&self) -> bool {
+    /// Whether a target of `kind` has a summary carrying the term's field.
+    fn fits(&self, kind: TargetKind) -> bool {
         match self {
-            Self::AbsentCi(_) | Self::Colour(_) | Self::Merge(_) | Self::UnresolvedThreads(_) => {
-                true
+            Self::AbsentCi(_) | Self::Merge(_) | Self::UnresolvedThreads(_) => {
+                kind == TargetKind::ChangeRequest
             }
-            Self::State(_) => false,
+            Self::Colour(_) => kind.has_ci(),
+            Self::State(_) => true,
         }
     }
 
@@ -120,8 +120,10 @@ impl Term {
             Self::AbsentCi(values) => {
                 change.is_some_and(|change| values.contains(&change.absent_ci))
             }
-            Self::Colour(colours) => change
-                .and_then(|change| change.colour)
+            Self::Colour(colours) => summary
+                .ci
+                .as_ref()
+                .and_then(|ci| ci.colour)
                 .is_some_and(|colour| colours.contains(&colour)),
             Self::Merge(merges) => change
                 .and_then(|change| change.merge)
@@ -137,20 +139,22 @@ impl Term {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::envelope::ChangeSummary;
+    use crate::envelope::{ChangeSummary, CiSummary};
 
     fn conditions(given: &[&str]) -> Vec<Condition> {
         given.iter().map(|given| parse(given).unwrap()).collect()
     }
 
     #[test]
-    fn each_field_holds_only_for_the_summarys_value_and_an_issue_carries_only_state() {
+    fn each_field_holds_only_for_the_summarys_value_on_a_target_that_carries_it() {
         let pull = Summary {
             target: "https://github.com/o/r/pull/1".to_owned(),
             state: TargetState::Open,
-            change: Some(ChangeSummary {
+            ci: Some(CiSummary {
                 head: None,
                 colour: Some(Colour::Green),
+            }),
+            change: Some(ChangeSummary {
                 absent_ci: false,
                 merge: Some(Merge::Behind),
                 unresolved_threads: 2,
@@ -159,22 +163,32 @@ mod tests {
         let issue = Summary {
             target: "https://github.com/o/r/issues/2".to_owned(),
             state: TargetState::Closed,
+            ci: None,
+            change: None,
+        };
+        let job = Summary {
+            target: "https://gitlab.com/g/p/-/jobs/3".to_owned(),
+            state: TargetState::Closed,
+            ci: Some(CiSummary {
+                head: None,
+                colour: Some(Colour::Red),
+            }),
             change: None,
         };
 
-        for (given, on_pull, on_issue) in [
-            ("state=open", true, false),
-            ("state=closed,merged", false, true),
-            ("colour=green", true, false),
-            ("colour=amber,red", false, false),
-            ("absent_ci=false", true, false),
-            ("absent_ci=true", false, false),
-            ("merge=behind", true, false),
-            ("merge=clean,conflicted", false, false),
-            ("unresolved_threads=1,2", true, false),
-            ("unresolved_threads=0", false, false),
-            ("state=open merge=behind", true, false),
-            ("state=open merge=clean", false, false),
+        for (given, on_pull, on_issue, on_job) in [
+            ("state=open", true, false, false),
+            ("state=closed,merged", false, true, true),
+            ("colour=green", true, false, false),
+            ("colour=amber,red", false, false, true),
+            ("absent_ci=false", true, false, false),
+            ("absent_ci=true", false, false, false),
+            ("merge=behind", true, false, false),
+            ("merge=clean,conflicted", false, false, false),
+            ("unresolved_threads=1,2", true, false, false),
+            ("unresolved_threads=0", false, false, false),
+            ("state=open merge=behind", true, false, false),
+            ("state=open merge=clean", false, false, false),
         ] {
             let condition = conditions(&[given]);
             assert_eq!(
@@ -183,8 +197,20 @@ mod tests {
                 "{given} on the pull request"
             );
             assert_eq!(met(&condition, &issue), on_issue, "{given} on the issue");
+            assert_eq!(met(&condition, &job), on_job, "{given} on the job");
         }
         assert!(met(&conditions(&["colour=red", "merge=behind"]), &pull));
+    }
+
+    #[test]
+    fn a_job_or_pipeline_fits_colour_and_state_but_no_change_request_field() {
+        for kind in [TargetKind::Job, TargetKind::Pipeline] {
+            assert!(fit(&conditions(&["colour=green,red,amber"]), kind));
+            assert!(fit(&conditions(&["merge=clean", "state=closed"]), kind));
+            assert!(!fit(&conditions(&["merge=clean"]), kind));
+            assert!(!fit(&conditions(&["colour=green absent_ci=false"]), kind));
+        }
+        assert!(!fit(&conditions(&["colour=green"]), TargetKind::Issue));
     }
 
     #[test]

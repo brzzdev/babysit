@@ -8,6 +8,7 @@ mod forge;
 mod github;
 mod gitlab;
 mod graphql;
+mod out_file;
 mod reference;
 mod response;
 mod rule;
@@ -27,6 +28,7 @@ use crate::clock::SystemClock;
 use crate::exec::SystemExec;
 use crate::github::GitHub;
 use crate::gitlab::GitLab;
+use crate::out_file::OutFile;
 use crate::run::{Backends, UsageError};
 use crate::slack::Slack;
 
@@ -61,12 +63,23 @@ fn watch(args: &Args) -> Result<u8, UsageError> {
         gitlab: &GitLab::new(&exec),
         slack: &Slack::new(&exec),
     };
-    run::run(
-        args,
-        &backends,
-        &exec,
-        &SystemClock,
-        &mut io::stdout().lock(),
-        &mut io::stderr().lock(),
-    )
+    let stderr = &mut io::stderr().lock();
+    match &args.out {
+        Some(path) => run::run(
+            args,
+            &backends,
+            &exec,
+            &SystemClock,
+            &mut OutFile::new(path),
+            stderr,
+        ),
+        None => run::run(
+            args,
+            &backends,
+            &exec,
+            &SystemClock,
+            &mut io::stdout().lock(),
+            stderr,
+        ),
+    }
 }

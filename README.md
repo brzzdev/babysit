@@ -1,7 +1,7 @@
 # babysit
 
-Blocks until a GitHub pull request, GitLab merge request, issue thread, or Slack thread does
-something a coding agent should act on, then prints what happened and exits.
+Blocks until a GitHub pull request, GitLab merge request, job, or pipeline, issue thread, or Slack
+thread does something a coding agent should act on, then prints what happened and exits.
 
 ## Why
 

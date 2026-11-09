@@ -84,13 +84,19 @@ impl SnapshotFile {
         for entry in entries {
             self.contents.targets.insert(entry.url.clone(), entry);
         }
-        let temp_path = temp_path(&self.path);
-        let mut temp = File::create(&temp_path)?;
-        serde_json::to_writer_pretty(&mut temp, &self.contents)?;
-        writeln!(temp)?;
-        temp.sync_all()?;
-        fs::rename(&temp_path, &self.path)
+        let mut bytes = serde_json::to_vec_pretty(&self.contents)?;
+        bytes.push(b'\n');
+        replace(&self.path, &bytes)
     }
+}
+
+/// Replaces the file at `path` with `bytes` through `<path>.tmp`, so a reader sees all or nothing.
+pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp_path = temp_path(path);
+    let mut temp = File::create(&temp_path)?;
+    temp.write_all(bytes)?;
+    temp.sync_all()?;
+    fs::rename(&temp_path, path)
 }
 
 /// Deletes the snapshot file of any version and its temp file, keeping `<path>.lock`: deleting the

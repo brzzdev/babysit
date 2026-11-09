@@ -29,7 +29,7 @@ The caller-owned file that keeps one baseline per target between runs.
 _Avoid_: State file, cache
 
 **Target**:
-A single pull request, merge request, issue, or Slack thread being watched.
+A single pull request, merge request, issue, GitLab job or pipeline, or Slack thread being watched.
 _Avoid_: Item, watch
 
 ### Events

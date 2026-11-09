@@ -1,13 +1,13 @@
 # Using babysit
 
 babysit watches one or more targets, waits for an event its rules care about or for their state
-to meet its conditions, prints one JSON envelope on stdout, and exits. Run it again with the same
+to meet its conditions, prints one JSON envelope on stdout or into `--out`'s file, and exits. Run it again with the same
 `--snapshot` and it picks up where the last run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
 
 ## Invocation
 
 ```sh
-babysit [--on RULE]... [--ignore RULE]... [--until CONDITION]... --snapshot PATH [--interval DURATION] [--timeout DURATION] [--brief] TARGET...
+babysit [--on RULE]... [--ignore RULE]... [--until CONDITION]... --snapshot PATH [--out FILE] [--interval DURATION] [--timeout DURATION] [--brief] TARGET...
 babysit forget --snapshot PATH
 ```
 
@@ -20,6 +20,7 @@ The first form is a run; `forget` deletes a snapshot file (see
 | `--ignore <RULE>`      | none    | Never wake on an event matching this rule, even one an `--on` rule matches; repeatable  |
 | `--until <CONDITION>`  | none    | End the run once every target meets at least one such condition (see [Conditions](#conditions)); repeatable |
 | `--snapshot <PATH>`    | required | The file that keeps what babysit has seen between runs                                 |
+| `--out <FILE>`         | none    | Write the envelope to `FILE` instead of stdout (see [Output](#output))                  |
 | `--interval <DURATION>` | `30s`  | Time between polls of each target; must be longer than zero                             |
 | `--timeout <DURATION>` | none    | Wall-clock cap on the run; `0` polls each target once                                   |
 | `--brief`              | off     | Print each `body` shortened (see [Events](#events))                                     |
@@ -36,14 +37,15 @@ such as retries and rate-limit waits go to stderr, prefixed `babysit:`, and are 
 
 ### Targets
 
-Each target is a pull request, merge request, issue, or Slack thread, named one of two ways:
+Each target is a pull request, merge request, issue, GitLab job or pipeline, or Slack thread, named
+one of two ways:
 
 - **A web URL.** The URL's shape decides the forge, so GitHub Enterprise and self-managed GitLab
   hosts work too. No query or fragment, except on a Slack permalink.
   - GitHub: `https://<host>/<owner>/<repo>/pull/<n>` or `…/issues/<n>`. An issue URL that names a
     pull request is watched as that pull request. A GitHub URL can't name a port.
   - GitLab: `https://<host>/<group>[/<subgroup>…]/<project>/-/merge_requests/<n>`,
-    `…/-/issues/<n>`, or `…/-/work_items/<n>`.
+    `…/-/issues/<n>`, `…/-/work_items/<n>`, `…/-/jobs/<id>`, or `…/-/pipelines/<id>`.
   - Slack: a thread's permalink, `https://<workspace>.slack.com/archives/<channel>/p<ts>`, where
     `<ts>` is the parent message's `ts` without its dot. A reply's permalink,
     `…/p<reply ts>?thread_ts=<parent ts>&cid=<channel>`, names the thread it belongs to; those two
@@ -57,7 +59,21 @@ Each target is a pull request, merge request, issue, or Slack thread, named one 
   it. Anything ambiguous is a usage error asking for the URL instead.
 
 Several targets can be watched in one run. A target's identity is the URL its forge reports, which
-the envelope prints as `target`; two names for the same target are watched once.
+the envelope prints as `target`; two names for the same target are watched once. A job's or
+pipeline's is `https://<host>/<project>/-/jobs/<id>` or `…/-/pipelines/<id>`, with the project's
+path spelled as GitLab spells it.
+
+A **job or pipeline** is a target in its own right, with no merge request needed: a deploy, a
+release, or a post-merge pipeline on the default branch.
+
+- **Retrying** a job creates a new one, and the old URL stays failed: watch the URL
+  `glab ci retry` prints. **Playing** a manual job keeps its id, so the same URL goes from amber
+  to unsettled and settles again in the same run.
+- **A bridge**, or trigger job, is a job: its `/-/jobs/<id>` URL resolves to it, with the status
+  GitLab reports for it, which follows its downstream pipeline only under `strategy: depend`.
+  Watch the downstream pipeline itself by its own URL, in whichever project it runs.
+- **Retrying a job in a pipeline** reopens the pipeline, which reports `state.reopened` and
+  settles again.
 
 ## Rules
 
@@ -149,9 +165,10 @@ malformed condition or an unknown field is a usage error.
   latest baseline, as a `timed_out` run does, so the events of its last round count as seen.
 - **With rules**, whichever comes first ends the run. When one round both wakes and meets the
   conditions, it ends `woke`. A run with `--until` and no `--on` wakes on no event at all.
-- **Only a pull or merge request** carries `colour`, `absent_ci`, `merge`, and
-  `unresolved_threads`. An issue or Slack thread none of whose conditions tests `state` alone can
-  never meet them, so the run ends with `condition_unfit` once the target resolves.
+- **Only a pull or merge request** carries `absent_ci`, `merge`, and `unresolved_threads`, and
+  only one, a job, or a pipeline carries `colour`. A target none of whose conditions tests only
+  fields it carries can never meet them, so the run ends with `condition_unfit` once it resolves:
+  `colour=green` on an issue or Slack thread, or `merge=clean` on a job.
 
 Waiting for CI to settle or prove absent, or the target to merge or close, takes one run. The
 `state` condition ends it on a target already closed, whose CI may never settle, and the `state.*`
@@ -213,7 +230,8 @@ id on GitLab. A check in `checks` or `warnings` is `name`; `conclusion`, the for
 lowercase, except `retargeted`; `url` (nullable); and `job_id` (optional: a GitHub Actions job or a
 GitLab job).
 
-Issues report only `comment.*` and `state.*` events, and a Slack thread only `comment.*`.
+Issues report only `comment.*` and `state.*` events, a job or pipeline only `ci.settled` and
+`state.*`, and a Slack thread only `comment.*`.
 `ci.absent` and `merge.*` events come only from an open target, and an event about the target as a
 whole (`ci.*`, `head.pushed`, `merge.*`) has no `at` or `actor`. Within one target, events are
 ordered by `at`, untimed ones last; targets follow the order they were given in.
@@ -260,12 +278,23 @@ GitLab CI comes from the merge request's head pipeline. While GitLab names none,
 retarget or a deleted head pipeline, it comes from the newest merge request pipeline that ran the
 head; a branch pipeline never stands in.
 
+A pipeline target's CI is its jobs at their latest attempts, assessed as a merge request's
+pipeline is, except that a skipped pipeline passes, with no merge for it to hold. A job target's
+CI is the job alone, as one deciding check even when it is allowed to fail, with the job's `url`
+and `job_id`, so `glab ci trace <job_id>` reaches its log. Its head is the commit it ran on, which
+never changes, so it reports no `head.pushed` or `ci.absent`.
+
 Each colour is reported once per head. A push starts the new head uncoloured, and a re-run that
 unsettles CI and settles it again reports again, even in the same colour.
 
 ## Output
 
-stdout carries exactly one envelope, pretty-printed JSON:
+stdout carries exactly one envelope, pretty-printed JSON. With `--out FILE`, the envelope goes to
+`FILE` instead, and stdout stays empty: babysit writes `FILE.tmp` and renames it over `FILE` once
+the run ends, so a reader finds the previous file or one whole envelope, never part of one.
+stderr and the exit status are as without it. A usage error writes no file, and a file that can't
+be written fails the run as a failed write to stdout does: exit 1, and nothing saved to the
+snapshot file.
 
 | Field     | Value                                                                                         |
 | --------- | --------------------------------------------------------------------------------------------- |
@@ -280,14 +309,18 @@ unsettled; `merge`, the last known of `clean`, `behind`, or `conflicted`, which 
 forge recomputes it for the same head and is `null` until first known for the current head, so
 after a push, or once the target isn't open; and
 `unresolved_threads`. Between `colour` and `merge`, it has `absent_ci`: `true` while it is open and
-its head is absent CI, else `false`. An issue's or Slack thread's summary has only `target` and
-`state`, and a Slack thread is always `open`.
+its head is absent CI, else `false`. A job or pipeline adds only `head`, the commit it ran on, and
+`colour`; it is `open` until it finishes, and `closed` once it succeeds, fails, is cancelled, or
+is skipped. An issue's or Slack thread's summary has only `target` and `state`, and a Slack thread
+is always `open`.
 
 The examples below come from a live GitHub pull request and issue, recorded in
-`src/github/fixtures/`. The test `the_usage_reference_examples_are_what_babysit_prints` in
-`src/github.rs` replays those recordings through babysit's polling, diffing, rule matching, and
-printing, and fails if a block marked `checked` here differs from its output or isn't one it
-checks. The envelope is assembled in the test as a run assembles it.
+`src/github/fixtures/`, and a live GitLab job, recorded in `src/gitlab/fixtures/`. The test
+`the_usage_reference_examples_are_what_babysit_prints` in `src/github.rs` replays the GitHub
+recordings through babysit's polling, diffing, rule matching, and printing, and fails if a block
+marked `checked` here differs from its output or isn't one it checks;
+`the_usage_reference_job_example_is_what_babysit_writes_to_its_out_file` in `src/gitlab.rs` does
+the same for the job, through `--out`. The envelope is assembled in the test as a run assembles it.
 
 A wake on a human's line thread. Only matching events print: the review the thread was opened in
 didn't match, so it's left out:
@@ -423,6 +456,27 @@ settled, which ends after one round:
 }
 ```
 
+A run with `--out wait.json --until 'colour=green,red,amber'` on a running GitLab job, which ends
+once the job finishes. stdout stays empty, and `wait.json` holds the envelope. A job's summary has
+only `head` and `colour` past `state`:
+
+<!-- checked: met-job -->
+```json
+{
+  "outcome": "met",
+  "events": [],
+  "targets": [
+    {
+      "target": "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941122",
+      "state": "closed",
+      "head": "2f82cf43f55ebc217f9bcfcf8d407b3a04158dd4",
+      "colour": "green"
+    }
+  ],
+  "error": null
+}
+```
+
 A target the forge can't find:
 
 <!-- checked: error -->
@@ -466,7 +520,7 @@ for humans.
 | ------------------ | -------------------------------------------------------------------------------------------- |
 | `auth`             | The CLI isn't signed in or was refused (401, 403), both `gh` and `glab` hold a token for a checkout remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | `gh`, `glab`, `git`, or `curl` isn't installed or not on `PATH`, or `curl` is older than 8.3 |
-| `condition_unfit`  | The target is an issue or Slack thread, and every condition tests a field only a pull or merge request carries |
+| `condition_unfit`  | Every condition tests a field the target's summary doesn't carry, such as `colour` on an issue or `merge` on a job |
 | `lock_held`        | Another babysit run holds the `--snapshot` file                                              |
 | `poll_failed`      | A call to the forge failed 10 times in a row for one target, once under `--timeout 0`, or once on Slack's `invalid_arguments` |
 | `snapshot_io`      | The `--snapshot` file couldn't be read, locked, or written                                   |
@@ -528,7 +582,8 @@ forget it to start over.
   events woke the run, and the run saves that baseline when it ends, so an event your rules didn't
   match won't come back on a later run with other rules. On a wake, only the targets polled in the
   waking round are saved; another target keeps its earlier entry and diffs again from it.
-- **A wake is saved only after it's printed.** When the envelope can't be written, or the save after
+- **A wake is saved only after it's printed.** When the envelope can't be written, to stdout or
+  `--out`'s file, or the save after
   it fails, the file keeps the earlier baseline and the next run reports the same events again. A
   failed save after a printed envelope notes the failure on stderr and exits 1, though the envelope
   says `woke`: act on the events, and expect them again. A run killed mid-wait saves nothing past

@@ -48,13 +48,20 @@ pub struct Summary {
     pub state: TargetState,
     /// `None` for an issue.
     #[serde(flatten)]
+    pub ci: Option<CiSummary>,
+    /// `None` for anything but a pull or merge request.
+    #[serde(flatten)]
     pub change: Option<ChangeSummary>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct ChangeSummary {
+pub struct CiSummary {
     pub head: Option<String>,
     pub colour: Option<Colour>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChangeSummary {
     pub absent_ci: bool,
     pub merge: Option<Merge>,
     pub unresolved_threads: usize,
@@ -185,9 +192,11 @@ impl Summary {
         Self {
             target: target.url.clone(),
             state: poll.state,
-            change: (target.kind == TargetKind::ChangeRequest).then(|| ChangeSummary {
+            ci: target.kind.has_ci().then(|| CiSummary {
                 head: poll.head.clone(),
                 colour: snapshot.reported.colour,
+            }),
+            change: (target.kind == TargetKind::ChangeRequest).then(|| ChangeSummary {
                 absent_ci: poll.state == TargetState::Open
                     && poll.ci.is_none()
                     && snapshot.reported.absence == Some(Absence::Reported),
@@ -202,6 +211,23 @@ impl Summary {
             }),
         }
     }
+}
+
+#[cfg(test)]
+pub const USAGE: &str = include_str!("../docs/usage.md");
+
+/// The block after `<!-- checked: <name> -->` in the usage reference, up to a blank line.
+#[cfg(test)]
+pub fn checked_in_usage(name: &str) -> &'static str {
+    let marker = format!("<!-- checked: {name} -->\n");
+    let (_, block) = USAGE.split_once(&marker).expect(name);
+    block.split("\n\n").next().unwrap()
+}
+
+/// `written` as the usage reference shows an envelope.
+#[cfg(test)]
+pub fn json_block(written: &[u8]) -> String {
+    format!("```json\n{}```", String::from_utf8_lossy(written))
 }
 
 #[cfg(test)]

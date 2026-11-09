@@ -524,8 +524,8 @@ fn unfit(target: &Target) -> Envelope {
         forge: None,
         target: Some(target.url.clone()),
         message: format!(
-            "{} can't meet any condition: every condition tests a field only a pull or merge \
-             request carries",
+            "{} can't meet any condition: every condition tests a field its summary doesn't \
+             carry",
             target.url
         ),
     })
@@ -799,10 +799,12 @@ mod tests {
         Absence, Account, Assessment, Merge, Poll, TargetKind, TargetState, check, octocat, on,
         poll,
     };
+    use crate::out_file::OutFile;
     use crate::reference::{self, Locus, Reference};
 
     const ENTERPRISE: &str = "https://ghe.example.com/o/r/pull/3";
     const ISSUE: &str = "https://github.com/o/r/issues/7";
+    const JOB: &str = "https://gitlab.com/g/p/-/jobs/4";
     const NODE_ID: &str = "PR_1";
     const OTHER: &str = "https://github.com/o/r/pull/2";
     const SETTLED: &str = "colour=green,red,amber";
@@ -863,6 +865,11 @@ mod tests {
             let (id, path) = match (forge, kind) {
                 (Forge::GitHub, TargetKind::ChangeRequest) => ("PR", "pull"),
                 (Forge::GitHub, TargetKind::Issue) => ("I", "issues"),
+                (Forge::GitHub, TargetKind::Job | TargetKind::Pipeline) => {
+                    unreachable!("only a GitLab URL names a job or pipeline")
+                }
+                (Forge::GitLab, TargetKind::Job) => ("JOB", "-/jobs"),
+                (Forge::GitLab, TargetKind::Pipeline) => ("PIPELINE", "-/pipelines"),
                 (Forge::GitLab, _) => ("MR", "-/merge_requests"),
                 (Forge::Slack, _) => unreachable!("the run tests name no Slack thread"),
             };
@@ -1013,6 +1020,7 @@ mod tests {
             brief: false,
             ignore: Vec::new(),
             on: Vec::new(),
+            out: None,
             until: Vec::new(),
             targets: targets
                 .iter()
@@ -1551,10 +1559,12 @@ mod tests {
         let sandbox = Sandbox::new("overflow");
         let mut too_long = args(&[URL], &sandbox.snapshot(), Some(u64::MAX));
 
-        let (timeout, _) = watch_into(&too_long, vec![], &mut Vec::new());
+        let out = sandbox.dir.join("out.json");
+
+        let (timeout, _) = watch_into(&too_long, vec![], &mut OutFile::new(&out));
         too_long.timeout = None;
         too_long.interval = Duration::from_secs(u64::MAX);
-        let (interval, _) = watch_into(&too_long, vec![], &mut Vec::new());
+        let (interval, _) = watch_into(&too_long, vec![], &mut OutFile::new(&out));
 
         assert!(timeout.is_err());
         assert!(interval.is_err());
@@ -1730,6 +1740,50 @@ mod tests {
 
         assert_eq!(code.unwrap(), 1);
         assert_eq!(stderr, "");
+        assert_eq!(saved(&sandbox.snapshot()), before);
+    }
+
+    #[test]
+    fn an_out_file_holds_the_one_envelope_stdout_would_have_printed() {
+        let printed = Sandbox::new("printed");
+        let written = Sandbox::new("written");
+        let out = written.dir.join("out.json");
+        for sandbox in [&printed, &written] {
+            seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        }
+
+        let (printed_code, envelope) = watch(
+            &args(&[URL], &printed.snapshot(), None),
+            vec![returns(URL, poll(&["1", "2"]))],
+        );
+        let (written_code, stderr) = watch_into(
+            &args(&[URL], &written.snapshot(), None),
+            vec![returns(URL, poll(&["1", "2"]))],
+            &mut OutFile::new(&out),
+        );
+
+        assert_eq!(written_code.unwrap(), printed_code);
+        assert_eq!(stderr, "");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&out).unwrap()).unwrap(),
+            envelope
+        );
+        assert_eq!(saved(&written.snapshot()), saved(&printed.snapshot()));
+    }
+
+    #[test]
+    fn an_out_file_that_cannot_be_written_exits_1_without_saving() {
+        let sandbox = Sandbox::new("out");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let before = saved(&sandbox.snapshot());
+
+        let (code, _) = watch_into(
+            &args(&[URL], &sandbox.snapshot(), None),
+            vec![returns(URL, poll(&["1", "2"]))],
+            &mut OutFile::new(&sandbox.dir.join("missing/out.json")),
+        );
+
+        assert_eq!(code.unwrap(), 1);
         assert_eq!(saved(&sandbox.snapshot()), before);
     }
 
@@ -2820,6 +2874,32 @@ mod tests {
         assert_eq!(unfit["error"]["kind"], "condition_unfit");
         assert_eq!(unfit["error"]["target"], ISSUE);
         assert_eq!(fits["outcome"], "met");
+    }
+
+    #[test]
+    fn a_job_meets_a_condition_on_its_colour_but_never_one_on_merging() {
+        let sandbox = Sandbox::new("job");
+        let failed = Poll {
+            state: TargetState::Closed,
+            ..with_ci(&[], Assessment::Failed)
+        };
+
+        let (_, met) = watch(
+            &with_conditions(args(&[JOB], &sandbox.snapshot(), None), &[SETTLED]),
+            vec![returns(JOB, failed)],
+        );
+        let (code, unfit) = watch(
+            &with_conditions(args(&[JOB], &sandbox.snapshot(), None), &["merge=clean"]),
+            Vec::new(),
+        );
+
+        assert_eq!(met["outcome"], "met");
+        assert_eq!(
+            met["targets"],
+            json!([{"target": JOB, "state": "closed", "head": "abc123", "colour": "red"}]),
+        );
+        assert_eq!(code, 1);
+        assert_eq!(unfit["error"]["kind"], "condition_unfit");
     }
 
     #[test]

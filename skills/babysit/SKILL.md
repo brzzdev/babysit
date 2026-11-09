@@ -1,6 +1,6 @@
 ---
 name: babysit
-description: Wait on a GitHub pull request, GitLab merge request, issue, or Slack thread with the `babysit` CLI, which blocks until CI settles; a review, thread, comment, or Slack reply lands; or the target merges or closes. Use whenever you must wait for something to happen on a PR, MR, issue, or Slack thread, in place of `gh pr checks --watch`, `glab ci status --live`, or a polling loop, or when the `babysit` command comes up.
+description: Wait on a GitHub pull request, GitLab merge request, issue, GitLab job or pipeline, or Slack thread with the `babysit` CLI, which blocks until CI settles; a review, thread, comment, or Slack reply lands; or the target merges, closes, or finishes. Use whenever you must wait for something to happen on a PR, MR, issue, job, pipeline, or Slack thread, such as a GitLab job you retried or played, in place of `gh pr checks --watch`, `glab ci status --live`, or a polling loop, or when the `babysit` command comes up.
 metadata:
   author: Paul Breeze
 ---
@@ -12,7 +12,7 @@ Checked against babysit 0.5.0. Run `babysit --version` first; the caller's contr
 when something here doesn't match.
 
 ```sh
-babysit --snapshot <PATH> --brief [--on RULE]... [--ignore RULE]... [--until CONDITION]... [--timeout DURATION] TARGET...
+babysit --snapshot <PATH> --brief [--on RULE]... [--ignore RULE]... [--until CONDITION]... [--out FILE] [--timeout DURATION] TARGET...
 ```
 
 Pass `--brief`: bot reviews and summaries run to thousands of characters, mostly hidden HTML
@@ -22,8 +22,8 @@ an HTML comment or was cut carries `"truncated": true`. `body^=` still matches t
 write a prefix against the forge's text. The full text stays at the event's `url`; read it when the
 cut part matters.
 
-A target is a web URL (`…/pull/<n>`, `…/issues/<n>`, `…/-/merge_requests/<n>`), a Slack thread's
-permalink (the parent's, or a reply's with its `?thread_ts=…&cid=…`), or inside a checkout `#<n>`
+A target is a web URL (`…/pull/<n>`, `…/issues/<n>`, `…/-/merge_requests/<n>`, or a GitLab
+`…/-/jobs/<id>` or `…/-/pipelines/<id>`), a Slack thread's permalink (the parent's, or a reply's with its `?thread_ts=…&cid=…`), or inside a checkout `#<n>`
 (a GitHub PR or issue, a GitLab issue) or `!<n>` (a GitLab MR). Several targets can share one run.
 
 A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with the
@@ -51,7 +51,7 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 3. **Wait.** Start the same command without `--timeout` as a background job, before you deal with
    anything step 2 showed, so anything landing meanwhile wakes it. It runs until a wake, `met`, or
    an error; `met` ends an `--until` wait, so go to step 6:
-   - **Claude Code**: `run_in_background`, with stdout redirected to a file of its own (see
+   - **Claude Code**: `run_in_background`, with `--out` naming a file of its own (see
      [Acting on a wake](#acting-on-a-wake)). The harness re-invokes you when it exits, however long
      that takes, and reports babysit's exit status.
    - **Codex**: the command keeps running in its session but nothing re-invokes you, so poll it
@@ -88,7 +88,7 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 | ------------------ | ------------------------------------------------------------------------------- |
 | `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, both hold a token for the remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | Tell the user which of `gh`, `glab`, `git`, or `curl` is missing, or that `curl` is older than 8.3 |
-| `condition_unfit`  | The target is an issue or Slack thread, and every condition tests a field only a PR or MR carries (`colour`, `absent_ci`, `merge`, `unresolved_threads`). Fix the command |
+| `condition_unfit`  | Every condition tests a field the target doesn't carry: `colour` on an issue or Slack thread, or `absent_ci`, `merge`, or `unresolved_threads` on anything but a PR or MR. Fix the command |
 | `lock_held`        | Another run owns this snapshot file. Wait for it, or use another file; the `.lock` file stays, so leave it |
 | `poll_failed`      | The forge failed 10 calls in a row, once under `--timeout 0`, or once on Slack's `invalid_arguments`. Report it before starting another run |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |
@@ -122,6 +122,9 @@ Starting sets:
 --until 'colour=green,red,amber' --until 'absent_ci=true' --until 'state=closed,merged' \
   --on 'state.*'
 
+# A GitLab job or pipeline until it finishes, as after `glab ci retry` or `glab ci play`
+--until 'colour=green,red,amber'
+
 # A reply on an issue
 --on 'comment.* actor=@human' --on 'state.*' --ignore 'comment.* actor=@me'
 
@@ -150,8 +153,13 @@ What bites:
 - **Nothing reports** a conflict clearing, or a job that isn't a deciding check finishing while
   other jobs decide. A GitLab `when: manual` job outside `rules:` is one: it defaults to
   `allow_failure: true`, while inside `rules:` it decides and holds CI amber.
-- Issues report only `comment.*` and `state.*`; a Slack thread only `comment.*`, and its
-  `targets[].state` stays `open`, so stop on your goal.
+- Issues report only `comment.*` and `state.*`; a job or pipeline only `ci.settled` and
+  `state.*`; a Slack thread only `comment.*`, and its `targets[].state` stays `open`, so stop on
+  your goal.
+- **A retried job is a new job**, and its old URL stays failed: watch the URL `glab ci retry`
+  prints. A played manual job keeps its URL, which reads amber until played, so start the wait
+  after `glab ci play`. A bridge's own status follows its downstream pipeline only under
+  `strategy: depend`; watch that pipeline by its URL instead.
 - **On Slack, `@me` is the token's user** and a login is a Slack user id (`U…` or `W…`), or an
   integration's `bot_id`, which counts as `@bot`.
 
@@ -161,8 +169,9 @@ What bites:
 the first poll included, so a state that already holds ends the run at once with `met`. A
 condition is a rule with no kind pattern: `field=value` terms that must all hold, commas as
 alternatives, repeated `--until` ORed. Its fields are the summary's: `state` (`closed`, `merged`,
-`open`), and on a PR or MR only, `colour` (`amber`, `green`, `red`), `absent_ci` (`false`,
-`true`), `merge` (`behind`, `clean`, `conflicted`), and `unresolved_threads` (a number).
+`open`); on a PR, MR, job, or pipeline, `colour` (`amber`, `green`, `red`); and on a PR or MR
+only, `absent_ci` (`false`, `true`), `merge` (`behind`, `clean`, `conflicted`), and
+`unresolved_threads` (a number). A job or pipeline is `open` until it finishes, then `closed`.
 
 - **With `--on`, whichever comes first ends the run**, and a round that does both ends `woke`.
 - **With no `--on`, the run ends only on `met`, `--timeout`, or an error.**
@@ -182,11 +191,12 @@ jq '.events[] | {kind, target, url, body, truncated, reply_to, path, line, colou
 ```
 
 In the background, the harness's output file mixes the envelope with stderr and its own lines, so
-redirect stdout alone to a file only this run writes, leaving the harness to report the exit
-status, and read that file on the wake:
+pass `--out` with a file only this run writes. It holds one whole envelope once the run exits,
+stdout stays empty, and the harness reports the exit status. Read the file on the wake, except
+after exit 2, which writes none and leaves any earlier one in place:
 
 ```sh
-babysit … >"$snap.wait.json"
+babysit --out "$snap.wait.json" …
 jq '.events[] | {kind, target, url, body, truncated, reply_to, path, line, colour, checks, warnings}' "$snap.wait.json"
 ```
 

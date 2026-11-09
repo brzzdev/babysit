@@ -38,6 +38,20 @@ pub enum TargetKind {
     ChangeRequest,
     /// An issue, or a Slack thread, which has only comments.
     Issue,
+    /// A GitLab job, bridges included.
+    Job,
+    /// A GitLab pipeline.
+    Pipeline,
+}
+
+impl TargetKind {
+    /// Whether the target has a CI colour.
+    pub fn has_ci(self) -> bool {
+        match self {
+            Self::ChangeRequest | Self::Job | Self::Pipeline => true,
+            Self::Issue => false,
+        }
+    }
 }
 
 #[derive(Debug)]
