@@ -14,7 +14,7 @@ use crate::envelope::{
 use crate::exec::Exec;
 use crate::forge::{Backend, Failure, Hints, Snapshot, Target};
 use crate::reference::Reference;
-use crate::rule;
+use crate::rule::{self, Unruled};
 use crate::snapshot_file::{self, Entry, SnapshotFile};
 use crate::target::{self, Locator};
 
@@ -43,7 +43,7 @@ impl<'a> Backends<'a> {
 #[derive(Debug)]
 pub struct UsageError(pub String);
 
-/// Watches the targets until the run ends; prints, saves and returns the exit code.
+/// Watches the targets until the run ends; prints, saves, and returns the exit code.
 pub fn run(
     args: &Args,
     backends: &Backends,
@@ -318,6 +318,11 @@ impl<'a> Watch<'a> {
             ..
         } = self;
         let mut events = Vec::new();
+        let unruled = if args.until.is_empty() {
+            Unruled::Every
+        } else {
+            Unruled::Nothing
+        };
         for tracked in tracked.iter_mut() {
             tracked.evaluated = false;
         }
@@ -365,11 +370,8 @@ impl<'a> Watch<'a> {
             };
             let (mut seen, next) = diff(baseline, poll, now);
             tracked.polled = Some(next);
-            if args.on.is_empty() && !args.until.is_empty() {
-                continue;
-            }
             let me = viewer_on(viewers, host).and_then(|viewer| viewer.id.as_deref());
-            seen.retain(|event| rule::wakes(&args.on, &args.ignore, event, me));
+            seen.retain(|event| rule::wakes(&args.on, &args.ignore, unruled, event, me));
             if seen.is_empty() {
                 continue;
             }
@@ -519,10 +521,10 @@ impl<'a> Watch<'a> {
 fn unfit(target: &Target) -> Envelope {
     Envelope::failed(envelope::Error {
         kind: ErrorKind::ConditionUnfit,
-        forge: Some(target.forge),
+        forge: None,
         target: Some(target.url.clone()),
         message: format!(
-            "{} can't meet any --until: an issue or Slack thread has only a state",
+            "{} can't meet any condition: an issue or Slack thread has only a state",
             target.url
         ),
     })
@@ -2601,7 +2603,7 @@ mod tests {
         with_ci(&["1"], Assessment::Passed)
     }
 
-    fn pending() -> Poll {
+    fn ci_pending() -> Poll {
         with_ci(&["1"], Assessment::Pending)
     }
 
@@ -2639,7 +2641,10 @@ mod tests {
         let sandbox = Sandbox::new("met-later");
         let args = with_conditions(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
 
-        let traced = trace(&args, vec![returns(URL, pending()), returns(URL, green())]);
+        let traced = trace(
+            &args,
+            vec![returns(URL, ci_pending()), returns(URL, green())],
+        );
 
         assert_eq!(traced.code, 0);
         assert_eq!(seconds(&traced), [0, 30]);
@@ -2699,7 +2704,7 @@ mod tests {
             &args,
             vec![
                 returns(URL, green()),
-                returns(OTHER, pending()),
+                returns(OTHER, ci_pending()),
                 returns(URL, green()),
                 returns(OTHER, green()),
             ],
@@ -2794,7 +2799,7 @@ mod tests {
         };
 
         let (met_code, met_envelope) = watch(&once(&met), vec![returns(URL, green())]);
-        let (unmet_code, unmet_envelope) = watch(&once(&unmet), vec![returns(URL, pending())]);
+        let (unmet_code, unmet_envelope) = watch(&once(&unmet), vec![returns(URL, ci_pending())]);
 
         assert_eq!((met_code, &met_envelope["outcome"]), (0, &json!("met")));
         assert_eq!(unmet_code, 3);

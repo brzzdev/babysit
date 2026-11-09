@@ -22,7 +22,7 @@ pub struct Condition {
     terms: Vec<Term>,
 }
 
-/// One `field=value[,value…]` term, holding when the summary's field is any value.
+/// One `field=value[,value…]` term, holding when the summary's field is one of its values.
 #[derive(Clone, Debug)]
 enum Term {
     AbsentCi(Vec<bool>),

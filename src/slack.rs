@@ -435,7 +435,7 @@ mod tests {
         let (on, ignore) = (parse(on), parse(ignore));
         events
             .iter()
-            .filter(|event| rule::wakes(&on, &ignore, event, Some(ME)))
+            .filter(|event| rule::wakes(&on, &ignore, rule::Unruled::Every, event, Some(ME)))
             .map(|event| event.detail.kind().to_owned())
             .collect()
     }

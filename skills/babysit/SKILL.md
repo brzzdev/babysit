@@ -81,13 +81,13 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 | 0    | `met`       | Every target meets an `--until`. Read `targets[]` for the state that met it, and carry on |
 | 1    | `error`     | Read `error.kind` (below). Exit 1 with `outcome: "woke"` means the save failed after printing: act on the events, and expect them again |
 | 2    | none        | A usage error: no envelope on stdout, the reason on stderr. Fix the command     |
-| 3    | `timed_out` | No wake before `--timeout`: step 2's usual exit, or recheck what the timeout was for, then re-run |
+| 3    | `timed_out` | No wake, and no `--until` met, before `--timeout`: step 2's usual exit, or recheck what the timeout was for, then re-run |
 
 | `error.kind`       | Do                                                                              |
 | ------------------ | ------------------------------------------------------------------------------- |
 | `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, both hold a token for the remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | Tell the user which of `gh`, `glab`, `git`, or `curl` is missing, or that `curl` is older than 8.3 |
-| `condition_unfit`  | The target is an issue or Slack thread, and every `--until` tests a field only a PR or MR carries (`colour`, `absent_ci`, `merge`, `unresolved_threads`). Fix the command |
+| `condition_unfit`  | The target is an issue or Slack thread, and every condition tests a field only a PR or MR carries (`colour`, `absent_ci`, `merge`, `unresolved_threads`). Fix the command |
 | `lock_held`        | Another run owns this snapshot file. Wait for it, or use another file; the `.lock` file stays, so leave it |
 | `poll_failed`      | The forge failed 10 calls in a row, once under `--timeout 0`, or once on Slack's `invalid_arguments`. Report it before starting another run |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |
@@ -163,9 +163,9 @@ alternatives, repeated `--until` ORed. Its fields are the summary's: `state` (`c
 
 - **With `--on`, whichever comes first ends the run**, and a round that does both ends `woke`.
 - **With no `--on`, the run ends only on `met`, `--timeout`, or an error.**
-- **`absent_ci` stays `true`** while the PR or MR is open, on later runs sharing the snapshot file
-  after an earlier run took the `ci.absent` wake, until a check reports or a push restarts the
-  clock.
+- **`absent_ci` carries across runs** sharing the snapshot file: once `ci.absent` reported the
+  head, it reads `true` whenever the PR or MR is open and no check reports on that head, until a
+  push.
 
 ## Acting on a wake
 

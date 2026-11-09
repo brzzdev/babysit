@@ -284,11 +284,30 @@ pub fn words<'a, T: Copy>(
         .collect()
 }
 
-/// Whether `event` wakes the run: it matches at least one `on` rule (or there are none) and no
-/// `ignore` rule. `me` is the viewer's account id on the event's forge.
-pub fn wakes(on: &[Rule], ignore: &[Rule], event: &Event, me: Option<&str>) -> bool {
+/// What wakes a run with no `on` rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unruled {
+    Every,
+    Nothing,
+}
+
+/// Whether `event` wakes the run: it matches at least one `on` rule, or there are none and
+/// `unruled` is `Every`, and no `ignore` rule. `me` is the viewer's account id on the event's
+/// forge.
+pub fn wakes(
+    on: &[Rule],
+    ignore: &[Rule],
+    unruled: Unruled,
+    event: &Event,
+    me: Option<&str>,
+) -> bool {
     let matches = |rule: &Rule| rule.matches(event, me);
-    (on.is_empty() || on.iter().any(matches)) && !ignore.iter().any(matches)
+    let woken = if on.is_empty() {
+        unruled == Unruled::Every
+    } else {
+        on.iter().any(matches)
+    };
+    woken && !ignore.iter().any(matches)
 }
 
 /// Whether any of `rules` names `@me`.
@@ -413,7 +432,7 @@ mod tests {
     }
 
     fn woken(on: &[&str], ignore: &[&str], event: &Event) -> bool {
-        wakes(&rules(on), &rules(ignore), event, None)
+        wakes(&rules(on), &rules(ignore), Unruled::Every, event, None)
     }
 
     #[test]
@@ -482,6 +501,20 @@ mod tests {
     #[test]
     fn every_event_wakes_without_rules() {
         assert!(woken(&[], &[], &created()));
+    }
+
+    #[test]
+    fn without_rules_nothing_wakes_a_run_unruled_to_nothing() {
+        let created = created();
+
+        assert!(!wakes(&[], &[], Unruled::Nothing, &created, None));
+        assert!(wakes(
+            &rules(&["comment.*"]),
+            &[],
+            Unruled::Nothing,
+            &created,
+            None
+        ));
     }
 
     #[test]
@@ -599,12 +632,13 @@ mod tests {
         );
         let me = rules(&["actor=@me"]);
 
-        assert!(wakes(&me, &[], &mine, Some("U_1")));
-        assert!(!wakes(&me, &[], &mine, Some("U_2")));
-        assert!(!wakes(&me, &[], &mine, None));
+        assert!(wakes(&me, &[], Unruled::Every, &mine, Some("U_1")));
+        assert!(!wakes(&me, &[], Unruled::Every, &mine, Some("U_2")));
+        assert!(!wakes(&me, &[], Unruled::Every, &mine, None));
         assert!(!wakes(
             &me,
             &[],
+            Unruled::Every,
             &by(account("octocat", Some(false)), created()),
             Some("U_1")
         ));
@@ -640,8 +674,8 @@ mod tests {
             }),
         );
 
-        assert!(!wakes(&[], &ignore, &claude, Some("U_1")));
-        assert!(wakes(&[], &ignore, &codex, Some("U_1")));
+        assert!(!wakes(&[], &ignore, Unruled::Every, &claude, Some("U_1")));
+        assert!(wakes(&[], &ignore, Unruled::Every, &codex, Some("U_1")));
     }
 
     #[test]

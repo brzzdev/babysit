@@ -234,9 +234,10 @@ no GitHub check run, status, or held workflow, and no GitLab pipeline. It is rep
 head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
 reports the head again. A push starts the clock again for the new head, and so does reopening the
 target. A check reporting after `ci.absent` settles CI as usual, with `ci.settled`. A target
-summary's `absent_ci` is `true` while the target is open and its head, reported by `ci.absent`, has
-had no check report since, on later runs sharing the `--snapshot` too. A push clears it; a
-reopening doesn't, since that head was already reported.
+summary's `absent_ci` is `true` while the target is open, its head was reported by `ci.absent`, and
+no check reports on that head now, on later runs sharing the `--snapshot` too. A push clears it.
+Since `ci.absent` never reports a head twice, a reopening or the head's only check disappearing
+leaves it `true` with no clock to wait out.
 
 The **deciding checks** are, on GitHub, the base branch's required checks when it has any and every
 check when it has none; on GitLab, every job not allowed to fail, or the pipeline itself when no
@@ -452,16 +453,16 @@ target; a checkout reference babysit can't place; a duration past what the clock
 babysit snapshot file at all).
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a
-forge's, such as the snapshot file, or `git`, `gh auth token`, or `glab config get token` failing
-while babysit places a checkout reference, which isn't retried);
-`target` (the target's URL, or the name as given before it resolved, or `null`); and `message`, for
-humans.
+forge's, such as the snapshot file or `condition_unfit`, or `git`, `gh auth token`, or
+`glab config get token` failing while babysit places a checkout reference, which isn't retried);
+`target` (the target's URL, or the name as given before it resolved, or `null`); and `message`,
+for humans.
 
 | `kind`             | Cause                                                                                        |
 | ------------------ | -------------------------------------------------------------------------------------------- |
 | `auth`             | The CLI isn't signed in or was refused (401, 403), both `gh` and `glab` hold a token for a checkout remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | `gh`, `glab`, `git`, or `curl` isn't installed or not on `PATH`, or `curl` is older than 8.3 |
-| `condition_unfit`  | The target is an issue or Slack thread, and every `--until` tests a field only a pull or merge request carries |
+| `condition_unfit`  | The target is an issue or Slack thread, and every condition tests a field only a pull or merge request carries |
 | `lock_held`        | Another babysit run holds the `--snapshot` file                                              |
 | `poll_failed`      | A call to the forge failed 10 times in a row for one target, once under `--timeout 0`, or once on Slack's `invalid_arguments` |
 | `snapshot_io`      | The `--snapshot` file couldn't be read, locked, or written                                   |

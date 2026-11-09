@@ -2578,7 +2578,7 @@ mod tests {
 
     fn wakes(event: &diff::Event) -> bool {
         let on = WORKED_LOOP_RULES.map(|rule| rule::parse(rule).unwrap());
-        rule::wakes(&on, &[], event, None)
+        rule::wakes(&on, &[], rule::Unruled::Every, event, None)
     }
 
     fn printed(envelope: &Envelope) -> String {
