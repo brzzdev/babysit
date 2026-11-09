@@ -91,12 +91,9 @@ fn count(value: &str) -> Result<usize, String> {
 pub fn fit(conditions: &[Condition], kind: TargetKind) -> bool {
     conditions.is_empty()
         || kind == TargetKind::ChangeRequest
-        || conditions.iter().any(|condition| {
-            condition
-                .terms
-                .iter()
-                .all(|term| matches!(term, Term::State(_)))
-        })
+        || conditions
+            .iter()
+            .any(|condition| !condition.terms.iter().any(Term::needs_change))
 }
 
 /// Whether `summary` passes at least one of `conditions`.
@@ -107,6 +104,16 @@ pub fn met(conditions: &[Condition], summary: &Summary) -> bool {
 }
 
 impl Term {
+    /// Whether the term tests a field only a pull or merge request's summary carries.
+    fn needs_change(&self) -> bool {
+        match self {
+            Self::AbsentCi(_) | Self::Colour(_) | Self::Merge(_) | Self::UnresolvedThreads(_) => {
+                true
+            }
+            Self::State(_) => false,
+        }
+    }
+
     fn holds(&self, summary: &Summary) -> bool {
         let change = summary.change.as_ref();
         match self {

@@ -189,11 +189,17 @@ pub struct Reported {
     pub colour: Option<Colour>,
     /// The last known mergeability, frozen while the target isn't open.
     pub merge: Option<Merge>,
+    /// The head `merge` was last known for, which a push leaves behind until the forge recomputes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_head: Option<String>,
 }
 
 impl Reported {
     fn is_empty(&self) -> bool {
-        self.absence.is_none() && self.colour.is_none() && self.merge.is_none()
+        self.absence.is_none()
+            && self.colour.is_none()
+            && self.merge.is_none()
+            && self.merge_head.is_none()
     }
 }
 

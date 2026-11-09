@@ -191,10 +191,9 @@ impl Summary {
                 absent_ci: poll.state == TargetState::Open
                     && poll.ci.is_none()
                     && snapshot.reported.absence == Some(Absence::Reported),
-                merge: snapshot
-                    .reported
-                    .merge
-                    .filter(|_| poll.state == TargetState::Open),
+                merge: snapshot.reported.merge.filter(|_| {
+                    poll.state == TargetState::Open && snapshot.reported.merge_head == poll.head
+                }),
                 unresolved_threads: poll
                     .threads
                     .iter()
@@ -282,6 +281,37 @@ mod tests {
             state: TargetState::Merged,
             ..unchecked()
         }));
+    }
+
+    #[test]
+    fn a_push_hides_the_old_heads_mergeability_until_the_forge_recomputes() {
+        let target = Target {
+            forge: Forge::GitHub,
+            forge_id: "PR_1".to_owned(),
+            host: "github.com".to_owned(),
+            kind: TargetKind::ChangeRequest,
+            url: "https://github.com/o/r/pull/1".to_owned(),
+        };
+        let at = |head: &str, merge| Poll {
+            head: Some(head.to_owned()),
+            merge,
+            ..poll(&[])
+        };
+        let merge = |snapshot: &Snapshot| Summary::new(&target, snapshot).change.unwrap().merge;
+        let clean = Snapshot::first(at("abc123", Some(Merge::Clean)), UNIX_EPOCH);
+
+        let (_, recomputing) = diff::diff(&clean, at("def456", None), UNIX_EPOCH);
+        let (_, recomputed) = diff::diff(
+            &recomputing,
+            at("def456", Some(Merge::Conflicted)),
+            UNIX_EPOCH,
+        );
+        let (_, unchanged) = diff::diff(&clean, at("abc123", None), UNIX_EPOCH);
+
+        assert_eq!(merge(&clean), Some(Merge::Clean));
+        assert_eq!(merge(&recomputing), None);
+        assert_eq!(merge(&recomputed), Some(Merge::Conflicted));
+        assert_eq!(merge(&unchanged), Some(Merge::Clean));
     }
 
     #[test]

@@ -116,8 +116,10 @@ Starting sets:
 --on 'ci.*' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
   --on 'thread.*' --ignore 'comment.* actor=@me' --ignore 'thread.* actor=@me'
 
-# Only until CI settles or proves absent, to carry on with work that needs it green: one run
---until 'colour=green,red,amber' --until 'absent_ci=true' --on 'state.*'
+# Only until CI settles or proves absent, to carry on with work that needs it green: one run.
+# `state=closed,merged` ends it on a PR already closed, whose CI may never settle
+--until 'colour=green,red,amber' --until 'absent_ci=true' --until 'state=closed,merged' \
+  --on 'state.*'
 
 # A reply on an issue
 --on 'comment.* actor=@human' --on 'state.*' --ignore 'comment.* actor=@me'

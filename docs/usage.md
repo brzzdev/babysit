@@ -153,11 +153,14 @@ malformed condition or an unknown field is a usage error.
   `unresolved_threads`. An issue or Slack thread none of whose conditions tests `state` alone can
   never meet them, so the run ends with `condition_unfit` once the target resolves.
 
-Waiting for CI to settle or prove absent, or the target to merge or close, takes one run:
+Waiting for CI to settle or prove absent, or the target to merge or close, takes one run. The
+`state` condition ends it on a target already closed, whose CI may never settle, and the `state.*`
+rule wakes it with the event on a close during the run:
 
 ```sh
-babysit --snapshot .babysit.json --until 'colour=green,red,amber' --until 'absent_ci=true' \
-  --on 'state.*' https://github.com/brzzdev/babysit-sandbox/pull/1
+babysit --snapshot .babysit.json --brief --until 'colour=green,red,amber' \
+  --until 'absent_ci=true' --until 'state=closed,merged' --on 'state.*' \
+  https://github.com/brzzdev/babysit-sandbox/pull/1
 ```
 
 ## Events
@@ -274,7 +277,8 @@ stdout carries exactly one envelope, pretty-printed JSON:
 A target summary is `target` and `state` (`open`, `closed`, or `merged`). A pull or merge request
 adds `head`, its head commit; `colour`, the CI colour reported for that head or `null` while
 unsettled; `merge`, the last known of `clean`, `behind`, or `conflicted`, which stays put while the
-forge recomputes it and is `null` until first known or once the target isn't open; and
+forge recomputes it for the same head and is `null` until first known for the current head, so
+after a push, or once the target isn't open; and
 `unresolved_threads`. Between `colour` and `merge`, it has `absent_ci`: `true` while it is open and
 its head is absent CI, else `false`. An issue's or Slack thread's summary has only `target` and
 `state`, and a Slack thread is always `open`.

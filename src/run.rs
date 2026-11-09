@@ -524,7 +524,8 @@ fn unfit(target: &Target) -> Envelope {
         forge: None,
         target: Some(target.url.clone()),
         message: format!(
-            "{} can't meet any condition: an issue or Slack thread has only a state",
+            "{} can't meet any condition: every condition tests a field only a pull or merge \
+             request carries",
             target.url
         ),
     })
@@ -2653,6 +2654,28 @@ mod tests {
             traced.envelope["targets"],
             json!([coloured(URL, Some("green"))])
         );
+    }
+
+    #[test]
+    fn the_ci_wait_ends_met_on_a_merged_target_whose_ci_never_settled() {
+        let sandbox = Sandbox::new("met-merged");
+        let args = Args {
+            on: vec![rule::parse("state.*").unwrap()],
+            ..with_conditions(
+                args(&[URL], &sandbox.snapshot(), None),
+                &[SETTLED, "absent_ci=true", "state=closed,merged"],
+            )
+        };
+        let merged = Poll {
+            state: TargetState::Merged,
+            ..ci_pending()
+        };
+
+        let traced = trace(&args, vec![returns(URL, merged)]);
+
+        assert_eq!(traced.code, 0);
+        assert_eq!(traced.envelope["outcome"], "met");
+        assert_eq!(traced.envelope["targets"][0]["state"], "merged");
     }
 
     #[test]

@@ -186,6 +186,10 @@ impl Snapshot {
                 absence: absence_after(&poll, None, now).0,
                 colour: poll.ci.as_ref().and_then(Ci::colour),
                 merge: poll.merge.filter(|_| poll.state == TargetState::Open),
+                merge_head: poll
+                    .head
+                    .clone()
+                    .filter(|_| poll.merge.is_some() && poll.state == TargetState::Open),
             },
             poll,
         }
@@ -240,9 +244,9 @@ pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Sn
         events.push(state_changed(&poll));
     }
     // Only an open target's mergeability is news, so a merge reports nothing but itself.
-    let merge = match poll.merge {
-        Some(merge) if poll.state == TargetState::Open => Some(merge),
-        _ => reported.merge,
+    let (merge, merge_head) = match poll.merge {
+        Some(merge) if poll.state == TargetState::Open => (Some(merge), poll.head.clone()),
+        _ => (reported.merge, reported.merge_head.clone()),
     };
     // Mergeability first known after computing is already on the target, so it reports nothing.
     if let Some(changed) = merge
@@ -262,6 +266,7 @@ pub fn diff(baseline: &Snapshot, poll: Poll, now: SystemTime) -> (Vec<Event>, Sn
                 absence,
                 colour,
                 merge,
+                merge_head,
             },
         },
     )
