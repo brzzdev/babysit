@@ -111,8 +111,8 @@ pub fn forget(path: &Path) -> Result<(), Error> {
         serde_json::from_slice::<Header>(&bytes)
             .map_err(|error| invalid(path, &error.to_string()))?;
     }
-    remove_if_present(path)?;
-    remove_if_present(&temp_path(path))
+    remove_if_present(path).map_err(Error::Io)?;
+    remove_if_present(&temp_path(path)).map_err(Error::Io)
 }
 
 impl Lock {
@@ -137,9 +137,30 @@ impl Drop for Lock {
     }
 }
 
-/// Whether `path` is the snapshot file at `snapshot` or one of the files beside it that it uses.
-pub fn owns(snapshot: &Path, path: &Path) -> bool {
-    path == snapshot || path == lock_path(snapshot) || path == temp_path(snapshot)
+/// Whether replacing `out` through its temp file would write over the snapshot file at
+/// `snapshot`, its lock, or its temp file.
+pub fn collides(snapshot: &Path, out: &Path) -> bool {
+    let owned = [
+        snapshot.to_owned(),
+        lock_path(snapshot),
+        temp_path(snapshot),
+    ];
+    [out.to_owned(), temp_path(out)]
+        .iter()
+        .any(|written| owned.iter().any(|owned| same_file(owned, written)))
+}
+
+/// Whether two paths name the same file, read through `.`, `..`, and symlinked directories.
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b || resolved(a).is_some_and(|a| resolved(b) == Some(a))
+}
+
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let parent = fs::canonicalize(parent.unwrap_or(Path::new("."))).ok()?;
+    Some(parent.join(path.file_name()?))
 }
 
 fn lock_path(path: &Path) -> PathBuf {
@@ -166,9 +187,9 @@ fn invalid(path: &Path, reason: &str) -> Error {
     ))
 }
 
-fn remove_if_present(path: &Path) -> Result<(), Error> {
+pub fn remove_if_present(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(Error::Io(error)),
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
 }
@@ -186,14 +207,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_snapshot_file_owns_itself_its_lock_and_its_temp_file_only() {
-        let snapshot = Path::new("dir/s.json");
+    fn an_out_file_collides_with_the_snapshot_file_its_lock_or_its_temp_file_by_any_path() {
+        let dir = std::env::temp_dir();
+        let snapshot = dir.join("s.json");
 
-        for path in ["dir/s.json", "dir/s.json.lock", "dir/s.json.tmp"] {
-            assert!(owns(snapshot, Path::new(path)), "{path}");
+        for out in ["s.json", "./s.json", "s.json.lock", "s.json.tmp"] {
+            assert!(collides(&snapshot, &dir.join(out)), "{out}");
         }
-        for path in ["dir/s.json.wait.json", "s.json", "dir/t.json"] {
-            assert!(!owns(snapshot, Path::new(path)), "{path}");
+        assert!(collides(&dir.join("s.tmp"), &dir.join("s")));
+        for out in ["s.json.wait.json", "t.json"] {
+            assert!(!collides(&snapshot, &dir.join(out)), "{out}");
         }
     }
 }

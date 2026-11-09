@@ -17,6 +17,11 @@ query ($id: CiPipelineID!, $jobs: Boolean = true, $jobsAfter: String, $project: 
           webPath
         }
       }
+      newest: jobs(first: 1, retried: false) {
+        nodes {
+          id
+        }
+      }
       path
       sha
       status

@@ -1,8 +1,9 @@
 # Using babysit
 
-babysit watches one or more targets, waits for an event its rules care about or for their state
-to meet its conditions, prints one JSON envelope on stdout or into `--out`'s file, and exits. Run
-it again with the same `--snapshot` and it picks up where the last run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
+babysit watches one or more targets, waits for an event its rules care about or for their state to
+meet its conditions, prints one JSON envelope on stdout or into `--out`'s file, and exits. Run it
+again with the same `--snapshot` and it picks up where the last run ended. Terms follow
+[`GLOSSARY.md`](../GLOSSARY.md).
 
 ## Invocation
 
@@ -278,12 +279,12 @@ GitLab CI comes from the merge request's head pipeline. While GitLab names none,
 retarget or a deleted head pipeline, it comes from the newest merge request pipeline that ran the
 head; a branch pipeline never stands in.
 
-A pipeline target's CI is its jobs at their latest attempts, assessed as a merge request's
-pipeline is, except that a skipped pipeline passes, with no merge for it to hold. A job target's
-CI is the job alone, as one deciding check even when it is allowed to fail, with the job's `url`
-and `job_id`, so `glab ci trace <job_id>` reaches its log. A job held `created` while its
-pipeline waits on a deciding manual job waits too, so it reads amber. Its head is the commit it ran on, which
-never changes, so it reports no `head.pushed` or `ci.absent`.
+A pipeline target's CI is its jobs at their latest attempts, assessed as a merge request's pipeline
+is, except that a skipped pipeline passes, with no merge for it to hold. A job target's CI is the
+job alone, as one deciding check even when it is allowed to fail, with the job's `url` and `job_id`,
+so `glab ci trace <job_id>` reaches its log. A job left `created` while its pipeline waits on a
+deciding manual job waits too, and so does a skipped job, which never ran: both read amber. Its head
+is the commit it ran on, which never changes, so it reports no `head.pushed` or `ci.absent`.
 
 Each colour is reported once per head. A push starts the new head uncoloured, and a re-run that
 unsettles CI and settles it again reports again, even in the same colour.
@@ -291,12 +292,13 @@ unsettles CI and settles it again reports again, even in the same colour.
 ## Output
 
 stdout carries exactly one envelope, pretty-printed JSON. With `--out FILE`, the envelope goes to
-`FILE` instead, and stdout stays empty. babysit deletes any `FILE` an earlier run left as it
-starts, then writes `FILE.tmp` and renames it over `FILE` once the run ends, so a reader of a file
-no other run writes finds no file or one whole envelope, never part of one, and never an earlier
-run's. stderr and the exit status are as without it. A usage error writes no file, and a file that
-can't be written fails the run as a failed write to stdout does: exit 1, no file, and nothing
-saved to the snapshot file. A run killed before it ends leaves no file either.
+`FILE` instead, and stdout stays empty. Once babysit holds the snapshot file's lock and has found no
+usage error, it deletes any `FILE` an earlier run left, then writes `FILE.tmp` and renames it over
+`FILE` once the run ends. A reader of a file no other run writes finds no file or one whole
+envelope, never part of one, and never an earlier run's. stderr and the exit status are as without
+it. A usage error leaves `FILE` as it was, and a file that can't be written fails the run as a
+failed write to stdout does: exit 1, no file, and nothing saved to the snapshot file. A run killed
+before it ends leaves no file either.
 
 | Field     | Value                                                                                         |
 | --------- | --------------------------------------------------------------------------------------------- |
@@ -510,7 +512,8 @@ A target the forge can't find:
 Usage errors are found before any forge is polled: a malformed flag, rule, condition, duration, or
 target; a checkout reference babysit can't place; a duration past what the clock can hold; or a
 `--snapshot` file that isn't a babysit snapshot file of this version (for `forget`, one that isn't a
-babysit snapshot file at all); or an `--out` naming the snapshot file, its `.lock`, or its `.tmp`.
+babysit snapshot file at all); or an `--out` whose file or `.tmp` is the snapshot file, its `.lock`,
+or its `.tmp`, by any spelling of the path.
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a
 forge's, such as the snapshot file or `condition_unfit`, or `git`, `gh auth token`, or
@@ -585,10 +588,11 @@ forget it to start over.
   match won't come back on a later run with other rules. On a wake, only the targets polled in the
   waking round are saved; another target keeps its earlier entry and diffs again from it.
 - **A wake is saved only after it's printed.** When the envelope can't be written, to stdout or
-  `--out`'s file, or the save after it fails, the file keeps the earlier baseline and the next run reports the same events again. A
-  failed save after a printed envelope notes the failure on stderr and exits 1, though the envelope
-  says `woke`: act on the events, and expect them again. A run killed mid-wait saves nothing past
-  first baselines, so the next run diffs, ignored events included, from the last saved entry.
+  `--out`'s file, or the save after it fails, the file keeps the earlier baseline and the next run
+  reports the same events again. A failed save after a printed envelope notes the failure on stderr
+  and exits 1, though the envelope says `woke`: act on the events, and expect them again. A run
+  killed mid-wait saves nothing past first baselines, so the next run diffs, ignored events
+  included, from the last saved entry.
 - **One run at a time.** babysit locks `<PATH>.lock` for the whole run; a second run on the same
   file ends at once with `lock_held`. The lock file stays behind and is harmless. Saves go through
   `<PATH>.tmp` and an atomic rename.

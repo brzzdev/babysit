@@ -25,7 +25,6 @@ use clap::{CommandFactory, FromArgMatches};
 
 use crate::cli::{Args, Cli, Command};
 use crate::clock::SystemClock;
-use crate::envelope::EXIT_ERROR;
 use crate::exec::SystemExec;
 use crate::github::GitHub;
 use crate::gitlab::GitLab;
@@ -64,25 +63,16 @@ fn watch(args: &Args) -> Result<u8, UsageError> {
         gitlab: &GitLab::new(&exec),
         slack: &Slack::new(&exec),
     };
-    let mut stderr = io::stderr().lock();
     let mut out: Box<dyn Write> = match &args.out {
+        Some(path) => Box::new(OutFile::new(path)),
         None => Box::new(io::stdout().lock()),
-        Some(path) if snapshot_file::owns(&args.snapshot, path) => {
-            return Err(UsageError(
-                "--out must not name the snapshot file, its `.lock`, or its `.tmp`".to_owned(),
-            ));
-        }
-        Some(path) => match OutFile::create(path) {
-            Ok(file) => Box::new(file),
-            Err(error) => {
-                let _ = writeln!(
-                    stderr,
-                    "babysit: could not clear {}: {error}",
-                    path.display()
-                );
-                return Ok(EXIT_ERROR);
-            }
-        },
     };
-    run::run(args, &backends, &exec, &SystemClock, &mut out, &mut stderr)
+    run::run(
+        args,
+        &backends,
+        &exec,
+        &SystemClock,
+        &mut out,
+        &mut io::stderr().lock(),
+    )
 }

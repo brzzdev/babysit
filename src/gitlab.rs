@@ -244,8 +244,9 @@ impl<E: Exec> GitLab<'_, E> {
         Ok(data.project)
     }
 
-    /// The job as its only check, deciding even where it may fail, since it is the target, and
-    /// waiting where its pipeline holds it behind a manual job.
+    /// The job as its only check, deciding even where it may fail, since it is the target. It
+    /// waits where its pipeline holds it behind a manual job, and where it was skipped, having
+    /// never run.
     fn poll_job(
         &self,
         target: &Target,
@@ -256,11 +257,12 @@ impl<E: Exec> GitLab<'_, E> {
             .ci_project(target, &project_of(target), None, deadline, hints)?
             .and_then(|project| project.job)
             .ok_or_else(|| gone(target))?;
-        let assessment = if held(&job.pipeline.status, &job.status) {
-            Assessment::Waiting
-        } else {
-            job_assessment(&job.status)
-        };
+        let assessment =
+            if job.status == CI_SKIPPED || blocked_by_manual(&job.pipeline.status, &job.status) {
+                Assessment::Waiting
+            } else {
+                job_assessment(&job.status)
+            };
         let check = Check {
             assessment,
             conclusion: job.status.to_ascii_lowercase(),
@@ -283,7 +285,7 @@ impl<E: Exec> GitLab<'_, E> {
     }
 
     /// Pages the pipeline's jobs to their end, assessing them as a merge request's pipeline, and
-    /// fails the poll if its status changes between pages, as a retry's does.
+    /// fails the poll if a retry lands between pages, ahead of the cursor, as its newest job.
     fn poll_pipeline(
         &self,
         target: &Target,
@@ -301,8 +303,8 @@ impl<E: Exec> GitLab<'_, E> {
             jobs.take(page.jobs.take())?;
             match &first {
                 None => first = Some(page),
-                Some(first) if first.status != page.status => {
-                    return Err(transient("the pipeline's status changed between pages"));
+                Some(first) if first.newest() != page.newest() => {
+                    return Err(transient("a job was retried between pages"));
                 }
                 Some(_) => {}
             }
@@ -586,7 +588,7 @@ fn ci(pipeline: &Pipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: b
     let origin = web_origin(target_url);
     let mut checks: Vec<_> = jobs
         .into_iter()
-        .filter(|job| !held(&pipeline.status, &job.status))
+        .filter(|job| !blocked_by_manual(&pipeline.status, &job.status))
         .map(|job| Check {
             assessment: job_assessment(&job.status),
             conclusion: job.status.to_ascii_lowercase(),
@@ -618,7 +620,7 @@ fn ci(pipeline: &Pipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: b
 }
 
 /// Whether a job waits behind a deciding manual job: it stays created while its pipeline waits.
-fn held(pipeline_status: &str, job_status: &str) -> bool {
+fn blocked_by_manual(pipeline_status: &str, job_status: &str) -> bool {
     pipeline_status == CI_MANUAL && job_status == CI_CREATED
 }
 
@@ -867,7 +869,7 @@ struct CiData {
 struct CiJob {
     finished_at: Option<String>,
     name: String,
-    pipeline: PipelineHead,
+    pipeline: JobPipeline,
     status: String,
 }
 
@@ -882,7 +884,7 @@ struct CiProject {
 
 /// The pipeline a job belongs to.
 #[derive(Deserialize)]
-struct PipelineHead {
+struct JobPipeline {
     sha: String,
     status: String,
 }
@@ -990,12 +992,20 @@ struct Pipeline {
     id: String,
     jobs: Option<Connection<Job>>,
     merge_request_event_type: Option<String>,
+    /// The latest attempt with the highest id, which a retry replaces; `None` where the query
+    /// leaves it out.
+    newest: Option<Nodes<JobNode>>,
     path: String,
     sha: String,
     status: String,
 }
 
 impl Pipeline {
+    fn newest(&self) -> Option<&str> {
+        let newest = self.newest.as_ref()?.nodes.first()?;
+        Some(newest.id.as_str())
+    }
+
     /// Whether GitLab ran the pipeline on a merge commit rather than on the head itself.
     fn merged(&self) -> bool {
         matches!(
@@ -1013,6 +1023,11 @@ struct Job {
     name: String,
     status: String,
     web_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct JobNode {
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -1156,8 +1171,11 @@ mod tests {
     use crate::reference;
 
     const BLOCKERS_MR_ID: &str = "552635815";
+    const BRIDGE: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860976382";
+    const FAILED_PIPELINE: &str = "https://gitlab.com/gitlab-org/cli/-/pipelines/3044291302";
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
     const HEAD: &str = "25892092f1db0711fcea689c27db39f6d928d2eb";
+    const MANUAL_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941139";
     /// The recorded head pipeline's merge commit.
     const MERGE_SHA: &str = "d29dd22357102fba3709a18e01c6a96e025174a3";
     const PLAIN_MR_ID: &str = "552726042";
@@ -1165,6 +1183,7 @@ mod tests {
     const RESET: u64 = 1_792_533_720;
     const RESOLVE: &str = "glab api -i --hostname gitlab.com \
                            projects/gitlab-org%2Fcli/merge_requests/4157";
+    const RUNNING_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941122";
     const URL: &str = "https://gitlab.com/gitlab-org/cli/-/merge_requests/4157";
 
     fn target() -> Target {
@@ -2158,11 +2177,6 @@ mod tests {
         );
     }
 
-    const BRIDGE: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860976382";
-    const FAILED_PIPELINE: &str = "https://gitlab.com/gitlab-org/cli/-/pipelines/3044291302";
-    const MANUAL_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941139";
-    const RUNNING_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941122";
-
     fn ci_target(url: &str) -> Target {
         let Ok(Reference {
             locus: Locus::Numbered { kind, number, .. },
@@ -2386,7 +2400,7 @@ mod tests {
         };
         let out = std::env::temp_dir().join(format!("babysit-{}-out.json", std::process::id()));
 
-        envelope.write(&mut OutFile::create(&out).unwrap()).unwrap();
+        envelope.write(&mut OutFile::new(&out)).unwrap();
         let written = fs::read(&out).unwrap();
         fs::remove_file(&out).unwrap();
 
@@ -2394,7 +2408,7 @@ mod tests {
     }
 
     #[test]
-    fn a_job_held_behind_a_manual_job_waits_amber_while_a_created_one_elsewhere_runs() {
+    fn a_job_blocked_behind_a_manual_job_waits_amber_while_a_created_one_elsewhere_runs() {
         let held = "https://gitlab.com/gitlab-org/cloud-native/gitlab-operator/-/jobs/17778139797";
         let stdout = include_str!("gitlab/fixtures/job_held.http");
         let queued = edited_at(stdout, "/data/project/job/pipeline", |pipeline| {
@@ -2409,13 +2423,21 @@ mod tests {
     }
 
     #[test]
-    fn a_pipeline_whose_status_changes_between_pages_fails_the_poll() {
+    fn a_skipped_job_waits_amber_having_never_run() {
+        let poll = ci_poll(MANUAL_JOB, &job_at("SKIPPED", None));
+
+        assert_eq!(poll.ci.and_then(|ci| ci.colour()), Some(Colour::Amber));
+        assert_eq!(poll.state, TargetState::Closed);
+    }
+
+    #[test]
+    fn a_retry_landing_between_pipeline_pages_fails_the_poll() {
         let full = include_str!("gitlab/fixtures/pipeline_failed.http");
         let first = edited_at(full, "/data/project/pipeline/jobs", |jobs| {
             jobs["pageInfo"] = json!({"hasNextPage": true, "endCursor": "JOBS_1"});
         });
-        let retried = edited_at(full, "/data/project/pipeline", |pipeline| {
-            pipeline["status"] = json!("RUNNING");
+        let retried = edited_at(full, "/data/project/pipeline/newest/nodes/0", |newest| {
+            newest["id"] = json!("gid://gitlab/Ci::Build/17856600999");
         });
 
         let polled = poll_target(
