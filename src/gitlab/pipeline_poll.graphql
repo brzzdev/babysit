@@ -1,4 +1,4 @@
-query ($id: CiPipelineID!, $project: ID!, $jobs: Boolean = true, $jobsAfter: String) {
+query ($id: CiPipelineID!, $jobs: Boolean = true, $jobsAfter: String, $project: ID!) {
   project(fullPath: $project) {
     fullPath
     pipeline(id: $id) {

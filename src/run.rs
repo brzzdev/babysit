@@ -1561,10 +1561,10 @@ mod tests {
 
         let out = sandbox.dir.join("out.json");
 
-        let (timeout, _) = watch_into(&too_long, vec![], &mut OutFile::new(&out));
+        let (timeout, _) = watch_into(&too_long, vec![], &mut OutFile::create(&out).unwrap());
         too_long.timeout = None;
         too_long.interval = Duration::from_secs(u64::MAX);
-        let (interval, _) = watch_into(&too_long, vec![], &mut OutFile::new(&out));
+        let (interval, _) = watch_into(&too_long, vec![], &mut OutFile::create(&out).unwrap());
 
         assert!(timeout.is_err());
         assert!(interval.is_err());
@@ -1759,7 +1759,7 @@ mod tests {
         let (written_code, stderr) = watch_into(
             &args(&[URL], &written.snapshot(), None),
             vec![returns(URL, poll(&["1", "2"]))],
-            &mut OutFile::new(&out),
+            &mut OutFile::create(&out).unwrap(),
         );
 
         assert_eq!(written_code.unwrap(), printed_code);
@@ -1780,7 +1780,7 @@ mod tests {
         let (code, _) = watch_into(
             &args(&[URL], &sandbox.snapshot(), None),
             vec![returns(URL, poll(&["1", "2"]))],
-            &mut OutFile::new(&sandbox.dir.join("missing/out.json")),
+            &mut OutFile::create(&sandbox.dir.join("missing/out.json")).unwrap(),
         );
 
         assert_eq!(code.unwrap(), 1);

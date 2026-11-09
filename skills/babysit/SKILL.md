@@ -123,7 +123,8 @@ Starting sets:
 --until 'colour=green,red,amber' --until 'absent_ci=true' --until 'state=closed,merged' \
   --on 'state.*'
 
-# A GitLab job or pipeline until it finishes, as after `glab ci retry` or `glab ci play`
+# A GitLab job or pipeline until it finishes. Start it after `glab ci retry` or `glab ci play`,
+# not before: an unplayed manual job is already amber
 --until 'colour=green,red,amber'
 
 # A reply on an issue
@@ -159,8 +160,9 @@ What bites:
   your goal.
 - **A retried job is a new job**, and its old URL stays failed: watch the URL `glab ci retry`
   prints. A played manual job keeps its URL, but reads amber until played, which meets
-  `colour=…amber` on the first poll: start the wait after `glab ci play`. A bridge's own status follows its downstream pipeline only under
-  `strategy: depend`; watch that pipeline by its URL instead.
+  `colour=…amber` on the first poll: start the wait after `glab ci play`. A bridge's own status
+  follows its downstream pipeline only under `strategy: depend`; watch that pipeline by its URL
+  instead.
 - **On Slack, `@me` is the token's user** and a login is a Slack user id (`U…` or `W…`), or an
   integration's `bot_id`, which counts as `@bot`.
 
@@ -192,9 +194,10 @@ jq '.events[] | {kind, target, url, body, truncated, reply_to, path, line, colou
 ```
 
 In the background, the harness's output file mixes the envelope with stderr and its own lines, so
-pass `--out` with a file only this run writes. It holds one whole envelope once the run exits,
-stdout stays empty, and the harness reports the exit status. Read the file on the wake, except
-after exit 2, which writes none and leaves any earlier one in place:
+pass `--out` with a file only this run writes, never the snapshot file. stdout stays empty, the
+harness reports the exit status, and the file holds one whole envelope once the run ends. babysit
+deletes an earlier run's file as it starts, so no file means the run ended without an envelope:
+killed, or failing to write it (exit 1). After exit 2, read stderr, not the file:
 
 ```sh
 babysit --out "$snap.wait.json" …

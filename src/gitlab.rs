@@ -201,10 +201,10 @@ impl<E: Exec> GitLab<'_, E> {
         project: &str,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
-        let (resource, global_id, _) = ci_api(kind);
+        let api = CiApi::of(kind);
         let mut target = Target {
             forge: Forge::GitLab,
-            forge_id: format!("{global_id}{number}"),
+            forge_id: format!("{}{number}", api.global_id),
             host: reference.host.clone(),
             kind,
             url: reference.given.clone(),
@@ -220,31 +220,32 @@ impl<E: Exec> GitLab<'_, E> {
             return Err(fatal(ErrorKind::TargetNotFound, &message));
         };
         let origin = web_origin(&reference.given);
-        target.url = format!("{origin}/{}/-/{resource}/{number}", found.full_path);
+        target.url = format!("{origin}/{}/-/{}/{number}", found.full_path, api.resource);
         Ok((target, hints))
     }
 
-    /// The project holding a job or pipeline, with the page of its jobs `after` names, or `None`
-    /// where glab can't see the project.
+    /// The project holding a job or pipeline, with the page of jobs or the skip the `jobs`
+    /// variable asks for, or `None` where glab can't see the project.
     fn ci_project(
         &self,
         target: &Target,
         project: &str,
-        after: Option<(&'static str, String)>,
+        jobs: Option<(&'static str, String)>,
         deadline: Option<SystemTime>,
         hints: &mut Hints,
     ) -> Result<Option<CiProject>, Failure> {
-        let (_, _, query) = ci_api(target.kind);
         let mut variables = vec![
             ("-f", format!("id={}", target.forge_id)),
             ("-f", format!("project={project}")),
         ];
-        variables.extend(after);
+        variables.extend(jobs);
+        let query = CiApi::of(target.kind).query;
         let data: CiData = self.graphql(&target.host, query, &variables, deadline, hints)?;
         Ok(data.project)
     }
 
-    /// The job as its only check, deciding even where it may fail, since it is the target.
+    /// The job as its only check, deciding even where it may fail, since it is the target, and
+    /// waiting where its pipeline holds it behind a manual job.
     fn poll_job(
         &self,
         target: &Target,
@@ -255,8 +256,13 @@ impl<E: Exec> GitLab<'_, E> {
             .ci_project(target, &project_of(target), None, deadline, hints)?
             .and_then(|project| project.job)
             .ok_or_else(|| gone(target))?;
+        let assessment = if held(&job.pipeline.status, &job.status) {
+            Assessment::Waiting
+        } else {
+            job_assessment(&job.status)
+        };
         let check = Check {
-            assessment: job_assessment(&job.status),
+            assessment,
             conclusion: job.status.to_ascii_lowercase(),
             deciding: true,
             job_id: Some(rest_id(&target.forge_id).to_owned()),
@@ -267,7 +273,7 @@ impl<E: Exec> GitLab<'_, E> {
             checks: vec![check],
             required_known: true,
         };
-        Ok(run_poll(
+        Ok(ci_target_poll(
             target,
             job.pipeline.sha,
             ci,
@@ -276,7 +282,8 @@ impl<E: Exec> GitLab<'_, E> {
         ))
     }
 
-    /// Pages the pipeline's jobs to their end, assessing them as a merge request's pipeline.
+    /// Pages the pipeline's jobs to their end, assessing them as a merge request's pipeline, and
+    /// fails the poll if its status changes between pages, as a retry's does.
     fn poll_pipeline(
         &self,
         target: &Target,
@@ -292,13 +299,19 @@ impl<E: Exec> GitLab<'_, E> {
                 .and_then(|project| project.pipeline)
                 .ok_or_else(|| gone(target))?;
             jobs.take(page.jobs.take())?;
-            first.get_or_insert(page);
+            match &first {
+                None => first = Some(page),
+                Some(first) if first.status != page.status => {
+                    return Err(transient("the pipeline's status changed between pages"));
+                }
+                Some(_) => {}
+            }
         }
         let pipeline = first.expect("every poll fetches a first page");
         // With no merge for it to block, a skipped pipeline passes as a skipped job does.
         let skipped_accepted = true;
         let ci = ci(&pipeline, jobs.nodes, &target.url, skipped_accepted);
-        Ok(run_poll(
+        Ok(ci_target_poll(
             target,
             pipeline.sha,
             ci,
@@ -571,11 +584,9 @@ impl<E: Exec> GitLab<'_, E> {
 /// and the pipeline itself where it was skipped or no job decides.
 fn ci(pipeline: &Pipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: bool) -> Ci {
     let origin = web_origin(target_url);
-    // Jobs held behind a deciding manual job stay created while the pipeline waits on it.
-    let blocked = pipeline.status == CI_MANUAL;
     let mut checks: Vec<_> = jobs
         .into_iter()
-        .filter(|job| !(blocked && job.status == CI_CREATED))
+        .filter(|job| !held(&pipeline.status, &job.status))
         .map(|job| Check {
             assessment: job_assessment(&job.status),
             conclusion: job.status.to_ascii_lowercase(),
@@ -606,8 +617,13 @@ fn ci(pipeline: &Pipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: b
     }
 }
 
+/// Whether a job waits behind a deciding manual job: it stays created while its pipeline waits.
+fn held(pipeline_status: &str, job_status: &str) -> bool {
+    pipeline_status == CI_MANUAL && job_status == CI_CREATED
+}
+
 /// A job's or pipeline's poll: open until it finishes, and closed when it did.
-fn run_poll(
+fn ci_target_poll(
     target: &Target,
     head: String,
     ci: Ci,
@@ -632,13 +648,29 @@ fn run_poll(
     }
 }
 
-/// A job's or pipeline's web resource, global id prefix, and poll query.
-fn ci_api(kind: TargetKind) -> (&'static str, &'static str, &'static str) {
-    match kind {
-        TargetKind::Job => ("jobs", JOB_GID, JOB_POLL_QUERY),
-        TargetKind::Pipeline => ("pipelines", PIPELINE_GID, PIPELINE_POLL_QUERY),
-        TargetKind::ChangeRequest | TargetKind::Issue => {
-            unreachable!("only a job or pipeline is watched through its project")
+/// How GitLab names a job or pipeline: on the web, by global id, and in its poll query.
+struct CiApi {
+    global_id: &'static str,
+    query: &'static str,
+    resource: &'static str,
+}
+
+impl CiApi {
+    fn of(kind: TargetKind) -> Self {
+        match kind {
+            TargetKind::Job => Self {
+                global_id: JOB_GID,
+                query: JOB_POLL_QUERY,
+                resource: "jobs",
+            },
+            TargetKind::Pipeline => Self {
+                global_id: PIPELINE_GID,
+                query: PIPELINE_POLL_QUERY,
+                resource: "pipelines",
+            },
+            TargetKind::ChangeRequest | TargetKind::Issue => {
+                unreachable!("only a job or pipeline is watched through its project")
+            }
         }
     }
 }
@@ -830,15 +862,6 @@ struct CiData {
     project: Option<CiProject>,
 }
 
-/// A project as a job or pipeline poll sees it; the poll asks for only one of the two.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CiProject {
-    full_path: String,
-    job: Option<CiJob>,
-    pipeline: Option<Pipeline>,
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CiJob {
@@ -848,9 +871,20 @@ struct CiJob {
     status: String,
 }
 
+/// A project as a job or pipeline poll sees it; the poll asks for only one of the two.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CiProject {
+    full_path: String,
+    job: Option<CiJob>,
+    pipeline: Option<Pipeline>,
+}
+
+/// The pipeline a job belongs to.
 #[derive(Deserialize)]
 struct PipelineHead {
     sha: String,
+    status: String,
 }
 
 #[derive(Deserialize)]
@@ -951,7 +985,7 @@ impl MergeRequestPage {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Pipeline {
-    /// Asked for only by a pipeline poll.
+    /// `None` where the query leaves it out.
     finished_at: Option<String>,
     id: String,
     jobs: Option<Connection<Job>>,
@@ -2137,9 +2171,8 @@ mod tests {
         else {
             panic!("{url}");
         };
-        let (_, global_id, _) = ci_api(kind);
         Target {
-            forge_id: format!("{global_id}{number}"),
+            forge_id: format!("{}{number}", CiApi::of(kind).global_id),
             kind,
             url: url.to_owned(),
             ..target()
@@ -2149,9 +2182,13 @@ mod tests {
     /// The call a job's or pipeline's resolve and poll make, `after` asking for a page of jobs.
     fn ci_call(url: &str, after: &str, stdout: &str) -> (String, Result<Output, exec::Error>) {
         let target = ci_target(url);
-        let (_, _, query) = ci_api(target.kind);
         let variables = format!(" -f project={}{after}", project_of(&target));
-        query_call(query, &target.forge_id, &variables, stdout)
+        query_call(
+            CiApi::of(target.kind).query,
+            &target.forge_id,
+            &variables,
+            stdout,
+        )
     }
 
     fn ci_resolve(url: &str, stdout: &str) -> Result<Target, Failure> {
@@ -2349,11 +2386,62 @@ mod tests {
         };
         let out = std::env::temp_dir().join(format!("babysit-{}-out.json", std::process::id()));
 
-        envelope.write(&mut OutFile::new(&out)).unwrap();
+        envelope.write(&mut OutFile::create(&out).unwrap()).unwrap();
         let written = fs::read(&out).unwrap();
         fs::remove_file(&out).unwrap();
 
         assert_eq!(checked_in_usage("met-job"), json_block(&written));
+    }
+
+    #[test]
+    fn a_job_held_behind_a_manual_job_waits_amber_while_a_created_one_elsewhere_runs() {
+        let held = "https://gitlab.com/gitlab-org/cloud-native/gitlab-operator/-/jobs/17778139797";
+        let stdout = include_str!("gitlab/fixtures/job_held.http");
+        let queued = edited_at(stdout, "/data/project/job/pipeline", |pipeline| {
+            pipeline["status"] = json!("RUNNING");
+        });
+
+        let colour = |stdout: &str| ci_poll(held, stdout).ci.and_then(|ci| ci.colour());
+
+        assert_eq!(colour(stdout), Some(Colour::Amber));
+        assert_eq!(colour(&queued), None);
+        assert_eq!(ci_poll(held, stdout).state, TargetState::Open);
+    }
+
+    #[test]
+    fn a_pipeline_whose_status_changes_between_pages_fails_the_poll() {
+        let full = include_str!("gitlab/fixtures/pipeline_failed.http");
+        let first = edited_at(full, "/data/project/pipeline/jobs", |jobs| {
+            jobs["pageInfo"] = json!({"hasNextPage": true, "endCursor": "JOBS_1"});
+        });
+        let retried = edited_at(full, "/data/project/pipeline", |pipeline| {
+            pipeline["status"] = json!("RUNNING");
+        });
+
+        let polled = poll_target(
+            &ci_target(FAILED_PIPELINE),
+            [
+                ci_call(FAILED_PIPELINE, "", &first),
+                ci_call(FAILED_PIPELINE, " -f jobsAfter=JOBS_1", &retried),
+            ],
+        );
+
+        assert!(matches!(polled, Err(Failure::Transient { .. })));
+    }
+
+    #[test]
+    fn retrying_a_job_reopens_its_finished_pipeline() {
+        let failed = include_str!("gitlab/fixtures/pipeline_failed.http");
+        let retried = edited_at(failed, "/data/project/pipeline", |pipeline| {
+            pipeline["status"] = json!("RUNNING");
+        });
+
+        let steps = diff::steps(
+            ci_poll(FAILED_PIPELINE, failed),
+            vec![ci_poll(FAILED_PIPELINE, &retried)],
+        );
+
+        assert_eq!(steps, [["state.reopened"]]);
     }
 
     #[test]

@@ -28,4 +28,4 @@ X-Runtime: 0.113184
 X-Ua-Compatible: IE=edge
 X-Xss-Protection: 1; mode=block
 
-{"data":{"project":{"fullPath":"gitlab-org/gitlab","job":{"finishedAt":null,"name":"rspec-ee system pg17 duo_workflow_service 1/1","pipeline":{"sha":"2f82cf43f55ebc217f9bcfcf8d407b3a04158dd4"},"status":"RUNNING"}}}}
+{"data":{"project":{"fullPath":"gitlab-org/gitlab","job":{"finishedAt":null,"name":"rspec-ee system pg17 duo_workflow_service 1/1","pipeline":{"sha":"2f82cf43f55ebc217f9bcfcf8d407b3a04158dd4","status":"RUNNING"},"status":"RUNNING"}}}}

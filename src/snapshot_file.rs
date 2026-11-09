@@ -137,6 +137,11 @@ impl Drop for Lock {
     }
 }
 
+/// Whether `path` is the snapshot file at `snapshot` or one of the files beside it that it uses.
+pub fn owns(snapshot: &Path, path: &Path) -> bool {
+    path == snapshot || path == lock_path(snapshot) || path == temp_path(snapshot)
+}
+
 fn lock_path(path: &Path) -> PathBuf {
     path.with_added_extension("lock")
 }
@@ -174,4 +179,21 @@ fn parse(bytes: &[u8]) -> Result<Contents, String> {
         return Err(format!("version {} is not supported", contents.version));
     }
     Ok(contents)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_file_owns_itself_its_lock_and_its_temp_file_only() {
+        let snapshot = Path::new("dir/s.json");
+
+        for path in ["dir/s.json", "dir/s.json.lock", "dir/s.json.tmp"] {
+            assert!(owns(snapshot, Path::new(path)), "{path}");
+        }
+        for path in ["dir/s.json.wait.json", "s.json", "dir/t.json"] {
+            assert!(!owns(snapshot, Path::new(path)), "{path}");
+        }
+    }
 }
