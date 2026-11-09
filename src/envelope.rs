@@ -213,6 +213,16 @@ mod tests {
     use super::*;
     use crate::forge::{Poll, Reported, poll};
 
+    fn pull_request() -> Target {
+        Target {
+            forge: Forge::GitHub,
+            forge_id: "PR_1".to_owned(),
+            host: "github.com".to_owned(),
+            kind: TargetKind::ChangeRequest,
+            url: "https://github.com/o/r/pull/1".to_owned(),
+        }
+    }
+
     fn shortened(body: &str) -> (String, bool) {
         let mut body = body.to_owned();
         let truncated = shorten(&mut body);
@@ -250,13 +260,7 @@ mod tests {
 
     #[test]
     fn a_head_reported_absent_is_absent_ci_only_while_open_and_unchecked() {
-        let target = Target {
-            forge: Forge::GitHub,
-            forge_id: "PR_1".to_owned(),
-            host: "github.com".to_owned(),
-            kind: TargetKind::ChangeRequest,
-            url: "https://github.com/o/r/pull/1".to_owned(),
-        };
+        let target = pull_request();
         let reported = |poll: Poll| Snapshot {
             reported: Reported {
                 absence: Some(Absence::Reported),
@@ -285,13 +289,7 @@ mod tests {
 
     #[test]
     fn a_push_hides_the_old_heads_mergeability_until_the_forge_recomputes() {
-        let target = Target {
-            forge: Forge::GitHub,
-            forge_id: "PR_1".to_owned(),
-            host: "github.com".to_owned(),
-            kind: TargetKind::ChangeRequest,
-            url: "https://github.com/o/r/pull/1".to_owned(),
-        };
+        let target = pull_request();
         let at = |head: &str, merge| Poll {
             head: Some(head.to_owned()),
             merge,

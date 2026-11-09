@@ -264,7 +264,6 @@ fn selector(value: &str) -> Result<Selector, String> {
     }
 }
 
-/// Each value's meaning in `known`, a table of each word with what it means.
 pub fn words<'a, T: Copy>(
     values: impl Iterator<Item = &'a str>,
     known: &[(&str, T)],

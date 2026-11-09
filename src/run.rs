@@ -1301,6 +1301,37 @@ mod tests {
     }
 
     #[test]
+    fn a_later_run_hides_mergeability_saved_for_an_earlier_head() {
+        let sandbox = Sandbox::new("merge-head");
+        let clean = Poll {
+            merge: Some(Merge::Clean),
+            ..poll(&["1"])
+        };
+        seed_snapshot(
+            &sandbox.snapshot(),
+            URL,
+            NODE_ID,
+            Snapshot::first(clean, UNIX_EPOCH),
+        );
+        let pushed = Poll {
+            head: Some("def456".to_owned()),
+            ..poll(&["1"])
+        };
+
+        let (_, envelope) = watch(
+            &args(&[URL], &sandbox.snapshot(), Some(0)),
+            vec![returns(URL, pushed)],
+        );
+
+        assert_eq!(envelope["targets"][0]["head"], "def456");
+        assert_eq!(envelope["targets"][0]["merge"], Value::Null);
+        assert_eq!(
+            saved(&sandbox.snapshot())["targets"][URL]["snapshot"]["reported"]["merge_head"],
+            "abc123"
+        );
+    }
+
+    #[test]
     fn a_target_that_is_not_open_summarises_no_mergeability() {
         let sandbox = Sandbox::new("merged-summary");
         seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);

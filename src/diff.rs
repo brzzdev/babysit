@@ -181,15 +181,13 @@ impl Snapshot {
     /// A first poll, made at `now`, as baseline: its colour, and an open target's mergeability,
     /// count as reported, and a head with no check starts its absence clock.
     pub fn first(poll: Poll, now: SystemTime) -> Self {
+        let merge = poll.merge.filter(|_| poll.state == TargetState::Open);
         Self {
             reported: Reported {
                 absence: absence_after(&poll, None, now).0,
                 colour: poll.ci.as_ref().and_then(Ci::colour),
-                merge: poll.merge.filter(|_| poll.state == TargetState::Open),
-                merge_head: poll
-                    .head
-                    .clone()
-                    .filter(|_| poll.merge.is_some() && poll.state == TargetState::Open),
+                merge,
+                merge_head: merge.and(poll.head.clone()),
             },
             poll,
         }
