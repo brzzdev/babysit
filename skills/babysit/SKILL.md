@@ -1,6 +1,6 @@
 ---
 name: babysit
-description: Wait on a GitHub pull request, GitLab merge request, issue, GitLab job or pipeline, or Slack thread with the `babysit` CLI, which blocks until CI settles; a review, thread, comment, or Slack reply lands; or the target merges, closes, or finishes. Use whenever you must wait for something to happen on a PR, MR, issue, job, pipeline, or Slack thread, such as a GitLab job you retried or played, in place of `gh pr checks --watch`, `glab ci status --live`, or a polling loop, or when the `babysit` command comes up.
+description: Wait on a GitHub pull request, GitLab merge request, issue, GitLab job or pipeline, or Slack thread with the `babysit` CLI, which blocks until CI settles; a review, thread, comment, or Slack reply lands; or the target merges, closes, or finishes. Use whenever you must wait for something to happen on a PR, MR, issue, or Slack thread, or a GitLab job or pipeline such as one you retried or played, in place of `gh pr checks --watch`, `glab ci status --live`, or a polling loop, or when the `babysit` command comes up.
 metadata:
   author: Paul Breeze
 ---
@@ -23,8 +23,9 @@ write a prefix against the forge's text. The full text stays at the event's `url
 cut part matters.
 
 A target is a web URL (`…/pull/<n>`, `…/issues/<n>`, `…/-/merge_requests/<n>`, or a GitLab
-`…/-/jobs/<id>` or `…/-/pipelines/<id>`), a Slack thread's permalink (the parent's, or a reply's with its `?thread_ts=…&cid=…`), or inside a checkout `#<n>`
-(a GitHub PR or issue, a GitLab issue) or `!<n>` (a GitLab MR). Several targets can share one run.
+`…/-/jobs/<id>` or `…/-/pipelines/<id>`), a Slack thread's permalink (the parent's, or a
+reply's with its `?thread_ts=…&cid=…`), or inside a checkout `#<n>` (a GitHub PR or issue, a
+GitLab issue) or `!<n>` (a GitLab MR). Several targets can share one run.
 
 A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with the
 `channels:history`, `groups:history`, `im:history`, and `mpim:history` scopes, exported as
@@ -157,8 +158,8 @@ What bites:
   `state.*`; a Slack thread only `comment.*`, and its `targets[].state` stays `open`, so stop on
   your goal.
 - **A retried job is a new job**, and its old URL stays failed: watch the URL `glab ci retry`
-  prints. A played manual job keeps its URL, which reads amber until played, so start the wait
-  after `glab ci play`. A bridge's own status follows its downstream pipeline only under
+  prints. A played manual job keeps its URL, but reads amber until played, which meets
+  `colour=…amber` on the first poll: start the wait after `glab ci play`. A bridge's own status follows its downstream pipeline only under
   `strategy: depend`; watch that pipeline by its URL instead.
 - **On Slack, `@me` is the token's user** and a login is a Slack user id (`U…` or `W…`), or an
   integration's `bot_id`, which counts as `@bot`.

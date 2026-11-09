@@ -17,7 +17,7 @@ mod slack;
 mod snapshot_file;
 mod target;
 
-use std::io;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
@@ -63,23 +63,16 @@ fn watch(args: &Args) -> Result<u8, UsageError> {
         gitlab: &GitLab::new(&exec),
         slack: &Slack::new(&exec),
     };
-    let stderr = &mut io::stderr().lock();
-    match &args.out {
-        Some(path) => run::run(
-            args,
-            &backends,
-            &exec,
-            &SystemClock,
-            &mut OutFile::new(path),
-            stderr,
-        ),
-        None => run::run(
-            args,
-            &backends,
-            &exec,
-            &SystemClock,
-            &mut io::stdout().lock(),
-            stderr,
-        ),
-    }
+    let mut stdout: Box<dyn Write> = match &args.out {
+        Some(path) => Box::new(OutFile::new(path)),
+        None => Box::new(io::stdout().lock()),
+    };
+    run::run(
+        args,
+        &backends,
+        &exec,
+        &SystemClock,
+        &mut stdout,
+        &mut io::stderr().lock(),
+    )
 }

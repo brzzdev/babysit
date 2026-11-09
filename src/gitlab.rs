@@ -14,8 +14,6 @@ use crate::reference::{self, Locus, Reference};
 use crate::response::{self, Response};
 
 const CI_CREATED: &str = "CREATED";
-/// The statuses a job or pipeline ends in, short of a retry.
-const CI_FINISHED: [&str; 4] = ["CANCELED", "FAILED", CI_SKIPPED, "SUCCESS"];
 const CI_MANUAL: &str = "MANUAL";
 const CI_SKIPPED: &str = "SKIPPED";
 const CLI: &str = "glab";
@@ -203,10 +201,7 @@ impl<E: Exec> GitLab<'_, E> {
         project: &str,
         deadline: Option<SystemTime>,
     ) -> Result<(Target, Hints), Failure> {
-        let (resource, global_id) = match kind {
-            TargetKind::Job => ("jobs", JOB_GID),
-            _ => ("pipelines", PIPELINE_GID),
-        };
+        let (resource, global_id, _) = ci_api(kind);
         let mut target = Target {
             forge: Forge::GitLab,
             forge_id: format!("{global_id}{number}"),
@@ -214,9 +209,10 @@ impl<E: Exec> GitLab<'_, E> {
             kind,
             url: reference.given.clone(),
         };
+        let skip_jobs = (kind == TargetKind::Pipeline).then(|| ("-F", "jobs=false".to_owned()));
         let mut hints = Hints::default();
         let found = self
-            .ci_project(&target, project, None, deadline, &mut hints)
+            .ci_project(&target, project, skip_jobs, deadline, &mut hints)
             .map_err(|failure| failure.paced(hints))?
             .filter(|found| found.job.is_some() || found.pipeline.is_some());
         let Some(found) = found else {
@@ -238,10 +234,7 @@ impl<E: Exec> GitLab<'_, E> {
         deadline: Option<SystemTime>,
         hints: &mut Hints,
     ) -> Result<Option<CiProject>, Failure> {
-        let query = match target.kind {
-            TargetKind::Job => JOB_POLL_QUERY,
-            _ => PIPELINE_POLL_QUERY,
-        };
+        let (_, _, query) = ci_api(target.kind);
         let mut variables = vec![
             ("-f", format!("id={}", target.forge_id)),
             ("-f", format!("project={project}")),
@@ -621,10 +614,9 @@ fn run_poll(
     status: &str,
     finished_at: Option<String>,
 ) -> Poll {
-    let state = if CI_FINISHED.contains(&status) {
-        TargetState::Closed
-    } else {
-        TargetState::Open
+    let state = match job_assessment(status) {
+        Assessment::Failed | Assessment::Passed => TargetState::Closed,
+        Assessment::Pending | Assessment::Waiting => TargetState::Open,
     };
     Poll {
         ci: Some(ci),
@@ -637,6 +629,17 @@ fn run_poll(
         state_changed_by: None,
         threads: Vec::new(),
         url: target.url.clone(),
+    }
+}
+
+/// A job's or pipeline's web resource, global id prefix, and poll query.
+fn ci_api(kind: TargetKind) -> (&'static str, &'static str, &'static str) {
+    match kind {
+        TargetKind::Job => ("jobs", JOB_GID, JOB_POLL_QUERY),
+        TargetKind::Pipeline => ("pipelines", PIPELINE_GID, PIPELINE_POLL_QUERY),
+        TargetKind::ChangeRequest | TargetKind::Issue => {
+            unreachable!("only a job or pipeline is watched through its project")
+        }
     }
 }
 
@@ -2134,10 +2137,7 @@ mod tests {
         else {
             panic!("{url}");
         };
-        let global_id = match kind {
-            TargetKind::Job => JOB_GID,
-            _ => PIPELINE_GID,
-        };
+        let (_, global_id, _) = ci_api(kind);
         Target {
             forge_id: format!("{global_id}{number}"),
             kind,
@@ -2149,19 +2149,17 @@ mod tests {
     /// The call a job's or pipeline's resolve and poll make, `after` asking for a page of jobs.
     fn ci_call(url: &str, after: &str, stdout: &str) -> (String, Result<Output, exec::Error>) {
         let target = ci_target(url);
-        let query = match target.kind {
-            TargetKind::Job => JOB_POLL_QUERY,
-            _ => PIPELINE_POLL_QUERY,
-        };
+        let (_, _, query) = ci_api(target.kind);
         let variables = format!(" -f project={}{after}", project_of(&target));
         query_call(query, &target.forge_id, &variables, stdout)
     }
 
     fn ci_resolve(url: &str, stdout: &str) -> Result<Target, Failure> {
-        let exec = Script::new([ci_call(url, "", stdout)]);
-        GitLab::new(&exec)
-            .resolve(&reference::parse(url).unwrap(), None)
-            .map(|(target, _)| target)
+        let skip_jobs = match ci_target(url).kind {
+            TargetKind::Pipeline => " -F jobs=false",
+            _ => "",
+        };
+        resolve_url(url, &ci_call(url, skip_jobs, stdout).0, stdout, 0)
     }
 
     fn ci_poll(url: &str, stdout: &str) -> Poll {
@@ -2192,21 +2190,17 @@ mod tests {
     #[test]
     fn a_pipeline_url_resolves_to_the_projects_own_spelling_of_its_path() {
         let given = "https://gitlab.com/GitLab-Org/CLI/-/pipelines/3044291302";
-        let exec = Script::new([(
-            ci_call(FAILED_PIPELINE, "", "")
-                .0
-                .replace("gitlab-org/cli", "GitLab-Org/CLI"),
-            Ok(Output::exited(
-                0,
-                include_str!("gitlab/fixtures/pipeline_failed.http"),
-            )),
-        )]);
+        let stdout = include_str!("gitlab/fixtures/pipeline_failed.http");
+        let (call, _) = ci_call(FAILED_PIPELINE, " -F jobs=false", stdout);
 
-        let (resolved, _) = GitLab::new(&exec)
-            .resolve(&reference::parse(given).unwrap(), None)
-            .unwrap();
+        let resolved = resolve_url(
+            given,
+            &call.replace("gitlab-org/cli", "GitLab-Org/CLI"),
+            stdout,
+            0,
+        );
 
-        assert_eq!(resolved, ci_target(FAILED_PIPELINE));
+        assert_eq!(resolved.unwrap(), ci_target(FAILED_PIPELINE));
     }
 
     #[test]

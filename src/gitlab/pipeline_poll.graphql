@@ -1,10 +1,10 @@
-query ($id: CiPipelineID!, $project: ID!, $jobsAfter: String) {
+query ($id: CiPipelineID!, $project: ID!, $jobs: Boolean = true, $jobsAfter: String) {
   project(fullPath: $project) {
     fullPath
     pipeline(id: $id) {
       finishedAt
       id
-      jobs(first: 100, after: $jobsAfter, retried: false) {
+      jobs(first: 100, after: $jobsAfter, retried: false) @include(if: $jobs) {
         pageInfo {
           hasNextPage
           endCursor
