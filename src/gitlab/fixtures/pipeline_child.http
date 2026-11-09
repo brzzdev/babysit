@@ -1,0 +1,31 @@
+HTTP/2.0 200 OK
+Cache-Control: max-age=0, private, must-revalidate
+Cf-Cache-Status: DYNAMIC
+Cf-Ray: a57cefba58e235c5-MAN
+Content-Security-Policy: base-uri 'self'; child-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ 'self' https://gitlab.com/assets/ blob: data:; connect-src 'self' https://gitlab.com wss://gitlab.com https://sentry.gitlab.net https://new-sentry.gitlab.net https://customers.gitlab.com https://snowplow.trx.gitlab.net https://sourcegraph.com https://collector.prd-278964.gl-product-analytics.com https://analytics.gitlab.com snowplowprd.trx.gitlab.net; default-src 'self'; font-src 'self'; form-action 'self' https: http:; frame-ancestors 'self'; frame-src https://www.google.com/recaptcha/ https://www.recaptcha.net/ https://www.googletagmanager.com/ns.html https://*.zuora.com/apps/PublicHostedPageLite.do https://gitlab.com/admin/ https://gitlab.com/assets/ https://gitlab.com/-/speedscope/index.html https://gitlab.com/-/sandbox/ https://www.youtube.com https://embed.figma.com https://www.figma.com; img-src 'self' data: blob: http: https:; manifest-src 'self'; media-src 'self' data: blob: http: https:; object-src 'none'; report-uri https://new-sentry.gitlab.net/api/4/security/?sentry_key=f5573e26de8f4293b285e556c35dfd6e&sentry_environment=gprd; script-src 'strict-dynamic' 'self' 'unsafe-inline' 'unsafe-eval' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://www.recaptcha.net/ https://apis.google.com https://*.zuora.com/apps/PublicHostedPageLite.do 'nonce-6eEF7IbCOGAWzNNkaZwG1Q=='; style-src 'self' 'unsafe-inline'; worker-src 'self' https://gitlab.com/assets/ blob: data:
+Content-Type: application/json; charset=utf-8
+Date: Mon, 09 Nov 2026 12:49:16 GMT
+Etag: W/"0096348d34aea370a4604b81be7841ce"
+Gitlab-Lb: haproxy-main-09-lb-gprd
+Gitlab-Sv: api-gke-us-east1-d
+Nel: {"max_age": 0}
+Permissions-Policy: interest-cohort=()
+Ratelimit-Limit: 2000
+Ratelimit-Name: throttle_authenticated_api
+Ratelimit-Observed: 6
+Ratelimit-Remaining: 1994
+Ratelimit-Reset: 1794228600
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a57cefba58e235c5-MAN","version":"1"}
+X-Permitted-Cross-Domain-Policies: none
+X-Request-Id: a57cefba58e235c5-MAN
+X-Runtime: 0.344700
+X-Ua-Compatible: IE=edge
+X-Xss-Protection: 1; mode=block
+
+{"data":{"project":{"child":{"nodes":[{"finishedAt":"2026-11-09T12:36:21Z","id":"gid://gitlab/Ci::Pipeline/3044853151","jobs":{"pageInfo":{"hasNextPage":false,"endCursor":"eyJpZCI6IjE3ODYxMDA4MTI1In0"},"nodes":[{"allowFailure":true,"id":"gid://gitlab/Ci::Build/17861008141","name":"e2e-test-report","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008141"},{"allowFailure":true,"id":"gid://gitlab/Ci::Build/17861008140","name":"cng-oauth-caproni","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008140"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008139","name":"cng-relative-url 2/2","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008139"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008138","name":"cng-relative-url 1/2","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008138"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008137","name":"cng-secrets-manager 1/1","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008137"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008136","name":"cng-registry 1/1","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008136"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008135","name":"cng-instance 8/8","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008135"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008134","name":"cng-instance 7/8","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008134"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008133","name":"cng-instance 6/8","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008133"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008132","name":"cng-instance 5/8","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008132"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008131","name":"cng-instance 4/8","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008131"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008130","name":"cng-instance 3/8","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008130"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008129","name":"cng-instance 2/8","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008129"},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008128","name":"cng-instance 1/8","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008128"},{"allowFailure":false,"id":"gid://gitlab/Ci::Bridge/17861008127","name":"build-cng","status":"SUCCESS","webPath":null},{"allowFailure":false,"id":"gid://gitlab/Ci::Build/17861008126","name":"build-cng-env","status":"SUCCESS","webPath":"/gitlab-org/gitlab/-/jobs/17861008126"},{"allowFailure":true,"id":"gid://gitlab/Ci::Build/17861008125","name":"dont-interrupt-me","status":"MANUAL","webPath":"/gitlab-org/gitlab/-/jobs/17861008125"}]},"newest":{"nodes":[{"id":"gid://gitlab/Ci::Build/17861008141"}]},"path":"/gitlab-org/gitlab/-/pipelines/3044853151","sha":"4e9958dd6ba051c02d5eb240c65fbc34aab6a675","status":"SUCCESS"}]},"pipeline":null,"webUrl":"https://gitlab.com/gitlab-org/gitlab"}}}

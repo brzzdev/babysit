@@ -1,30 +1,45 @@
-query ($id: CiPipelineID!, $jobs: Boolean = true, $jobsAfter: String, $project: ID!) {
+query (
+  $id: CiPipelineID!
+  $jobs: Boolean = true
+  $jobsAfter: String
+  $listedId: ID!
+  $project: ID!
+) {
   project(fullPath: $project) {
+    child: pipelines(ids: [$listedId], source: "parent_pipeline", first: 1) {
+      nodes {
+        ...pipeline
+      }
+    }
     pipeline(id: $id) {
-      finishedAt
-      id
-      jobs(first: 100, after: $jobsAfter, retried: false) @include(if: $jobs) {
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-        nodes {
-          allowFailure
-          id
-          name
-          status
-          webPath
-        }
-      }
-      newest: jobs(first: 1, retried: false) {
-        nodes {
-          id
-        }
-      }
-      path
-      sha
-      status
+      ...pipeline
     }
     webUrl
   }
+}
+
+fragment pipeline on Pipeline {
+  finishedAt
+  id
+  jobs(first: 100, after: $jobsAfter, retried: false) @include(if: $jobs) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      allowFailure
+      id
+      name
+      status
+      webPath
+    }
+  }
+  newest: jobs(first: 1, retried: false) {
+    nodes {
+      id
+    }
+  }
+  path
+  sha
+  status
 }

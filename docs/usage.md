@@ -296,10 +296,10 @@ stdout carries exactly one envelope, pretty-printed JSON. With `--out FILE`, the
 usage error, it deletes any `FILE` an earlier run left, then writes `FILE.tmp` and renames it over
 `FILE` once the run ends. A reader of a file no other run writes finds no file or one whole
 envelope, never part of one, and never an earlier run's. stderr and the exit status are as without
-it. A usage error leaves `FILE` as it was, and a file that can't be written fails the run as a
-failed write to stdout does: exit 1, no file, and nothing saved to the snapshot file. A run killed
-before it ends leaves no file either. `FILE.tmp` is babysit's: an existing file there is replaced,
-and a write that fails partway can leave it behind.
+it. A usage error writes no envelope to `FILE`, and a file that can't be written fails the run as a
+failed write to stdout does: exit 1, no file, and nothing saved to the snapshot file, with the
+reason on stderr. A run killed before it ends leaves no file either. `FILE.tmp` is babysit's: an
+existing file there is replaced, and a write that fails partway can leave it behind.
 
 | Field     | Value                                                                                         |
 | --------- | --------------------------------------------------------------------------------------------- |
@@ -515,7 +515,8 @@ Usage errors are found before any forge is polled: a malformed flag, rule, condi
 target; a checkout reference babysit can't place; a duration past what the clock can hold; or a
 `--snapshot` file that isn't a babysit snapshot file of this version (for `forget`, one that isn't a
 babysit snapshot file at all); or an `--out` whose file or `.tmp` is the snapshot file, its `.lock`,
-or its `.tmp`, by any path to the same file, a link or another letter case included.
+or its `.tmp`, by any path to the same file, a link or another letter case included. An `--out`
+naming something that exists but isn't a file, such as `/dev/null`, is one too.
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a
 forge's, such as the snapshot file or `condition_unfit`, or `git`, `gh auth token`, or

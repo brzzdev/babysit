@@ -214,7 +214,7 @@ impl<E: Exec> GitLab<'_, E> {
         let found = self
             .ci_project(&target, project, skip_jobs, deadline, &mut hints)
             .map_err(|failure| failure.paced(hints))?
-            .filter(|found| found.job.is_some() || found.pipeline.is_some());
+            .filter(|found| found.job.is_some() || found.pipeline().is_some());
         let Some(found) = found else {
             let message = format!("{} is not found or not visible to glab", reference.given);
             return Err(fatal(ErrorKind::TargetNotFound, &message));
@@ -233,10 +233,11 @@ impl<E: Exec> GitLab<'_, E> {
         deadline: Option<SystemTime>,
         hints: &mut Hints,
     ) -> Result<Option<CiProject>, Failure> {
-        let mut variables = vec![
-            ("-f", format!("id={}", target.forge_id)),
-            ("-f", format!("project={project}")),
-        ];
+        let mut variables = vec![("-f", format!("id={}", target.forge_id))];
+        if target.kind == TargetKind::Pipeline {
+            variables.push(("-f", format!("listedId={}", target.forge_id)));
+        }
+        variables.push(("-f", format!("project={project}")));
         variables.extend(jobs);
         let query = CiApi::of(target.kind).query;
         let data: CiData = self.graphql(&target.host, query, &variables, deadline, hints)?;
@@ -297,7 +298,7 @@ impl<E: Exec> GitLab<'_, E> {
         while !jobs.done() {
             let mut page = self
                 .ci_project(target, &project, jobs.variable(), deadline, hints)?
-                .and_then(|project| project.pipeline)
+                .and_then(CiProject::into_pipeline)
                 .ok_or_else(|| gone(target))?;
             jobs.take(page.jobs.take())?;
             match &first {
@@ -876,9 +877,23 @@ struct CiJob {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CiProject {
+    /// The pipeline when it is a child pipeline, which GitLab finds only by listing those.
+    child: Option<Nodes<Pipeline>>,
     job: Option<CiJob>,
     pipeline: Option<Pipeline>,
     web_url: String,
+}
+
+impl CiProject {
+    fn into_pipeline(self) -> Option<Pipeline> {
+        self.pipeline
+            .or_else(|| self.child.and_then(|child| child.nodes.into_iter().next()))
+    }
+
+    fn pipeline(&self) -> Option<&Pipeline> {
+        let child = self.child.as_ref().and_then(|child| child.nodes.first());
+        self.pipeline.as_ref().or(child)
+    }
 }
 
 #[derive(Deserialize)]
@@ -1170,12 +1185,11 @@ mod tests {
 
     const BLOCKERS_MR_ID: &str = "552635815";
     const BRIDGE: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860976382";
+    const CHILD_PIPELINE: &str = "https://gitlab.com/gitlab-org/gitlab/-/pipelines/3044853151";
     const FAILED_PIPELINE: &str = "https://gitlab.com/gitlab-org/cli/-/pipelines/3044291302";
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
-    /// The variable asking a pipeline poll for the page after the first.
-    const JOBS_AFTER: &str = " -f jobsAfter=JOBS_1";
-    const JOBS_CURSOR: &str = "JOBS_1";
     const HEAD: &str = "25892092f1db0711fcea689c27db39f6d928d2eb";
+    const JOBS_CURSOR: &str = "JOBS_1";
     const MANUAL_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941139";
     /// The recorded head pipeline's merge commit.
     const MERGE_SHA: &str = "d29dd22357102fba3709a18e01c6a96e025174a3";
@@ -2200,7 +2214,11 @@ mod tests {
     /// The call a job's or pipeline's resolve and poll make, `after` asking for a page of jobs.
     fn ci_call(url: &str, after: &str, stdout: &str) -> (String, Result<Output, exec::Error>) {
         let target = ci_target(url);
-        let variables = format!(" -f project={}{after}", project_of(&target));
+        let listed = match target.kind {
+            TargetKind::Pipeline => format!(" -f listedId={}", target.forge_id),
+            _ => String::new(),
+        };
+        let variables = format!("{listed} -f project={}{after}", project_of(&target));
         query_call(
             CiApi::of(target.kind).query,
             &target.forge_id,
@@ -2211,8 +2229,11 @@ mod tests {
 
     fn ci_resolve(url: &str, stdout: &str) -> Result<Target, Failure> {
         let skip_jobs = match ci_target(url).kind {
+            TargetKind::Job => "",
             TargetKind::Pipeline => " -F jobs=false",
-            _ => "",
+            TargetKind::ChangeRequest | TargetKind::Issue => {
+                unreachable!("{url} is a job or pipeline")
+            }
         };
         resolve_url(url, &ci_call(url, skip_jobs, stdout).0, stdout, 0)
     }
@@ -2249,6 +2270,18 @@ mod tests {
         assert_eq!(job.unwrap(), ci_target(MANUAL_JOB));
         assert_eq!(bridge.unwrap(), ci_target(BRIDGE));
         assert_eq!(over_http.unwrap().url, MANUAL_JOB);
+    }
+
+    #[test]
+    fn a_child_pipeline_resolves_and_polls_though_gitlab_lists_it_only_by_source() {
+        let stdout = include_str!("gitlab/fixtures/pipeline_child.http");
+
+        let resolved = ci_resolve(CHILD_PIPELINE, stdout);
+        let poll = ci_poll(CHILD_PIPELINE, stdout);
+
+        assert_eq!(resolved.unwrap(), ci_target(CHILD_PIPELINE));
+        assert_eq!(poll.ci.and_then(|ci| ci.colour()), Some(Colour::Green));
+        assert_eq!(poll.state, TargetState::Closed);
     }
 
     #[test]
@@ -2389,7 +2422,11 @@ mod tests {
             &ci_target(FAILED_PIPELINE),
             [
                 ci_call(FAILED_PIPELINE, "", &first),
-                ci_call(FAILED_PIPELINE, JOBS_AFTER, &second),
+                ci_call(
+                    FAILED_PIPELINE,
+                    &format!(" -f jobsAfter={JOBS_CURSOR}"),
+                    &second,
+                ),
             ],
         );
 
@@ -2458,7 +2495,11 @@ mod tests {
             &ci_target(FAILED_PIPELINE),
             [
                 ci_call(FAILED_PIPELINE, "", &first),
-                ci_call(FAILED_PIPELINE, JOBS_AFTER, &retried),
+                ci_call(
+                    FAILED_PIPELINE,
+                    &format!(" -f jobsAfter={JOBS_CURSOR}"),
+                    &retried,
+                ),
             ],
         );
 

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::io::{self, Write};
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -61,11 +62,7 @@ pub fn run(
         })
     };
     reach("--interval", args.interval)?;
-    if let Some(out) = &args.out
-        && snapshot_file::collides(&args.snapshot, out)
-    {
-        return Err(out_collides());
-    }
+    check_out(args)?;
     let deadline = args
         .timeout
         .map(|timeout| reach("--timeout", timeout))
@@ -78,11 +75,7 @@ pub fn run(
         Err(error) => return fail_on_snapshot_file(stdout, &args.snapshot, error),
     };
     // Taking the lock creates its file, so a link there now shows where it leads.
-    if let Some(out) = &args.out
-        && snapshot_file::collides(&args.snapshot, out)
-    {
-        return Err(out_collides());
-    }
+    check_out(args)?;
     let located = Locator::new(exec, call_deadline).locate_all(&args.targets);
     let references = match located {
         Ok(references) => references,
@@ -116,7 +109,14 @@ pub fn run(
             Some(Summary::new(&tracked.target, snapshot))
         })
         .collect();
-    if envelope.write(stdout).is_err() {
+    if let Err(error) = envelope.write(stdout) {
+        if let Some(out) = &args.out {
+            let _ = writeln!(
+                stderr,
+                "babysit: could not write {}: {error}",
+                out.display()
+            );
+        }
         return Ok(EXIT_ERROR);
     }
     // The envelope has already reported the write that failed.
@@ -139,8 +139,24 @@ pub fn run(
     Ok(envelope.exit_code())
 }
 
-fn out_collides() -> UsageError {
-    UsageError("--out must not write over the snapshot file, its `.lock`, or its `.tmp`".to_owned())
+/// Refuses an `--out` that would write over the snapshot's files or over something not a file,
+/// such as `/dev/null`, which replacing it would delete.
+fn check_out(args: &Args) -> Result<(), UsageError> {
+    let Some(out) = &args.out else {
+        return Ok(());
+    };
+    if snapshot_file::collides(&args.snapshot, out) {
+        return Err(UsageError(
+            "--out must not write over the snapshot file, its `.lock`, or its `.tmp`".to_owned(),
+        ));
+    }
+    if fs::metadata(out).is_ok_and(|metadata| !metadata.is_file()) {
+        return Err(UsageError(format!(
+            "--out must name a file babysit can replace, and {} isn't one",
+            out.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Every call the run still has to make: names to resolve, viewers to look up, targets to poll.
@@ -1861,18 +1877,41 @@ mod tests {
     }
 
     #[test]
+    fn an_out_that_is_not_a_file_is_a_usage_error() {
+        let sandbox = Sandbox::new("not-a-file");
+        let out = Path::new("/dev/null");
+
+        let (code, _) = watch_into(
+            &Args {
+                out: Some(out.to_owned()),
+                ..args(&[URL], &sandbox.snapshot(), None)
+            },
+            Vec::new(),
+            &mut OutFile::new(out),
+        );
+
+        assert!(code.is_err());
+        assert!(out.exists());
+    }
+
+    #[test]
     fn an_out_file_that_cannot_be_written_exits_1_without_saving() {
         let sandbox = Sandbox::new("out");
         seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
         let before = saved(&sandbox.snapshot());
+        let out = sandbox.dir.join("missing/out.json");
 
-        let (code, _) = watch_into(
-            &args(&[URL], &sandbox.snapshot(), None),
+        let (code, stderr) = watch_into(
+            &Args {
+                out: Some(out.clone()),
+                ..args(&[URL], &sandbox.snapshot(), None)
+            },
             vec![returns(URL, poll(&["1", "2"]))],
-            &mut OutFile::new(&sandbox.dir.join("missing/out.json")),
+            &mut OutFile::new(&out),
         );
 
         assert_eq!(code.unwrap(), 1);
+        assert!(stderr.starts_with(&format!("babysit: could not write {}: ", out.display())));
         assert_eq!(saved(&sandbox.snapshot()), before);
     }
 
