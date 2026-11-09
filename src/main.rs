@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 
-use crate::cli::Args;
+use crate::cli::{Args, Cli, Command};
 use crate::clock::SystemClock;
 use crate::exec::SystemExec;
 use crate::github::GitHub;
@@ -30,25 +30,35 @@ use crate::run::{Backends, UsageError};
 use crate::slack::Slack;
 
 fn main() -> ExitCode {
-    let args = Args::parse();
+    let cli = Cli::parse();
+    let code = match cli.command {
+        Some(Command::Forget { snapshot }) => run::forget(&snapshot, &mut io::stdout().lock()),
+        None => watch(
+            &cli.run
+                .expect("clap requires the run arguments when no subcommand is given"),
+        ),
+    };
+    match code {
+        Ok(code) => ExitCode::from(code),
+        Err(UsageError(message)) => Cli::command()
+            .error(ErrorKind::ValueValidation, message)
+            .exit(),
+    }
+}
+
+fn watch(args: &Args) -> Result<u8, UsageError> {
     let exec = SystemExec::default();
     let backends = Backends {
         github: &GitHub::new(&exec),
         gitlab: &GitLab::new(&exec),
         slack: &Slack::new(&exec),
     };
-    let code = run::run(
-        &args,
+    run::run(
+        args,
         &backends,
         &exec,
         &SystemClock,
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),
-    );
-    match code {
-        Ok(code) => ExitCode::from(code),
-        Err(UsageError(message)) => Args::command()
-            .error(ErrorKind::ValueValidation, message)
-            .exit(),
-    }
+    )
 }

@@ -33,39 +33,36 @@ struct Contents {
     targets: BTreeMap<String, Entry>,
 }
 
+/// What every snapshot file version shares, which tells one from a foreign file.
+#[derive(Deserialize)]
+struct Header {
+    #[expect(dead_code, reason = "present in every version, whatever its value")]
+    version: u64,
+    #[expect(
+        dead_code,
+        reason = "present in every version, whatever its entries hold"
+    )]
+    targets: serde_json::Map<String, serde_json::Value>,
+}
+
 #[derive(Debug)]
-pub enum OpenError {
-    /// The file isn't a snapshot file of this version.
+pub enum Error {
+    /// The file isn't a snapshot file, or for `open`, not one of this version.
     Invalid(String),
     Io(io::Error),
     LockHeld,
 }
 
 impl SnapshotFile {
-    pub fn open(path: &Path) -> Result<Self, OpenError> {
-        let lock = File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path.with_added_extension("lock"))
-            .map_err(OpenError::Io)?;
-        let lock = match lock.try_lock() {
-            Ok(()) => Lock(lock),
-            Err(TryLockError::WouldBlock) => return Err(OpenError::LockHeld),
-            Err(TryLockError::Error(error)) => return Err(OpenError::Io(error)),
-        };
+    pub fn open(path: &Path) -> Result<Self, Error> {
+        let lock = Lock::take(path)?;
         let contents = match fs::read(path) {
-            Ok(bytes) => parse(&bytes).map_err(|reason| {
-                OpenError::Invalid(format!(
-                    "{} is not a babysit snapshot file: {reason}",
-                    path.display()
-                ))
-            })?,
+            Ok(bytes) => parse(&bytes).map_err(|reason| invalid(path, &reason))?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => Contents {
                 version: VERSION,
                 targets: BTreeMap::new(),
             },
-            Err(error) => return Err(OpenError::Io(error)),
+            Err(error) => return Err(Error::Io(error)),
         };
         Ok(Self {
             path: path.to_owned(),
@@ -101,9 +98,59 @@ impl SnapshotFile {
     }
 }
 
+/// Deletes the snapshot file of any version and its temp file, keeping `<path>.lock`: deleting the
+/// lock while another process opens it would let two runs each lock a different file.
+pub fn forget(path: &Path) -> Result<(), Error> {
+    let lock_path = path.with_added_extension("lock");
+    if !path.try_exists().map_err(Error::Io)? && !lock_path.try_exists().map_err(Error::Io)? {
+        return Ok(());
+    }
+    let _lock = Lock::take(path)?;
+    match fs::read(path) {
+        Ok(bytes) => {
+            serde_json::from_slice::<Header>(&bytes)
+                .map_err(|error| invalid(path, &error.to_string()))?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(Error::Io(error)),
+    }
+    remove_if_present(path)?;
+    remove_if_present(&path.with_added_extension("tmp"))
+}
+
+impl Lock {
+    fn take(path: &Path) -> Result<Self, Error> {
+        let lock = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_added_extension("lock"))
+            .map_err(Error::Io)?;
+        match lock.try_lock() {
+            Ok(()) => Ok(Self(lock)),
+            Err(TryLockError::WouldBlock) => Err(Error::LockHeld),
+            Err(TryLockError::Error(error)) => Err(Error::Io(error)),
+        }
+    }
+}
+
 impl Drop for Lock {
     fn drop(&mut self) {
         let _ = self.0.unlock();
+    }
+}
+
+fn invalid(path: &Path, reason: &str) -> Error {
+    Error::Invalid(format!(
+        "{} is not a babysit snapshot file: {reason}",
+        path.display()
+    ))
+}
+
+fn remove_if_present(path: &Path) -> Result<(), Error> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(Error::Io(error)),
+        _ => Ok(()),
     }
 }
 
