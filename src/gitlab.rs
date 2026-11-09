@@ -153,7 +153,14 @@ impl<E: Exec> Backend for GitLab<'_, E> {
         let found: RestTarget = decode(&response.body).map_err(|failure| failure.paced(hints))?;
         let mut forge_id = format!("{global_id}{}", found.id);
         if *kind == TargetKind::Pipeline {
-            forge_id = format!("{forge_id}{PIPELINE_IID}{}", found.iid);
+            let Some(iid) = found.iid else {
+                let message = format!(
+                    "{} predates pipeline iids, so GitLab's GraphQL API can't find it",
+                    found.web_url,
+                );
+                return Err(fatal(ErrorKind::TargetNotFound, &message));
+            };
+            forge_id = format!("{forge_id}{PIPELINE_IID}{iid}");
         }
         let target = Target {
             forge: Forge::GitLab,
@@ -830,7 +837,8 @@ struct Commit {
 #[derive(Deserialize)]
 struct RestTarget {
     id: u64,
-    iid: u64,
+    /// `None` on a pipeline from before GitLab numbered them per project.
+    iid: Option<u64>,
     web_url: String,
 }
 
@@ -2315,6 +2323,22 @@ mod tests {
             include_str!("gitlab/fixtures/resolve_pipeline_not_found.http"),
             1,
         );
+
+        assert_eq!(
+            fatal_kind(&resolved.unwrap_err()),
+            ErrorKind::TargetNotFound
+        );
+    }
+
+    #[test]
+    fn a_pipeline_older_than_pipeline_iids_is_not_found_at_once() {
+        let legacy = edited_at(
+            include_str!("gitlab/fixtures/resolve_pipeline.http"),
+            "",
+            |pipeline| pipeline["iid"] = Value::Null,
+        );
+
+        let resolved = pipeline_resolve(FAILED_PIPELINE, &legacy, 0);
 
         assert_eq!(
             fatal_kind(&resolved.unwrap_err()),

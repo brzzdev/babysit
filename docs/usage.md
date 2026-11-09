@@ -76,6 +76,8 @@ release, or a post-merge pipeline on the default branch.
   pipeline itself by its own URL, in whichever project it runs.
 - **Retrying a job in a pipeline** reopens the pipeline, which reports `state.reopened` and
   settles again.
+- **A pipeline from before GitLab numbered pipelines per project** has no iid, which GitLab's
+  GraphQL API needs to find it, so it fails `target_not_found`.
 
 ## Rules
 
