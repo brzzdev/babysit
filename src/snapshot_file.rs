@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File, TryLockError};
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -84,13 +85,21 @@ impl SnapshotFile {
         for entry in entries {
             self.contents.targets.insert(entry.url.clone(), entry);
         }
-        let temp_path = temp_path(&self.path);
-        let mut temp = File::create(&temp_path)?;
-        serde_json::to_writer_pretty(&mut temp, &self.contents)?;
-        writeln!(temp)?;
-        temp.sync_all()?;
-        fs::rename(&temp_path, &self.path)
+        let mut bytes = serde_json::to_vec_pretty(&self.contents)?;
+        bytes.push(b'\n');
+        replace(&self.path, &bytes)
     }
+}
+
+/// Replaces the file at `path` with `bytes` through `<path>.tmp`, so a reader sees all or nothing.
+pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp_path = temp_path(path);
+    // Created afresh, so an existing link there is never followed.
+    remove_if_present(&temp_path)?;
+    let mut temp = File::create_new(&temp_path)?;
+    temp.write_all(bytes)?;
+    temp.sync_all()?;
+    fs::rename(&temp_path, path)
 }
 
 /// Deletes the snapshot file of any version and its temp file, keeping `<path>.lock`: deleting the
@@ -105,8 +114,8 @@ pub fn forget(path: &Path) -> Result<(), Error> {
         serde_json::from_slice::<Header>(&bytes)
             .map_err(|error| invalid(path, &error.to_string()))?;
     }
-    remove_if_present(path)?;
-    remove_if_present(&temp_path(path))
+    remove_if_present(path).map_err(Error::Io)?;
+    remove_if_present(&temp_path(path)).map_err(Error::Io)
 }
 
 impl Lock {
@@ -129,6 +138,36 @@ impl Drop for Lock {
     fn drop(&mut self) {
         let _ = self.0.unlock();
     }
+}
+
+/// Whether replacing `out` through its temp file would write over the snapshot file at
+/// `snapshot`, its lock, or its temp file.
+pub fn collides(snapshot: &Path, out: &Path) -> bool {
+    let owned = [
+        snapshot.to_owned(),
+        lock_path(snapshot),
+        temp_path(snapshot),
+    ];
+    [out.to_owned(), temp_path(out)]
+        .iter()
+        .any(|written| owned.iter().any(|owned| same_file(owned, written)))
+}
+
+/// Whether two paths name the same file: by identity where both exist, which sees through case,
+/// links, and symlinks, and otherwise by path, read through `.`, `..`, and symlinked directories.
+fn same_file(a: &Path, b: &Path) -> bool {
+    if let (Ok(a), Ok(b)) = (fs::metadata(a), fs::metadata(b)) {
+        return (a.dev(), a.ino()) == (b.dev(), b.ino());
+    }
+    a == b || resolved(a).is_some_and(|a| resolved(b) == Some(a))
+}
+
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let parent = fs::canonicalize(parent.unwrap_or(Path::new("."))).ok()?;
+    Some(parent.join(path.file_name()?))
 }
 
 fn lock_path(path: &Path) -> PathBuf {
@@ -155,9 +194,9 @@ fn invalid(path: &Path, reason: &str) -> Error {
     ))
 }
 
-fn remove_if_present(path: &Path) -> Result<(), Error> {
+pub fn remove_if_present(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(Error::Io(error)),
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
 }
@@ -168,4 +207,64 @@ fn parse(bytes: &[u8]) -> Result<Contents, String> {
         return Err(format!("version {} is not supported", contents.version));
     }
     Ok(contents)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_out_file_collides_with_the_snapshot_file_its_lock_or_its_temp_file_by_any_path() {
+        let dir = std::env::temp_dir();
+        let snapshot = dir.join("s.json");
+
+        for out in ["s.json", "./s.json", "s.json.lock", "s.json.tmp"] {
+            assert!(collides(&snapshot, &dir.join(out)), "{out}");
+        }
+        assert!(collides(&dir.join("s.tmp"), &dir.join("s")));
+        for out in ["s.json.wait.json", "t.json"] {
+            assert!(!collides(&snapshot, &dir.join(out)), "{out}");
+        }
+    }
+
+    #[test]
+    fn a_replace_never_writes_through_a_link_left_at_its_temp_path() {
+        let dir = std::env::temp_dir().join(format!("babysit-{}-replace", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("other.json");
+        fs::write(&other, "other").unwrap();
+        std::os::unix::fs::symlink(&other, dir.join("out.json.tmp")).unwrap();
+
+        replace(&dir.join("out.json"), b"{}").unwrap();
+        let (out, other) = (
+            fs::read_to_string(dir.join("out.json")).unwrap(),
+            fs::read_to_string(&other).unwrap(),
+        );
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!((out.as_str(), other.as_str()), ("{}", "other"));
+    }
+
+    #[test]
+    fn an_out_file_reaching_the_snapshots_files_through_a_link_or_another_case_collides() {
+        let dir = std::env::temp_dir().join(format!("babysit-{}-collides", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let snapshot = dir.join("s.json");
+        fs::write(&snapshot, "{}").unwrap();
+        fs::write(lock_path(&snapshot), "").unwrap();
+        std::os::unix::fs::symlink(&snapshot, dir.join("linked.json.tmp")).unwrap();
+        fs::hard_link(lock_path(&snapshot), dir.join("lock")).unwrap();
+        let case_insensitive = dir.join("S.JSON").exists();
+
+        let linked = collides(&snapshot, &dir.join("linked.json"));
+        let hard_linked = collides(&snapshot, &dir.join("lock"));
+        let other_case = collides(&snapshot, &dir.join("S.json.lock"));
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(linked);
+        assert!(hard_linked);
+        assert_eq!(other_case, case_insensitive);
+    }
 }

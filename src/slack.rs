@@ -468,6 +468,7 @@ mod tests {
             brief: false,
             ignore: Vec::new(),
             on: Vec::new(),
+            out: None,
             until: Vec::new(),
             targets: vec![reference::parse_name(target).unwrap()],
             snapshot: snapshot.to_owned(),

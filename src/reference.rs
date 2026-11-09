@@ -49,7 +49,7 @@ pub struct Reference {
 /// Where on its host a reference points.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Locus {
-    /// A pull request, merge request, or issue in a project.
+    /// A pull request, merge request, issue, job, or pipeline in a project.
     Numbered {
         /// What the name asks for; a GitHub issue may turn out to be a pull request.
         kind: TargetKind,
@@ -82,8 +82,8 @@ pub fn parse_name(given: &str) -> Result<Name, String> {
 pub fn parse(given: &str) -> Result<Reference, String> {
     let invalid = || {
         format!(
-            "`{given}` is not a GitHub pull request or issue, GitLab merge request or issue, or \
-             Slack thread, URL"
+            "`{given}` is not a GitHub pull request or issue, GitLab merge request, issue, job, or \
+             pipeline, or Slack thread, URL"
         )
     };
     let rest = given
@@ -104,6 +104,11 @@ pub fn parse(given: &str) -> Result<Reference, String> {
         {
             (Forge::GitLab, TargetKind::Issue, *host, project, *number)
         }
+        [host, project @ .., "-", "jobs", number]
+            if project.len() >= 2 && project[0] != "groups" =>
+        {
+            (Forge::GitLab, TargetKind::Job, *host, project, *number)
+        }
         [host, project @ .., "-", "merge_requests", number] if project.len() >= 2 => (
             Forge::GitLab,
             TargetKind::ChangeRequest,
@@ -111,6 +116,11 @@ pub fn parse(given: &str) -> Result<Reference, String> {
             project,
             *number,
         ),
+        [host, project @ .., "-", "pipelines", number]
+            if project.len() >= 2 && project[0] != "groups" =>
+        {
+            (Forge::GitLab, TargetKind::Pipeline, *host, project, *number)
+        }
         [host, project @ .., "issues", number] if project.len() == 2 => {
             (Forge::GitHub, TargetKind::Issue, *host, project, *number)
         }
@@ -225,7 +235,7 @@ fn is_ts(ts: &str) -> bool {
 /// A decimal number from 1 up, never zero-padded.
 fn parse_number(number: &str, given: &str) -> Result<u64, String> {
     let invalid =
-        || format!("`{number}` in `{given}` is not an issue, pull or merge request number");
+        || format!("`{number}` in `{given}` is not a number from 1 up, without leading zeros");
     if number.starts_with('0') || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid());
     }
@@ -345,6 +355,32 @@ mod tests {
                     host: "gitlab.com".to_owned(),
                     locus: Locus::Numbered {
                         kind: TargetKind::Issue,
+                        number: 12,
+                        project: "g/sub/p".to_owned(),
+                    },
+                })),
+                "{given}",
+            );
+        }
+    }
+
+    #[test]
+    fn parses_a_gitlab_job_or_pipeline_url_under_nested_groups() {
+        for (given, kind) in [
+            ("https://gitlab.com/g/sub/p/-/jobs/12", TargetKind::Job),
+            (
+                "https://gitlab.com/g/sub/p/-/pipelines/12",
+                TargetKind::Pipeline,
+            ),
+        ] {
+            assert_eq!(
+                parse_name(given),
+                Ok(Name::Url(Reference {
+                    forge: Forge::GitLab,
+                    given: given.to_owned(),
+                    host: "gitlab.com".to_owned(),
+                    locus: Locus::Numbered {
+                        kind,
                         number: 12,
                         project: "g/sub/p".to_owned(),
                     },
@@ -485,6 +521,14 @@ mod tests {
             "https://gitlab.com/g/p/-/issues/012",
             "https://gitlab.com/g/p/-/issues/12#note_1",
             "https://gitlab.com/groups/g/-/work_items/12",
+            "https://gitlab.com/p/-/jobs/12",
+            "https://gitlab.com/groups/g/-/jobs/12",
+            "https://gitlab.com/g/p/-/jobs/12/raw",
+            "https://gitlab.com/g/p/-/jobs/012",
+            "https://gitlab.com/p/-/pipelines/12",
+            "https://gitlab.com/groups/g/-/pipelines/12",
+            "https://gitlab.com/g/p/-/pipelines/12/failures",
+            "https://gitlab.com/g/p/-/pipelines/012",
         ] {
             assert!(parse_name(given).is_err(), "{given}");
         }

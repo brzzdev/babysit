@@ -1,0 +1,16 @@
+query ($id: JobID!, $project: ID!) {
+  project(fullPath: $project) {
+    job(id: $id) {
+      finishedAt
+      name
+      pipeline {
+        ... on Pipeline {
+          sha
+          status
+        }
+      }
+      status
+    }
+    webUrl
+  }
+}

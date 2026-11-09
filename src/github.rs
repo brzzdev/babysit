@@ -19,6 +19,7 @@ const CLI: &str = "gh";
 const EXIT_AUTH: i32 = 4;
 /// The rollup and status-context state of a required check that has not reported.
 const EXPECTED: &str = "EXPECTED";
+const GITLAB_ONLY: &str = "only a GitLab URL names a job or pipeline";
 const GRAPHQL_NOT_FOUND: &str = "NOT_FOUND";
 const GRAPHQL_RATE_LIMITED: &str = "RATE_LIMITED";
 const HEADER_POLL_INTERVAL: &str = "x-poll-interval";
@@ -112,6 +113,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         let resource = match kind {
             TargetKind::ChangeRequest => "pulls",
             TargetKind::Issue => "issues",
+            TargetKind::Job | TargetKind::Pipeline => unreachable!("{GITLAB_ONLY}"),
         };
         let path = format!("repos/{project}/{resource}/{number}");
         let (response, hints) = self.call(
@@ -144,6 +146,7 @@ impl<E: Exec> Backend for GitHub<'_, E> {
         let polled = match target.kind {
             TargetKind::ChangeRequest => self.poll_pages(target, deadline, &mut hints),
             TargetKind::Issue => self.poll_issue(target, deadline, &mut hints),
+            TargetKind::Job | TargetKind::Pipeline => unreachable!("{GITLAB_ONLY}"),
         };
         match polled {
             Ok(poll) => Ok((poll, hints)),
@@ -1177,7 +1180,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::diff;
-    use crate::envelope::{self, Envelope, Outcome, Summary};
+    use crate::envelope::{self, Envelope, Outcome, Summary, USAGE, checked_in_usage, json_block};
     use crate::exec::{self, Limit, Output, Script};
     use crate::forge::{Colour, Snapshot, fatal_kind};
     use crate::reference;
@@ -2532,7 +2535,6 @@ mod tests {
         );
     }
 
-    const USAGE: &str = include_str!("../docs/usage.md");
     const WORKED_LOOP_RULES: [&str; 3] =
         ["thread.* actor=@human", "ci.settled colour=red", "state.*"];
 
@@ -2569,13 +2571,6 @@ mod tests {
         )
     }
 
-    /// The block after `<!-- checked: <name> -->` in the usage reference, up to a blank line.
-    fn checked_in_usage(name: &str) -> &'static str {
-        let marker = format!("<!-- checked: {name} -->\n");
-        let (_, block) = USAGE.split_once(&marker).expect(name);
-        block.split("\n\n").next().unwrap()
-    }
-
     fn wakes(event: &diff::Event) -> bool {
         let on = WORKED_LOOP_RULES.map(|rule| rule::parse(rule).unwrap());
         rule::wakes(&on, &[], rule::Unruled::Every, event, None)
@@ -2584,7 +2579,7 @@ mod tests {
     fn printed(envelope: &Envelope) -> String {
         let mut out = Vec::new();
         envelope.write(&mut out).unwrap();
-        format!("```json\n{}```", String::from_utf8(out).unwrap())
+        json_block(&out)
     }
 
     #[test]
@@ -2667,6 +2662,7 @@ mod tests {
                 "woke-red",
                 "timed-out",
                 "met",
+                "met-job",
                 "error",
                 "worked-loop"
             ],

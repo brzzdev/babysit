@@ -61,6 +61,10 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub snapshot: PathBuf,
 
+    /// Write the envelope to this file, replaced whole, instead of to stdout
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<PathBuf>,
+
     /// Time between polls, such as `30s`, `10m` or `1h`
     #[arg(long, value_name = "DURATION", default_value = "30s", value_parser = parse_interval)]
     pub interval: Duration,

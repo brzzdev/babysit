@@ -8,6 +8,7 @@ mod forge;
 mod github;
 mod gitlab;
 mod graphql;
+mod out_file;
 mod reference;
 mod response;
 mod rule;
@@ -16,7 +17,7 @@ mod slack;
 mod snapshot_file;
 mod target;
 
-use std::io;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
@@ -27,6 +28,7 @@ use crate::clock::SystemClock;
 use crate::exec::SystemExec;
 use crate::github::GitHub;
 use crate::gitlab::GitLab;
+use crate::out_file::OutFile;
 use crate::run::{Backends, UsageError};
 use crate::slack::Slack;
 
@@ -61,12 +63,16 @@ fn watch(args: &Args) -> Result<u8, UsageError> {
         gitlab: &GitLab::new(&exec),
         slack: &Slack::new(&exec),
     };
+    let mut out: Box<dyn Write> = match &args.out {
+        Some(path) => Box::new(OutFile::new(path)),
+        None => Box::new(io::stdout().lock()),
+    };
     run::run(
         args,
         &backends,
         &exec,
         &SystemClock,
-        &mut io::stdout().lock(),
+        &mut out,
         &mut io::stderr().lock(),
     )
 }

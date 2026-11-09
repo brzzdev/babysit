@@ -10,7 +10,7 @@ use crate::forge::{
     Review, ReviewState, Target, TargetKind, TargetState, Thread, run_cli,
 };
 use crate::graphql::{Connection, Nodes, Paged, same_head};
-use crate::reference::{Locus, Reference};
+use crate::reference::{self, Locus, Reference};
 use crate::response::{self, Response};
 
 const CI_CREATED: &str = "CREATED";
@@ -23,10 +23,17 @@ const HEADER_RESET: &str = "ratelimit-reset";
 const HEADER_RETRY_AFTER: &str = "retry-after";
 const ISSUE_GID: &str = "gid://gitlab/Issue/";
 const ISSUE_POLL_QUERY: &str = include_str!("gitlab/issue_poll.graphql");
+/// A build's or a bridge's global id: both are commit statuses.
+const JOB_GID: &str = "gid://gitlab/CommitStatus/";
+const JOB_POLL_QUERY: &str = include_str!("gitlab/job_poll.graphql");
 const MERGED_RESULT: &str = "MERGED_RESULT";
 const MERGE_REQUEST_GID: &str = "gid://gitlab/MergeRequest/";
 const MERGE_TRAIN: &str = "MERGE_TRAIN";
 const PIPELINE_CHECK: &str = "pipeline";
+const PIPELINE_GID: &str = "gid://gitlab/Ci::Pipeline/";
+/// Joins a pipeline target's global id to its iid in its forge id.
+const PIPELINE_IID: &str = "?iid=";
+const PIPELINE_POLL_QUERY: &str = include_str!("gitlab/pipeline_poll.graphql");
 const POLL_QUERY: &str = include_str!("gitlab/poll.graphql");
 const RETARGETED: &str = "retargeted";
 const REVIEW_STATE_REQUESTED_CHANGES: &str = "REQUESTED_CHANGES";
@@ -132,6 +139,8 @@ impl<E: Exec> Backend for GitLab<'_, E> {
         let (resource, global_id) = match kind {
             TargetKind::ChangeRequest => ("merge_requests", MERGE_REQUEST_GID),
             TargetKind::Issue => ("issues", ISSUE_GID),
+            TargetKind::Job => return self.resolve_job(reference, *number, project, deadline),
+            TargetKind::Pipeline => ("pipelines", PIPELINE_GID),
         };
         let path = format!(
             "projects/{}/{resource}/{number}",
@@ -142,9 +151,20 @@ impl<E: Exec> Backend for GitLab<'_, E> {
             deadline,
         )?;
         let found: RestTarget = decode(&response.body).map_err(|failure| failure.paced(hints))?;
+        let mut forge_id = format!("{global_id}{}", found.id);
+        if *kind == TargetKind::Pipeline {
+            let Some(iid) = found.iid else {
+                let message = format!(
+                    "{} predates pipeline iids, so GitLab's GraphQL API can't find it",
+                    found.web_url,
+                );
+                return Err(fatal(ErrorKind::TargetNotFound, &message));
+            };
+            forge_id = format!("{forge_id}{PIPELINE_IID}{iid}");
+        }
         let target = Target {
             forge: Forge::GitLab,
-            forge_id: format!("{global_id}{}", found.id),
+            forge_id,
             host: reference.host.clone(),
             kind: *kind,
             url: found.web_url,
@@ -161,6 +181,8 @@ impl<E: Exec> Backend for GitLab<'_, E> {
         let polled = match target.kind {
             TargetKind::ChangeRequest => self.poll_pages(target, deadline, &mut hints),
             TargetKind::Issue => self.poll_issue(target, deadline, &mut hints),
+            TargetKind::Job => self.poll_job(target, deadline, &mut hints),
+            TargetKind::Pipeline => self.poll_pipeline(target, deadline, &mut hints),
         };
         match polled {
             Ok(poll) => Ok((poll, hints)),
@@ -182,6 +204,135 @@ impl<E: Exec> Backend for GitLab<'_, E> {
 }
 
 impl<E: Exec> GitLab<'_, E> {
+    /// A job, bridges included, its URL built from its project's, since a bridge has none.
+    fn resolve_job(
+        &self,
+        reference: &Reference,
+        number: u64,
+        project: &str,
+        deadline: Option<SystemTime>,
+    ) -> Result<(Target, Hints), Failure> {
+        let mut target = Target {
+            forge: Forge::GitLab,
+            forge_id: format!("{JOB_GID}{number}"),
+            host: reference.host.clone(),
+            kind: TargetKind::Job,
+            url: reference.given.clone(),
+        };
+        let mut hints = Hints::default();
+        let found = self
+            .ci_project(&target, project, None, deadline, &mut hints)
+            .map_err(|failure| failure.paced(hints))?
+            .filter(|found| found.job.is_some());
+        let Some(found) = found else {
+            let message = format!("{} is not found or not visible to glab", reference.given);
+            return Err(fatal(ErrorKind::TargetNotFound, &message));
+        };
+        target.url = format!("{}/-/jobs/{number}", found.web_url);
+        Ok((target, hints))
+    }
+
+    /// The project holding a job or pipeline, with the page of jobs `jobs` asks for, or `None`
+    /// where glab can't see the project.
+    fn ci_project(
+        &self,
+        target: &Target,
+        project: &str,
+        jobs: Option<(&'static str, String)>,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Option<CiProject>, Failure> {
+        let (query, lookup) = match target.kind {
+            TargetKind::Job => (JOB_POLL_QUERY, format!("id={}", target.forge_id)),
+            TargetKind::Pipeline => (PIPELINE_POLL_QUERY, format!("iid={}", pipeline_iid(target))),
+            TargetKind::ChangeRequest | TargetKind::Issue => {
+                unreachable!("only a job or pipeline is polled through its project")
+            }
+        };
+        let mut variables = vec![("-f", lookup), ("-f", format!("project={project}"))];
+        variables.extend(jobs);
+        let data: CiData = self.graphql(&target.host, query, &variables, deadline, hints)?;
+        Ok(data.project)
+    }
+
+    /// The job as its only check, deciding even where it may fail, since it is the target. It
+    /// waits where its pipeline holds it behind a manual job, and where it was skipped, having
+    /// never run.
+    fn poll_job(
+        &self,
+        target: &Target,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Poll, Failure> {
+        let job = self
+            .ci_project(target, &project_of(target), None, deadline, hints)?
+            .and_then(|project| project.job)
+            .ok_or_else(|| gone(target))?;
+        let assessment =
+            if job.status == CI_SKIPPED || blocked_by_manual(&job.pipeline.status, &job.status) {
+                Assessment::Waiting
+            } else {
+                job_assessment(&job.status)
+            };
+        let check = Check {
+            assessment,
+            conclusion: job.status.to_ascii_lowercase(),
+            deciding: true,
+            job_id: Some(rest_id(&target.forge_id).to_owned()),
+            name: job.name,
+            url: Some(target.url.clone()),
+        };
+        let ci = Ci {
+            checks: vec![check],
+            required_known: true,
+        };
+        Ok(ci_target_poll(
+            target,
+            job.pipeline.sha,
+            ci,
+            assessment,
+            job.finished_at,
+        ))
+    }
+
+    /// Pages the pipeline's jobs to their end, assessing them as a merge request's pipeline, and
+    /// fails the poll if a retry lands between pages, ahead of the cursor, as its newest job.
+    fn poll_pipeline(
+        &self,
+        target: &Target,
+        deadline: Option<SystemTime>,
+        hints: &mut Hints,
+    ) -> Result<Poll, Failure> {
+        let project = project_of(target);
+        let mut jobs = Paged::new(Forge::GitLab, "jobs");
+        let mut first = None;
+        while !jobs.done() {
+            let mut page = self
+                .ci_project(target, &project, jobs.variable(), deadline, hints)?
+                .and_then(|project| project.pipeline)
+                .ok_or_else(|| gone(target))?;
+            jobs.take(page.jobs.take())?;
+            match &first {
+                None => first = Some(page),
+                Some(first) if first.newest_job_id() != page.newest_job_id() => {
+                    return Err(transient("a job was retried between pages"));
+                }
+                Some(_) => {}
+            }
+        }
+        let pipeline = first.expect("every poll fetches a first page");
+        // With no merge for it to block, a skipped pipeline passes as a skipped job in it does.
+        let skipped_accepted = true;
+        let ci = ci(&pipeline, jobs.nodes, &target.url, skipped_accepted);
+        Ok(ci_target_poll(
+            target,
+            pipeline.sha,
+            ci,
+            job_assessment(&pipeline.status),
+            pipeline.finished_at,
+        ))
+    }
+
     /// Pages every connection to its end, failing the poll if the head or its CI source changes.
     fn poll_pages(
         &self,
@@ -446,11 +597,9 @@ impl<E: Exec> GitLab<'_, E> {
 /// and the pipeline itself where it was skipped or no job decides.
 fn ci(pipeline: &Pipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: bool) -> Ci {
     let origin = web_origin(target_url);
-    // Jobs held behind a deciding manual job stay created while the pipeline waits on it.
-    let blocked = pipeline.status == CI_MANUAL;
     let mut checks: Vec<_> = jobs
         .into_iter()
-        .filter(|job| !(blocked && job.status == CI_CREATED))
+        .filter(|job| !blocked_by_manual(&pipeline.status, &job.status))
         .map(|job| Check {
             assessment: job_assessment(&job.status),
             conclusion: job.status.to_ascii_lowercase(),
@@ -478,6 +627,55 @@ fn ci(pipeline: &Pipeline, jobs: Vec<Job>, target_url: &str, skipped_accepted: b
     Ci {
         checks,
         required_known: true,
+    }
+}
+
+/// Whether a job waits behind a deciding manual job: it stays created while its pipeline waits.
+fn blocked_by_manual(pipeline_status: &str, job_status: &str) -> bool {
+    pipeline_status == CI_MANUAL && job_status == CI_CREATED
+}
+
+/// A job's or pipeline's poll: open while its `assessment` can change, and closed once it
+/// passed or failed.
+fn ci_target_poll(
+    target: &Target,
+    head: String,
+    ci: Ci,
+    assessment: Assessment,
+    finished_at: Option<String>,
+) -> Poll {
+    let state = match assessment {
+        Assessment::Failed | Assessment::Passed => TargetState::Closed,
+        Assessment::Pending | Assessment::Waiting => TargetState::Open,
+    };
+    Poll {
+        ci: Some(ci),
+        comments: Vec::new(),
+        head: Some(head),
+        merge: None,
+        reviews: Vec::new(),
+        state,
+        state_changed_at: finished_at.filter(|_| state == TargetState::Closed),
+        state_changed_by: None,
+        threads: Vec::new(),
+        url: target.url.clone(),
+    }
+}
+
+/// A pipeline target's iid, which finds a child pipeline where its global id doesn't.
+fn pipeline_iid(target: &Target) -> &str {
+    target
+        .forge_id
+        .split_once(PIPELINE_IID)
+        .map(|(_, iid)| iid)
+        .expect("a pipeline target's forge id carries its iid")
+}
+
+/// The full path of the project a job or pipeline target's URL names.
+fn project_of(target: &Target) -> String {
+    match reference::parse(&target.url).map(|reference| reference.locus) {
+        Ok(Locus::Numbered { project, .. }) => project,
+        _ => unreachable!("a job or pipeline target's URL is one its resolve built"),
     }
 }
 
@@ -639,6 +837,8 @@ struct Commit {
 #[derive(Deserialize)]
 struct RestTarget {
     id: u64,
+    /// `None` on a pipeline from before GitLab numbered them per project.
+    iid: Option<u64>,
     web_url: String,
 }
 
@@ -653,6 +853,35 @@ struct Reply<T> {
 struct GraphQlError {
     #[serde(default)]
     message: String,
+}
+
+#[derive(Deserialize)]
+struct CiData {
+    project: Option<CiProject>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CiJob {
+    finished_at: Option<String>,
+    name: String,
+    pipeline: JobPipeline,
+    status: String,
+}
+
+/// A project as a job or pipeline poll sees it; the poll asks for only one of the two.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CiProject {
+    job: Option<CiJob>,
+    pipeline: Option<Pipeline>,
+    web_url: String,
+}
+
+#[derive(Deserialize)]
+struct JobPipeline {
+    sha: String,
+    status: String,
 }
 
 #[derive(Deserialize)]
@@ -753,9 +982,14 @@ impl MergeRequestPage {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Pipeline {
+    /// `None` where the query leaves it out.
+    finished_at: Option<String>,
     id: String,
     jobs: Option<Connection<Job>>,
     merge_request_event_type: Option<String>,
+    /// The latest attempt with the highest id, which a retry replaces; `None` where the query
+    /// leaves it out.
+    newest: Option<Nodes<JobNode>>,
     path: String,
     sha: String,
     status: String,
@@ -769,6 +1003,11 @@ impl Pipeline {
             Some(MERGED_RESULT | MERGE_TRAIN)
         )
     }
+
+    fn newest_job_id(&self) -> Option<&str> {
+        let newest = self.newest.as_ref()?.nodes.first()?;
+        Some(newest.id.as_str())
+    }
 }
 
 #[derive(Deserialize)]
@@ -779,6 +1018,11 @@ struct Job {
     name: String,
     status: String,
     web_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct JobNode {
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -908,26 +1152,39 @@ impl From<State> for TargetState {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::time::Duration;
 
     use serde_json::{Value, json};
 
     use super::*;
     use crate::diff;
+    use crate::envelope::{Envelope, Outcome, Summary, checked_in_usage, json_block};
     use crate::exec::{self, Output, Script};
     use crate::forge::{Colour, fatal_kind};
+    use crate::out_file::OutFile;
     use crate::reference;
 
     const BLOCKERS_MR_ID: &str = "552635815";
+    const BRIDGE: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860976382";
+    const CHILD_PIPELINE: &str = "https://gitlab.com/gitlab-org/gitlab/-/pipelines/3044853151";
+    const FAILED_PIPELINE: &str = "https://gitlab.com/gitlab-org/cli/-/pipelines/3044291302";
     const FORGE_ID: &str = "gid://gitlab/MergeRequest/552084316";
     const HEAD: &str = "25892092f1db0711fcea689c27db39f6d928d2eb";
+    const JOB: &str = "/data/project/job";
+    const JOBS_CURSOR: &str = "JOBS_1";
+    const MANUAL_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941139";
     /// The recorded head pipeline's merge commit.
     const MERGE_SHA: &str = "d29dd22357102fba3709a18e01c6a96e025174a3";
+    /// Where a pipeline poll's reply holds the pipeline.
+    const PIPELINE: &str = "/data/project/pipeline";
+    const PIPELINE_JOBS: &str = "/data/project/pipeline/jobs";
     const PLAIN_MR_ID: &str = "552726042";
     /// The fixture's `Ratelimit-Reset`.
     const RESET: u64 = 1_792_533_720;
     const RESOLVE: &str = "glab api -i --hostname gitlab.com \
                            projects/gitlab-org%2Fcli/merge_requests/4157";
+    const RUNNING_JOB: &str = "https://gitlab.com/gitlab-org/gitlab/-/jobs/17860941122";
     const URL: &str = "https://gitlab.com/gitlab-org/cli/-/merge_requests/4157";
 
     fn target() -> Target {
@@ -1401,9 +1658,14 @@ mod tests {
     }
 
     fn edited_fixture(fixture: &str, edit: impl FnOnce(&mut Value)) -> String {
+        edited_at(fixture, "/data/mergeRequest", edit)
+    }
+
+    /// The fixture with the value at `pointer` in its body edited.
+    fn edited_at(fixture: &str, pointer: &str, edit: impl FnOnce(&mut Value)) -> String {
         let (headers, body) = fixture.rsplit_once('\n').unwrap();
         let mut body: Value = serde_json::from_str(body).unwrap();
-        edit(body.pointer_mut("/data/mergeRequest").unwrap());
+        edit(body.pointer_mut(pointer).unwrap());
         format!("{headers}\n{body}")
     }
 
@@ -1914,5 +2176,404 @@ mod tests {
                 vec!["ci.settled Green"],
             ],
         );
+    }
+
+    /// A recorded pipeline's iid, which its target's forge id carries.
+    fn recorded_iid(url: &str) -> u64 {
+        match url {
+            CHILD_PIPELINE => 6_817_010,
+            FAILED_PIPELINE => 17_093,
+            _ => panic!("{url} is no recorded pipeline"),
+        }
+    }
+
+    fn ci_target(url: &str) -> Target {
+        let Ok(Reference {
+            locus: Locus::Numbered { kind, number, .. },
+            ..
+        }) = reference::parse(url)
+        else {
+            panic!("{url}");
+        };
+        let forge_id = match kind {
+            TargetKind::Pipeline => {
+                format!("{PIPELINE_GID}{number}{PIPELINE_IID}{}", recorded_iid(url))
+            }
+            _ => format!("{JOB_GID}{number}"),
+        };
+        Target {
+            forge_id,
+            kind,
+            url: url.to_owned(),
+            ..target()
+        }
+    }
+
+    /// The call a job's resolve and poll, or a pipeline's poll, make, `after` asking for a page of
+    /// jobs.
+    fn ci_call(url: &str, after: &str, stdout: &str) -> (String, Result<Output, exec::Error>) {
+        let target = ci_target(url);
+        let (query, lookup) = match target.kind {
+            TargetKind::Pipeline => (
+                PIPELINE_POLL_QUERY,
+                format!("iid={}", pipeline_iid(&target)),
+            ),
+            _ => (JOB_POLL_QUERY, format!("id={}", target.forge_id)),
+        };
+        let call = format!(
+            "glab api -i --hostname gitlab.com graphql -f query={query} -f {lookup} -f project={}{after}",
+            project_of(&target),
+        );
+        (call, Ok(Output::exited(0, stdout)))
+    }
+
+    /// The variable asking a pipeline poll for the page after the first.
+    fn jobs_after() -> String {
+        format!(" -f jobsAfter={JOBS_CURSOR}")
+    }
+
+    fn ci_resolve(url: &str, stdout: &str) -> Result<Target, Failure> {
+        resolve_url(url, &ci_call(url, "", stdout).0, stdout, 0)
+    }
+
+    /// Resolves the pipeline `given` names, REST answering `stdout` with exit `code`.
+    fn pipeline_resolve(given: &str, stdout: &str, code: i32) -> Result<Target, Failure> {
+        let Ok(Reference {
+            locus: Locus::Numbered {
+                number, project, ..
+            },
+            ..
+        }) = reference::parse(given)
+        else {
+            panic!("{given}");
+        };
+        let call = format!(
+            "glab api -i --hostname gitlab.com projects/{}/pipelines/{number}",
+            project.replace('/', "%2F"),
+        );
+        resolve_url(given, &call, stdout, code)
+    }
+
+    fn ci_poll(url: &str, stdout: &str) -> Poll {
+        poll_target(&ci_target(url), [ci_call(url, "", stdout)]).unwrap()
+    }
+
+    /// The recorded job edited to `status`, finished where `finished_at` says.
+    fn job_at(status: &str, finished_at: Option<&str>) -> String {
+        edited_at(
+            include_str!("gitlab/fixtures/job_manual.http"),
+            JOB,
+            |job| {
+                job["status"] = json!(status);
+                job["finishedAt"] = json!(finished_at);
+            },
+        )
+    }
+
+    #[test]
+    fn resolves_a_job_or_bridge_to_a_url_built_from_its_project() {
+        let job = ci_resolve(MANUAL_JOB, include_str!("gitlab/fixtures/job_manual.http"));
+        let bridge = ci_resolve(BRIDGE, include_str!("gitlab/fixtures/job_bridge.http"));
+        let insecure = MANUAL_JOB.replace("https://", "http://");
+        let (call, _) = ci_call(MANUAL_JOB, "", "");
+        let over_http = resolve_url(
+            &insecure,
+            &call,
+            include_str!("gitlab/fixtures/job_manual.http"),
+            0,
+        );
+
+        assert_eq!(job.unwrap(), ci_target(MANUAL_JOB));
+        assert_eq!(bridge.unwrap(), ci_target(BRIDGE));
+        assert_eq!(over_http.unwrap().url, MANUAL_JOB);
+    }
+
+    #[test]
+    fn a_child_pipeline_resolves_and_polls_by_its_iid() {
+        let resolved = pipeline_resolve(
+            CHILD_PIPELINE,
+            include_str!("gitlab/fixtures/resolve_child_pipeline.http"),
+            0,
+        );
+        let poll = ci_poll(
+            CHILD_PIPELINE,
+            include_str!("gitlab/fixtures/pipeline_child.http"),
+        );
+
+        assert_eq!(resolved.unwrap(), ci_target(CHILD_PIPELINE));
+        assert_eq!(poll.ci.and_then(|ci| ci.colour()), Some(Colour::Green));
+        assert_eq!(poll.state, TargetState::Closed);
+    }
+
+    #[test]
+    fn a_pipeline_url_resolves_to_the_projects_own_spelling_of_its_path() {
+        let resolved = pipeline_resolve(
+            "https://gitlab.com/GitLab-Org/CLI/-/pipelines/3044291302",
+            include_str!("gitlab/fixtures/resolve_pipeline.http"),
+            0,
+        );
+
+        assert_eq!(resolved.unwrap(), ci_target(FAILED_PIPELINE));
+    }
+
+    #[test]
+    fn a_pipeline_in_another_project_is_not_found() {
+        let resolved = pipeline_resolve(
+            "https://gitlab.com/gitlab-org/cli/-/pipelines/3044844116",
+            include_str!("gitlab/fixtures/resolve_pipeline_not_found.http"),
+            1,
+        );
+
+        assert_eq!(
+            fatal_kind(&resolved.unwrap_err()),
+            ErrorKind::TargetNotFound
+        );
+    }
+
+    #[test]
+    fn a_pipeline_older_than_pipeline_iids_is_not_found_at_once() {
+        let legacy = edited_at(
+            include_str!("gitlab/fixtures/resolve_pipeline.http"),
+            "",
+            |pipeline| pipeline["iid"] = Value::Null,
+        );
+
+        let resolved = pipeline_resolve(FAILED_PIPELINE, &legacy, 0);
+
+        assert_eq!(
+            fatal_kind(&resolved.unwrap_err()),
+            ErrorKind::TargetNotFound
+        );
+    }
+
+    #[test]
+    fn a_job_or_project_glab_cannot_see_is_not_found_and_gone_once_watched() {
+        for stdout in [
+            include_str!("gitlab/fixtures/job_not_found.http"),
+            include_str!("gitlab/fixtures/job_project_not_found.http"),
+        ] {
+            let resolved = ci_resolve(MANUAL_JOB, stdout);
+            let polled = poll_target(&ci_target(MANUAL_JOB), [ci_call(MANUAL_JOB, "", stdout)]);
+
+            assert_eq!(
+                fatal_kind(&resolved.unwrap_err()),
+                ErrorKind::TargetNotFound
+            );
+            assert_eq!(fatal_kind(&polled.unwrap_err()), ErrorKind::TargetNotFound);
+        }
+    }
+
+    #[test]
+    fn a_job_is_its_own_deciding_check_even_where_it_may_fail() {
+        let poll = ci_poll(MANUAL_JOB, include_str!("gitlab/fixtures/job_manual.http"));
+
+        assert_eq!(
+            poll.ci,
+            Some(Ci {
+                checks: vec![Check {
+                    assessment: Assessment::Waiting,
+                    conclusion: "manual".to_owned(),
+                    deciding: true,
+                    job_id: Some("17860941139".to_owned()),
+                    name: "ai-principles-reconcile-fences".to_owned(),
+                    url: Some(MANUAL_JOB.to_owned()),
+                }],
+                required_known: true,
+            }),
+        );
+        assert_eq!(
+            poll.head.as_deref(),
+            Some("2f82cf43f55ebc217f9bcfcf8d407b3a04158dd4")
+        );
+        assert_eq!(poll.state, TargetState::Open);
+    }
+
+    #[test]
+    fn a_played_manual_job_settles_again_and_closes_when_it_finishes() {
+        let finished_at = "2026-11-09T12:20:00Z";
+        let polls = [
+            job_at("MANUAL", None),
+            job_at("PENDING", None),
+            job_at("RUNNING", None),
+            job_at("SUCCESS", Some(finished_at)),
+        ]
+        .map(|stdout| ci_poll(MANUAL_JOB, &stdout));
+        let [manual, rest @ ..] = polls;
+        let closed_at = rest[2].state_changed_at.clone();
+
+        assert_eq!(
+            diff::steps(manual, rest.to_vec()),
+            [vec![], vec![], vec!["state.closed", "ci.settled Green"]],
+        );
+        assert_eq!(closed_at.as_deref(), Some(finished_at));
+    }
+
+    #[test]
+    fn a_running_job_or_bridge_is_unsettled_and_open() {
+        for (url, stdout) in [
+            (BRIDGE, include_str!("gitlab/fixtures/job_bridge.http")),
+            (
+                RUNNING_JOB,
+                include_str!("gitlab/fixtures/job_running.http"),
+            ),
+        ] {
+            let poll = ci_poll(url, stdout);
+
+            assert_eq!(poll.ci.and_then(|ci| ci.colour()), None, "{url}");
+            assert_eq!(poll.state, TargetState::Open, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_pipeline_assesses_its_latest_jobs_as_a_merge_requests_pipeline_does() {
+        let poll = ci_poll(
+            FAILED_PIPELINE,
+            include_str!("gitlab/fixtures/pipeline_failed.http"),
+        );
+
+        let ci = poll.ci.unwrap();
+        let names = |deciding, assessment| -> Vec<_> {
+            ci.checks
+                .iter()
+                .filter(|check| check.deciding == deciding && check.assessment == assessment)
+                .map(|check| check.name.as_str())
+                .collect()
+        };
+        assert_eq!(ci.colour(), Some(Colour::Red));
+        assert_eq!(names(true, Assessment::Failed), ["lint_commit"]);
+        assert_eq!(
+            names(false, Assessment::Waiting),
+            ["review-docs-cleanup", "review-docs-deploy", "govulncheck"],
+        );
+        assert_eq!(poll.state, TargetState::Closed);
+        assert_eq!(
+            poll.state_changed_at.as_deref(),
+            Some("2026-11-09T10:11:38Z")
+        );
+    }
+
+    #[test]
+    fn a_pipeline_pages_its_jobs_to_their_end() {
+        let full = include_str!("gitlab/fixtures/pipeline_failed.http");
+
+        let first = edited_at(full, PIPELINE_JOBS, |jobs| {
+            jobs["nodes"].as_array_mut().unwrap().truncate(10);
+            jobs["pageInfo"] = json!({"hasNextPage": true, "endCursor": JOBS_CURSOR});
+        });
+        let second = edited_at(full, PIPELINE_JOBS, |jobs| {
+            jobs["nodes"].as_array_mut().unwrap().drain(..10);
+        });
+
+        let paged = poll_target(
+            &ci_target(FAILED_PIPELINE),
+            [
+                ci_call(FAILED_PIPELINE, "", &first),
+                ci_call(FAILED_PIPELINE, &jobs_after(), &second),
+            ],
+        );
+
+        assert_eq!(paged.unwrap(), ci_poll(FAILED_PIPELINE, full));
+    }
+
+    #[test]
+    fn the_usage_reference_job_example_is_what_babysit_writes_to_its_out_file() {
+        let running = ci_poll(
+            RUNNING_JOB,
+            include_str!("gitlab/fixtures/job_running.http"),
+        );
+        let finished = ci_poll(
+            RUNNING_JOB,
+            include_str!("gitlab/fixtures/job_finished.http"),
+        );
+        let (_, snapshot) = diff::after(running, finished);
+        let envelope = Envelope {
+            targets: vec![Summary::new(&ci_target(RUNNING_JOB), &snapshot)],
+            ..Envelope::ended(Outcome::Met)
+        };
+        let out = std::env::temp_dir().join(format!("babysit-{}-out.json", std::process::id()));
+
+        envelope.write(&mut OutFile::new(&out)).unwrap();
+        let written = fs::read(&out).unwrap();
+        fs::remove_file(&out).unwrap();
+
+        assert_eq!(checked_in_usage("met-job"), json_block(&written));
+    }
+
+    #[test]
+    fn a_job_blocked_behind_a_manual_job_waits_amber_while_a_created_one_elsewhere_runs() {
+        let blocked_job =
+            "https://gitlab.com/gitlab-org/cloud-native/gitlab-operator/-/jobs/17778139797";
+        let stdout = include_str!("gitlab/fixtures/job_blocked.http");
+        let queued = edited_at(stdout, &format!("{JOB}/pipeline"), |pipeline| {
+            pipeline["status"] = json!("RUNNING");
+        });
+
+        let blocked = ci_poll(blocked_job, stdout);
+        let running = ci_poll(blocked_job, &queued);
+
+        assert_eq!(blocked.ci.and_then(|ci| ci.colour()), Some(Colour::Amber));
+        assert_eq!(blocked.state, TargetState::Open);
+        assert_eq!(running.ci.and_then(|ci| ci.colour()), None);
+    }
+
+    #[test]
+    fn a_skipped_job_waits_amber_and_open_since_a_retry_upstream_can_still_run_it() {
+        let poll = ci_poll(MANUAL_JOB, &job_at("SKIPPED", None));
+
+        assert_eq!(poll.ci.and_then(|ci| ci.colour()), Some(Colour::Amber));
+        assert_eq!(poll.state, TargetState::Open);
+    }
+
+    #[test]
+    fn a_retry_landing_between_pipeline_pages_fails_the_poll() {
+        let full = include_str!("gitlab/fixtures/pipeline_failed.http");
+        let first = edited_at(full, PIPELINE_JOBS, |jobs| {
+            jobs["pageInfo"] = json!({"hasNextPage": true, "endCursor": JOBS_CURSOR});
+        });
+        let retried = edited_at(full, &format!("{PIPELINE}/newest/nodes/0"), |newest| {
+            newest["id"] = json!("gid://gitlab/Ci::Build/17856600999");
+        });
+
+        let polled = poll_target(
+            &ci_target(FAILED_PIPELINE),
+            [
+                ci_call(FAILED_PIPELINE, "", &first),
+                ci_call(FAILED_PIPELINE, &jobs_after(), &retried),
+            ],
+        );
+
+        assert!(matches!(polled, Err(Failure::Transient { .. })));
+    }
+
+    #[test]
+    fn retrying_a_job_reopens_its_finished_pipeline() {
+        let failed = include_str!("gitlab/fixtures/pipeline_failed.http");
+        let retried = edited_at(failed, PIPELINE, |pipeline| {
+            pipeline["status"] = json!("RUNNING");
+        });
+
+        let steps = diff::steps(
+            ci_poll(FAILED_PIPELINE, failed),
+            vec![ci_poll(FAILED_PIPELINE, &retried)],
+        );
+
+        assert_eq!(steps, [["state.reopened"]]);
+    }
+
+    #[test]
+    fn a_skipped_pipeline_passes_with_no_merge_for_it_to_block() {
+        let skipped = edited_at(
+            include_str!("gitlab/fixtures/pipeline_failed.http"),
+            PIPELINE,
+            |pipeline| {
+                pipeline["status"] = json!("SKIPPED");
+                pipeline["jobs"]["nodes"] = json!([]);
+            },
+        );
+
+        let poll = ci_poll(FAILED_PIPELINE, &skipped);
+
+        assert_eq!(poll.ci.and_then(|ci| ci.colour()), Some(Colour::Green));
+        assert_eq!(poll.state, TargetState::Closed);
     }
 }

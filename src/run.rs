@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::io::{self, Write};
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -61,6 +62,7 @@ pub fn run(
         })
     };
     reach("--interval", args.interval)?;
+    check_out(args)?;
     let deadline = args
         .timeout
         .map(|timeout| reach("--timeout", timeout))
@@ -70,13 +72,32 @@ pub fn run(
     let snapshot_path = args.snapshot.display();
     let mut file = match SnapshotFile::open(&args.snapshot) {
         Ok(file) => file,
-        Err(error) => return fail_on_snapshot_file(stdout, &args.snapshot, error),
+        Err(error) => {
+            let envelope = snapshot_file_failure(&args.snapshot, error)?;
+            return Ok(print(&envelope, stdout, args.out.as_deref(), stderr));
+        }
     };
+    // Taking the lock creates its file, so a link there now shows where it leads.
+    check_out(args)?;
     let located = Locator::new(exec, call_deadline).locate_all(&args.targets);
     let references = match located {
         Ok(references) => references,
-        Err((given, error)) => return report_unresolved(stdout, given, error),
+        Err((given, error)) => {
+            let envelope = unresolved(given, error)?;
+            return Ok(print(&envelope, stdout, args.out.as_deref(), stderr));
+        }
     };
+    // A run that ends without an envelope then leaves no earlier run's to mistake for its own.
+    if let Some(out) = &args.out
+        && let Err(error) = snapshot_file::remove_if_present(out)
+    {
+        let _ = writeln!(
+            stderr,
+            "babysit: could not clear {}: {error}",
+            out.display()
+        );
+        return Ok(EXIT_ERROR);
+    }
     let mut watch = Watch::new(args, references, schedule, now);
     let watched = watch.run(args, backends, clock, &mut file, stderr);
     let (mut envelope, write_failed) = match watched {
@@ -94,7 +115,7 @@ pub fn run(
             Some(Summary::new(&tracked.target, snapshot))
         })
         .collect();
-    if envelope.write(stdout).is_err() {
+    if !wrote(&envelope, stdout, args.out.as_deref(), stderr) {
         return Ok(EXIT_ERROR);
     }
     // The envelope has already reported the write that failed.
@@ -115,6 +136,26 @@ pub fn run(
         return Ok(EXIT_ERROR);
     }
     Ok(envelope.exit_code())
+}
+
+/// Refuses an `--out` that would write over the snapshot's files or over something not a file,
+/// such as `/dev/null`, which replacing it would delete.
+fn check_out(args: &Args) -> Result<(), UsageError> {
+    let Some(out) = &args.out else {
+        return Ok(());
+    };
+    if snapshot_file::collides(&args.snapshot, out) {
+        return Err(UsageError(
+            "--out must not write over the snapshot file, its `.lock`, or its `.tmp`".to_owned(),
+        ));
+    }
+    if fs::metadata(out).is_ok_and(|metadata| !metadata.is_file()) {
+        return Err(UsageError(format!(
+            "--out must name a file babysit can replace, and {} isn't one",
+            out.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Every call the run still has to make: names to resolve, viewers to look up, targets to poll.
@@ -524,8 +565,8 @@ fn unfit(target: &Target) -> Envelope {
         forge: None,
         target: Some(target.url.clone()),
         message: format!(
-            "{} can't meet any condition: every condition tests a field only a pull or merge \
-             request carries",
+            "{} can't meet any condition: every condition tests a field its summary doesn't \
+             carry",
             target.url
         ),
     })
@@ -714,15 +755,14 @@ fn entry(target: &Target, snapshot: Snapshot) -> Entry {
 pub fn forget(path: &Path, stdout: &mut impl Write) -> Result<u8, UsageError> {
     match snapshot_file::forget(path) {
         Ok(()) => Ok(EXIT_FORGOTTEN),
-        Err(error) => fail_on_snapshot_file(stdout, path, error),
+        Err(error) => {
+            let envelope = snapshot_file_failure(path, error)?;
+            Ok(print(&envelope, stdout, None, &mut io::sink()))
+        }
     }
 }
 
-fn fail_on_snapshot_file(
-    stdout: &mut impl Write,
-    path: &Path,
-    error: snapshot_file::Error,
-) -> Result<u8, UsageError> {
+fn snapshot_file_failure(path: &Path, error: snapshot_file::Error) -> Result<Envelope, UsageError> {
     let (kind, message) = match error {
         snapshot_file::Error::Invalid(message) => return Err(UsageError(message)),
         snapshot_file::Error::LockHeld => (
@@ -734,11 +774,7 @@ fn fail_on_snapshot_file(
             format!("{}: {error}", path.display()),
         ),
     };
-    Ok(fail_locally(stdout, kind, message))
-}
-
-fn fail_locally(stdout: &mut impl Write, kind: ErrorKind, message: String) -> u8 {
-    report(stdout, &local_failure(kind, message))
+    Ok(local_failure(kind, message))
 }
 
 fn local_failure(kind: ErrorKind, message: String) -> Envelope {
@@ -750,11 +786,7 @@ fn local_failure(kind: ErrorKind, message: String) -> Envelope {
     })
 }
 
-fn report_unresolved(
-    stdout: &mut impl Write,
-    given: &str,
-    error: target::Error,
-) -> Result<u8, UsageError> {
+fn unresolved(given: &str, error: target::Error) -> Result<Envelope, UsageError> {
     let envelope = match error {
         target::Error::Fatal {
             forge,
@@ -769,14 +801,42 @@ fn report_unresolved(
         target::Error::TimedOut => Envelope::ended(Outcome::TimedOut),
         target::Error::Usage(message) => return Err(UsageError(message)),
     };
-    Ok(report(stdout, &envelope))
+    Ok(envelope)
 }
 
-fn report(stdout: &mut impl Write, envelope: &Envelope) -> u8 {
-    match envelope.write(stdout) {
-        Ok(()) => envelope.exit_code(),
-        Err(_) => EXIT_ERROR,
+/// Writes the envelope, returning the run's exit code.
+fn print(
+    envelope: &Envelope,
+    stdout: &mut impl Write,
+    out: Option<&Path>,
+    stderr: &mut impl Write,
+) -> u8 {
+    if wrote(envelope, stdout, out, stderr) {
+        envelope.exit_code()
+    } else {
+        EXIT_ERROR
     }
+}
+
+/// Whether the envelope was written; a failed `--out` notes why on stderr, while a failed stdout
+/// has nowhere better to say so.
+fn wrote(
+    envelope: &Envelope,
+    stdout: &mut impl Write,
+    out: Option<&Path>,
+    stderr: &mut impl Write,
+) -> bool {
+    let Err(error) = envelope.write(stdout) else {
+        return true;
+    };
+    if let Some(out) = out {
+        let _ = writeln!(
+            stderr,
+            "babysit: could not write {}: {error}",
+            out.display()
+        );
+    }
+    false
 }
 
 #[cfg(test)]
@@ -799,10 +859,12 @@ mod tests {
         Absence, Account, Assessment, Merge, Poll, TargetKind, TargetState, check, octocat, on,
         poll,
     };
+    use crate::out_file::OutFile;
     use crate::reference::{self, Locus, Reference};
 
     const ENTERPRISE: &str = "https://ghe.example.com/o/r/pull/3";
     const ISSUE: &str = "https://github.com/o/r/issues/7";
+    const JOB: &str = "https://gitlab.com/g/p/-/jobs/4";
     const NODE_ID: &str = "PR_1";
     const OTHER: &str = "https://github.com/o/r/pull/2";
     const SETTLED: &str = "colour=green,red,amber";
@@ -863,6 +925,11 @@ mod tests {
             let (id, path) = match (forge, kind) {
                 (Forge::GitHub, TargetKind::ChangeRequest) => ("PR", "pull"),
                 (Forge::GitHub, TargetKind::Issue) => ("I", "issues"),
+                (Forge::GitHub, TargetKind::Job | TargetKind::Pipeline) => {
+                    unreachable!("only a GitLab URL names a job or pipeline")
+                }
+                (Forge::GitLab, TargetKind::Job) => ("JOB", "-/jobs"),
+                (Forge::GitLab, TargetKind::Pipeline) => ("PIPELINE", "-/pipelines"),
                 (Forge::GitLab, _) => ("MR", "-/merge_requests"),
                 (Forge::Slack, _) => unreachable!("the run tests name no Slack thread"),
             };
@@ -1013,6 +1080,7 @@ mod tests {
             brief: false,
             ignore: Vec::new(),
             on: Vec::new(),
+            out: None,
             until: Vec::new(),
             targets: targets
                 .iter()
@@ -1549,12 +1617,16 @@ mod tests {
     #[test]
     fn a_duration_past_the_clocks_reach_is_a_usage_error_before_any_write() {
         let sandbox = Sandbox::new("overflow");
-        let mut too_long = args(&[URL], &sandbox.snapshot(), Some(u64::MAX));
+        let out = sandbox.dir.join("out.json");
+        let mut too_long = Args {
+            out: Some(out.clone()),
+            ..args(&[URL], &sandbox.snapshot(), Some(u64::MAX))
+        };
 
-        let (timeout, _) = watch_into(&too_long, vec![], &mut Vec::new());
+        let (timeout, _) = watch_into(&too_long, vec![], &mut OutFile::new(&out));
         too_long.timeout = None;
         too_long.interval = Duration::from_secs(u64::MAX);
-        let (interval, _) = watch_into(&too_long, vec![], &mut Vec::new());
+        let (interval, _) = watch_into(&too_long, vec![], &mut OutFile::new(&out));
 
         assert!(timeout.is_err());
         assert!(interval.is_err());
@@ -1730,6 +1802,152 @@ mod tests {
 
         assert_eq!(code.unwrap(), 1);
         assert_eq!(stderr, "");
+        assert_eq!(saved(&sandbox.snapshot()), before);
+    }
+
+    #[test]
+    fn an_out_file_holds_the_one_envelope_stdout_would_have_printed() {
+        let printed = Sandbox::new("printed");
+        let written = Sandbox::new("written");
+        let out = written.dir.join("out.json");
+        for sandbox in [&printed, &written] {
+            seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        }
+
+        let (printed_code, envelope) = watch(
+            &args(&[URL], &printed.snapshot(), None),
+            vec![returns(URL, poll(&["1", "2"]))],
+        );
+        let (written_code, stderr) = watch_into(
+            &Args {
+                out: Some(out.clone()),
+                ..args(&[URL], &written.snapshot(), None)
+            },
+            vec![returns(URL, poll(&["1", "2"]))],
+            &mut OutFile::new(&out),
+        );
+
+        assert_eq!(written_code.unwrap(), printed_code);
+        assert_eq!(stderr, "");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&out).unwrap()).unwrap(),
+            envelope
+        );
+        assert_eq!(saved(&written.snapshot()), saved(&printed.snapshot()));
+    }
+
+    #[test]
+    fn a_run_ending_without_an_envelope_leaves_no_earlier_runs_out_file() {
+        let sandbox = Sandbox::new("stale");
+        let out = sandbox.dir.join("out.json");
+        fs::write(&out, "earlier").unwrap();
+
+        let (code, _) = watch_into(
+            &Args {
+                out: Some(out.clone()),
+                ..args(&[URL], &sandbox.snapshot(), Some(0))
+            },
+            vec![returns(URL, poll(&["1"]))],
+            &mut FailingWriter,
+        );
+
+        assert_eq!(code.unwrap(), 1);
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn an_out_file_over_the_snapshot_file_is_a_usage_error_that_touches_nothing() {
+        let sandbox = Sandbox::new("collide");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let before = saved(&sandbox.snapshot());
+        let snapshot = sandbox.dir.join("./snapshot.json");
+
+        let (code, _) = watch_into(
+            &Args {
+                out: Some(snapshot.clone()),
+                ..args(&[URL], &sandbox.snapshot(), None)
+            },
+            Vec::new(),
+            &mut OutFile::new(&snapshot),
+        );
+
+        assert!(code.is_err());
+        assert_eq!(saved(&sandbox.snapshot()), before);
+    }
+
+    #[test]
+    fn an_out_file_a_dangling_lock_link_leads_to_is_a_usage_error_once_locked() {
+        let sandbox = Sandbox::new("lock-link");
+        let out = sandbox.dir.join("wait.json");
+        std::os::unix::fs::symlink(&out, sandbox.dir.join("snapshot.json.lock")).unwrap();
+
+        let (code, _) = watch_into(
+            &Args {
+                out: Some(out.clone()),
+                ..args(&[URL], &sandbox.snapshot(), None)
+            },
+            Vec::new(),
+            &mut OutFile::new(&out),
+        );
+
+        assert!(code.is_err());
+        assert!(out.exists());
+    }
+
+    #[test]
+    fn an_early_failure_that_cannot_write_its_out_file_says_so_on_stderr() {
+        let sandbox = Sandbox::new("early-out");
+        let out = sandbox.dir.join("missing/out.json");
+
+        let (code, stderr) = watch_into(
+            &Args {
+                out: Some(out.clone()),
+                ..args(&[URL], &sandbox.dir.join("missing/s.json"), None)
+            },
+            Vec::new(),
+            &mut OutFile::new(&out),
+        );
+
+        assert_eq!(code.unwrap(), 1);
+        assert!(stderr.starts_with(&format!("babysit: could not write {}: ", out.display())));
+    }
+
+    #[test]
+    fn an_out_that_is_not_a_file_is_a_usage_error() {
+        let sandbox = Sandbox::new("not-a-file");
+        let out = Path::new("/dev/null");
+
+        let (code, _) = watch_into(
+            &Args {
+                out: Some(out.to_owned()),
+                ..args(&[URL], &sandbox.snapshot(), None)
+            },
+            Vec::new(),
+            &mut OutFile::new(out),
+        );
+
+        assert!(code.is_err());
+        assert!(out.exists());
+    }
+
+    #[test]
+    fn an_out_file_that_cannot_be_written_exits_1_without_saving() {
+        let sandbox = Sandbox::new("out");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let before = saved(&sandbox.snapshot());
+        let out = sandbox.dir.join("missing/out.json");
+
+        let (code, stderr) = watch_into(
+            &Args {
+                out: Some(out.clone()),
+                ..args(&[URL], &sandbox.snapshot(), None)
+            },
+            vec![returns(URL, poll(&["1", "2"]))],
+            &mut OutFile::new(&out),
+        );
+
+        assert_eq!(code.unwrap(), 1);
+        assert!(stderr.starts_with(&format!("babysit: could not write {}: ", out.display())));
         assert_eq!(saved(&sandbox.snapshot()), before);
     }
 
@@ -2820,6 +3038,32 @@ mod tests {
         assert_eq!(unfit["error"]["kind"], "condition_unfit");
         assert_eq!(unfit["error"]["target"], ISSUE);
         assert_eq!(fits["outcome"], "met");
+    }
+
+    #[test]
+    fn a_job_meets_a_condition_on_its_colour_but_never_one_on_merging() {
+        let sandbox = Sandbox::new("job");
+        let failed = Poll {
+            state: TargetState::Closed,
+            ..with_ci(&[], Assessment::Failed)
+        };
+
+        let (_, met) = watch(
+            &with_conditions(args(&[JOB], &sandbox.snapshot(), None), &[SETTLED]),
+            vec![returns(JOB, failed)],
+        );
+        let (code, unfit) = watch(
+            &with_conditions(args(&[JOB], &sandbox.snapshot(), None), &["merge=clean"]),
+            Vec::new(),
+        );
+
+        assert_eq!(met["outcome"], "met");
+        assert_eq!(
+            met["targets"],
+            json!([{"target": JOB, "state": "closed", "head": "abc123", "colour": "red"}]),
+        );
+        assert_eq!(code, 1);
+        assert_eq!(unfit["error"]["kind"], "condition_unfit");
     }
 
     #[test]

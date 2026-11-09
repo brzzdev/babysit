@@ -1,0 +1,30 @@
+query ($iid: ID!, $jobsAfter: String, $project: ID!) {
+  project(fullPath: $project) {
+    pipeline(iid: $iid) {
+      finishedAt
+      id
+      jobs(first: 100, after: $jobsAfter, retried: false) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          allowFailure
+          id
+          name
+          status
+          webPath
+        }
+      }
+      newest: jobs(first: 1, retried: false) {
+        nodes {
+          id
+        }
+      }
+      path
+      sha
+      status
+    }
+    webUrl
+  }
+}
