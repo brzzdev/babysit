@@ -12,7 +12,7 @@ Checked against babysit 0.4.0. Run `babysit --version` first; the caller's contr
 when something here doesn't match.
 
 ```sh
-babysit --snapshot <PATH> --brief [--on RULE]... [--ignore RULE]... [--timeout DURATION] TARGET...
+babysit --snapshot <PATH> --brief [--on RULE]... [--ignore RULE]... [--until CONDITION]... [--timeout DURATION] TARGET...
 ```
 
 Pass `--brief`: bot reviews and summaries run to thousands of characters, mostly hidden HTML
@@ -40,13 +40,14 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
    Its directory must already exist, or the run fails with `snapshot_io`. Give each loop its own
    file: events a run's rules ignore still count as seen, so a file shared by loops with different
    rules loses events, and one file allows one run at a time (`lock_held`).
-2. **Take stock.** The first poll of a target only records its **baseline**: red CI or an open
-   thread that is already there never wakes. Run once with `--timeout 0`, which polls each target
+2. **Take stock**, unless the loop waits only for a state through `--until` (see
+   [Conditions](#conditions)), which sees what is already true. The first poll of a target only
+   records its **baseline**: red CI or an open thread that is already there never wakes. Run once with `--timeout 0`, which polls each target
    once and exits 3 (on a resumed snapshot it can wake instead: act on its events too), and read `targets[]`: `state`, `colour` (`null` while CI is unsettled), `merge`,
    and `unresolved_threads`. Each red or amber `colour`, `conflicted` `merge`, and nonzero
    `unresolved_threads` it shows is yours to deal with: none of them will wake you.
 3. **Wait.** Start the same command without `--timeout` as a background job, before you deal with
-   what step 2 showed, so anything landing meanwhile wakes it. It runs until a wake or an error:
+   what step 2 showed, so anything landing meanwhile wakes it. It runs until a wake, `met`, or an error:
    - **Claude Code**: `run_in_background`. The harness re-invokes you when it exits, however long
      that takes.
    - **Codex**: the command keeps running in its session but nothing re-invokes you, so poll it
@@ -74,6 +75,7 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 | Exit | `outcome`   | Do                                                                              |
 | ---- | ----------- | ------------------------------------------------------------------------------- |
 | 0    | `woke`      | Act on `events`, then re-run                                                    |
+| 0    | `met`       | Every target meets an `--until`: read `targets[]`, the state that met it        |
 | 1    | `error`     | Read `error.kind` (below). Exit 1 with `outcome: "woke"` means the save failed after printing: act on the events, and expect them again |
 | 2    | none        | A usage error: no envelope on stdout, the reason on stderr. Fix the command     |
 | 3    | `timed_out` | No wake before `--timeout`: step 2's usual exit, or recheck what the timeout was for, then re-run |
@@ -82,6 +84,7 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 | ------------------ | ------------------------------------------------------------------------------- |
 | `auth`             | Tell the user: `gh` or `glab` isn't signed in or was refused, both hold a token for the remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | Tell the user which of `gh`, `glab`, `git`, or `curl` is missing, or that `curl` is older than 8.3 |
+| `condition_unfit`  | An issue or Slack thread can't meet an `--until` on `colour`, `absent_ci`, `merge`, or `unresolved_threads`. Fix the command |
 | `lock_held`        | Another run owns this snapshot file. Wait for it, or use another file; the `.lock` file stays, so leave it |
 | `poll_failed`      | The forge failed 10 calls in a row, once under `--timeout 0`, or once on Slack's `invalid_arguments`. Report it before starting another run |
 | `snapshot_io`      | The snapshot file or its directory can't be read or written                     |
@@ -110,8 +113,9 @@ Starting sets:
 --on 'ci.*' --on 'comment.*' --on 'merge.conflicted' --on 'review.*' --on 'state.*' \
   --on 'thread.*' --ignore 'comment.* actor=@me' --ignore 'thread.* actor=@me'
 
-# Only until CI settles or proves absent, to carry on with work that needs it green
---on 'ci.*' --on 'state.*'
+# Only until CI settles or proves absent, to carry on with work that needs it green: one run,
+# no stock check, ending `met` at once when CI has already settled
+--until 'colour=green,red,amber' --until 'absent_ci=true' --on 'state.*'
 
 # A reply on an issue
 --on 'comment.* actor=@human' --on 'state.*' --ignore 'comment.* actor=@me'
@@ -135,8 +139,8 @@ What bites:
 - **Review bots post real findings in threads**, so `actor=@human` drops real work. Silence a noisy
   bot by login instead: `--ignore 'actor=gitar-bot[bot]'`.
 - **CI settles only when it can.** A head with no checks never settles, and GitHub holds back green
-  until every required check has reported, so wait on `ci.*`: its `ci.absent` covers a head no
-  check reports on. `ci.settled` is reported when the colour changes, so a second check failing
+  until every required check has reported, so wait on `ci.*`, or `--until 'absent_ci=true'` beside
+  the colours: `ci.absent` covers a head no check reports on. `ci.settled` is reported when the colour changes, so a second check failing
   while CI is red wakes nothing.
 - **Nothing reports** a conflict clearing, or a job that isn't a deciding check finishing while
   other jobs decide. A GitLab `when: manual` job outside `rules:` is one: it defaults to
@@ -145,6 +149,20 @@ What bites:
   `targets[].state` stays `open`, so stop on your goal.
 - **On Slack, `@me` is the token's user** and a login is a Slack user id (`U…` or `W…`), or an
   integration's `bot_id`, which counts as `@bot`.
+
+## Conditions
+
+`--until` ends the run once every target's summary in `targets[]` passes one of its conditions,
+the first poll included, so a state that already holds ends the run at once with `met`. A
+condition is a rule with no kind pattern: `field=value` terms that must all hold, commas as
+alternatives, repeated `--until` ORed. Its fields are the summary's: `state` (`open`, `closed`,
+`merged`), and on a PR or MR only, `colour` (`amber`, `green`, `red`), `absent_ci` (`true`,
+`false`), `merge` (`clean`, `behind`, `conflicted`), and `unresolved_threads` (a number).
+
+- **With `--on`, whichever comes first ends the run**, and a round that does both ends `woke`.
+- **With no `--on`, no event wakes** the run, unlike a run with neither.
+- **`absent_ci` stays `true`** on later runs sharing the snapshot file, after an earlier run took
+  the `ci.absent` wake, until a check reports or a push restarts the clock.
 
 ## Acting on a wake
 

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
+use crate::condition::{self, Condition};
 use crate::reference::{self, Name};
 use crate::rule::{self, Rule};
 
@@ -44,6 +45,12 @@ pub struct Args {
     /// Never wake on an event matching this rule, even one an `--on` rule matches; repeatable
     #[arg(long, value_name = "RULE", value_parser = rule::parse)]
     pub ignore: Vec<Rule>,
+
+    /// End the run once every target's current state meets at least one such condition, such as
+    /// `'colour=green,red,amber'`, the first poll included; repeatable. With no `--on`, no event
+    /// wakes the run
+    #[arg(long, value_name = "CONDITION", value_parser = condition::parse)]
+    pub until: Vec<Condition>,
 
     /// The pull requests, merge requests, issues, and Slack threads to watch, each as its web URL
     /// or permalink, or inside a checkout as `#<number>` or GitLab's `!<number>`
@@ -166,6 +173,22 @@ mod tests {
                 "s.json",
                 "--on",
                 "x",
+                "https://github.com/o/r/pull/1",
+            ],
+            &[
+                "babysit",
+                "--snapshot",
+                "s.json",
+                "--until",
+                "ci.settled",
+                "https://github.com/o/r/pull/1",
+            ],
+            &[
+                "babysit",
+                "--snapshot",
+                "s.json",
+                "--until",
+                "head=abc",
                 "https://github.com/o/r/pull/1",
             ],
             &["babysit", "forget"],

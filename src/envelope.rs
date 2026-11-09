@@ -3,11 +3,12 @@ use std::io::{self, Write};
 use serde::Serialize;
 
 use crate::diff;
-use crate::forge::{Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
+use crate::forge::{Absence, Colour, Failure, Merge, Snapshot, Target, TargetKind, TargetState};
 
 pub const BRIEF_BODY_CHARS: usize = 200;
 pub const EXIT_ERROR: u8 = 1;
 pub const EXIT_FORGOTTEN: u8 = 0;
+const EXIT_MET: u8 = 0;
 const EXIT_TIMED_OUT: u8 = 3;
 const EXIT_WOKE: u8 = 0;
 const HTML_COMMENT_CLOSE: &str = "-->";
@@ -26,6 +27,7 @@ pub struct Envelope {
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Error,
+    Met,
     TimedOut,
     Woke,
 }
@@ -53,6 +55,7 @@ pub struct Summary {
 pub struct ChangeSummary {
     pub head: Option<String>,
     pub colour: Option<Colour>,
+    pub absent_ci: bool,
     pub merge: Option<Merge>,
     pub unresolved_threads: usize,
 }
@@ -71,6 +74,7 @@ pub struct Error {
 pub enum ErrorKind {
     Auth,
     CliMissing,
+    ConditionUnfit,
     LockHeld,
     PollFailed,
     SnapshotIo,
@@ -119,6 +123,7 @@ impl Envelope {
     pub fn exit_code(&self) -> u8 {
         match self.outcome {
             Outcome::Error => EXIT_ERROR,
+            Outcome::Met => EXIT_MET,
             Outcome::TimedOut => EXIT_TIMED_OUT,
             Outcome::Woke => EXIT_WOKE,
         }
@@ -183,6 +188,8 @@ impl Summary {
             change: (target.kind == TargetKind::ChangeRequest).then(|| ChangeSummary {
                 head: poll.head.clone(),
                 colour: snapshot.reported.colour,
+                absent_ci: snapshot.reported.absence == Some(Absence::Reported)
+                    && poll.ci.is_none(),
                 merge: snapshot
                     .reported
                     .merge

@@ -113,8 +113,8 @@ fn kinds(pattern: Option<&str>) -> Result<Vec<Kind>, String> {
     Ok(covered)
 }
 
-/// The rule's whitespace-separated words, a double-quoted run staying whole inside its word.
-fn split(given: &str) -> Result<Vec<&str>, String> {
+/// The whitespace-separated words of a rule or condition, a double-quoted run staying whole.
+pub fn split(given: &str) -> Result<Vec<&str>, String> {
     let mut words = Vec::new();
     let mut start = None;
     let mut quoted = false;
@@ -188,7 +188,7 @@ fn term(word: &str) -> Result<Term, String> {
 }
 
 /// A term's comma-separated values, each bare or double-quoted with `\"` and `\\` as escapes.
-fn values(word: &str, given: &str) -> Result<Vec<String>, String> {
+pub fn values(word: &str, given: &str) -> Result<Vec<String>, String> {
     let mut values = Vec::new();
     let mut rest = given;
     loop {
@@ -230,7 +230,7 @@ fn unquote(given: &str) -> (String, &str) {
     (value, "")
 }
 
-fn outside_a_value(word: &str) -> String {
+pub fn outside_a_value(word: &str) -> String {
     format!("`{word}` has a quote outside a value; quote a whole value after `=`")
 }
 

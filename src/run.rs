@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::cli::Args;
 use crate::clock::{Clock, rfc3339};
+use crate::condition::{self, Condition};
 use crate::diff::diff;
 use crate::envelope::{
     self, EXIT_ERROR, EXIT_FORGOTTEN, Envelope, ErrorKind, Forge, Outcome, Summary,
@@ -42,7 +43,7 @@ impl<'a> Backends<'a> {
 #[derive(Debug)]
 pub struct UsageError(pub String);
 
-/// Watches the targets until one wakes, times out or fails; prints, saves and returns the exit code.
+/// Watches the targets until one wakes, they meet the conditions, it times out, or one fails; prints, saves and returns the exit code.
 pub fn run(
     args: &Args,
     backends: &Backends,
@@ -227,7 +228,8 @@ impl<'a> Watch<'a> {
         }
     }
 
-    /// Runs round after round until one wakes or fails, or every call is due past the deadline.
+    /// Runs round after round until one wakes or fails, the targets meet the conditions, or every
+    /// call is due past the deadline.
     fn run(
         &mut self,
         args: &Args,
@@ -240,6 +242,9 @@ impl<'a> Watch<'a> {
             if let Some(ended) = self.round(args, backends, clock, file, stderr)? {
                 return Ok(ended);
             }
+            if self.met(&args.until) {
+                return Ok(Envelope::ended(Outcome::Met));
+            }
             let next = self.next_call();
             if self
                 .schedule
@@ -250,6 +255,17 @@ impl<'a> Watch<'a> {
             }
             clock.sleep_until(next);
         }
+    }
+
+    /// Whether there are conditions and every target's latest poll meets them.
+    fn met(&self, conditions: &[Condition]) -> bool {
+        !conditions.is_empty()
+            && self.pending.is_empty()
+            && self.tracked.iter().all(|tracked| {
+                tracked.polled.as_ref().is_some_and(|snapshot| {
+                    condition::met(conditions, &Summary::new(&tracked.target, snapshot))
+                })
+            })
     }
 
     fn next_call(&self) -> SystemTime {
@@ -287,7 +303,7 @@ impl<'a> Watch<'a> {
     ) -> io::Result<Option<Envelope>> {
         let mut failed = None;
         if self
-            .resolve_due(backends, clock, file, stderr, &mut failed)
+            .resolve_due(args, backends, clock, file, stderr, &mut failed)
             .is_break()
             || self
                 .look_up_due(backends, clock, stderr, &mut failed)
@@ -349,6 +365,9 @@ impl<'a> Watch<'a> {
             };
             let (mut seen, next) = diff(baseline, poll, now);
             tracked.polled = Some(next);
+            if args.on.is_empty() && !args.until.is_empty() {
+                continue;
+            }
             let me = viewer_on(viewers, host).and_then(|viewer| viewer.id.as_deref());
             seen.retain(|event| rule::wakes(&args.on, &args.ignore, event, me));
             if seen.is_empty() {
@@ -378,6 +397,7 @@ impl<'a> Watch<'a> {
     /// breaks when the deadline killed a call.
     fn resolve_due(
         &mut self,
+        args: &Args,
         backends: &Backends,
         clock: &impl Clock,
         file: &mut SnapshotFile,
@@ -420,6 +440,10 @@ impl<'a> Watch<'a> {
             let pending = self.pending.remove(index);
             if let Err(failure) = target::check_host(pending.given, &pending.reference, &target) {
                 failed.get_or_insert(Envelope::from_failure(failure, pending.given));
+                continue;
+            }
+            if !condition::fit(&args.until, target.kind) {
+                failed.get_or_insert(unfit(&target));
                 continue;
             }
             self.track(file, target, pending.order, now);
@@ -490,6 +514,18 @@ impl<'a> Watch<'a> {
         }
         self.tracked.sort_by_key(|tracked| tracked.order);
     }
+}
+
+fn unfit(target: &Target) -> Envelope {
+    Envelope::failed(envelope::Error {
+        kind: ErrorKind::ConditionUnfit,
+        forge: Some(target.forge),
+        target: Some(target.url.clone()),
+        message: format!(
+            "{} can't meet any --until: an issue or Slack thread has only a state",
+            target.url
+        ),
+    })
 }
 
 /// Records `fallout` in `failed`, breaking when the deadline killed the call.
@@ -756,7 +792,10 @@ mod tests {
     use super::*;
     use crate::envelope::{BRIEF_BODY_CHARS, Forge};
     use crate::exec::{Output, Script};
-    use crate::forge::{Account, Merge, Poll, TargetKind, TargetState, octocat, poll};
+    use crate::forge::{
+        Absence, Account, Assessment, Check, Ci, Merge, Poll, TargetKind, TargetState, octocat,
+        poll,
+    };
     use crate::reference::{self, Locus, Reference};
 
     const ENTERPRISE: &str = "https://ghe.example.com/o/r/pull/3";
@@ -805,24 +844,28 @@ mod tests {
             let Reference {
                 forge,
                 host,
-                locus: Locus::Numbered {
-                    number, project, ..
-                },
+                locus:
+                    Locus::Numbered {
+                        kind,
+                        number,
+                        project,
+                    },
                 ..
             } = reference
             else {
                 unreachable!("the run tests name no Slack thread");
             };
-            let (id, path) = match forge {
-                Forge::GitHub => ("PR", "pull"),
-                Forge::GitLab => ("MR", "-/merge_requests"),
-                Forge::Slack => unreachable!("the run tests name no Slack thread"),
+            let (id, path) = match (forge, kind) {
+                (Forge::GitHub, TargetKind::ChangeRequest) => ("PR", "pull"),
+                (Forge::GitHub, TargetKind::Issue) => ("I", "issues"),
+                (Forge::GitLab, _) => ("MR", "-/merge_requests"),
+                (Forge::Slack, _) => unreachable!("the run tests name no Slack thread"),
             };
             let target = Target {
                 forge: *forge,
                 forge_id: format!("{id}_{number}"),
                 host: host.clone(),
-                kind: TargetKind::ChangeRequest,
+                kind: *kind,
                 url: format!("https://{host}/{project}/{path}/{number}"),
             };
             Ok((target, hints))
@@ -965,6 +1008,7 @@ mod tests {
             brief: false,
             ignore: Vec::new(),
             on: Vec::new(),
+            until: Vec::new(),
             targets: targets
                 .iter()
                 .map(|target| reference::parse_name(target).unwrap())
@@ -1080,6 +1124,7 @@ mod tests {
             "state": "open",
             "head": "abc123",
             "colour": null,
+            "absent_ci": false,
             "merge": null,
             "unresolved_threads": 0,
         })
@@ -2522,5 +2567,247 @@ mod tests {
             saved(&sandbox.snapshot())["targets"][URL]["snapshot"],
             json!(poll(&["1", "2"]))
         );
+    }
+
+    const ISSUE: &str = "https://github.com/o/r/issues/7";
+
+    fn until(args: Args, conditions: &[&str]) -> Args {
+        Args {
+            until: conditions
+                .iter()
+                .map(|given| condition::parse(given).unwrap())
+                .collect(),
+            ..args
+        }
+    }
+
+    fn with_ci(ids: &[&str], assessment: Assessment) -> Poll {
+        Poll {
+            ci: Some(Ci {
+                checks: vec![Check {
+                    assessment,
+                    conclusion: format!("{assessment:?}").to_lowercase(),
+                    deciding: true,
+                    job_id: None,
+                    name: "check".to_owned(),
+                    url: None,
+                }],
+                required_known: true,
+            }),
+            ..poll(ids)
+        }
+    }
+
+    fn green() -> Poll {
+        with_ci(&["1"], Assessment::Passed)
+    }
+
+    fn pending() -> Poll {
+        with_ci(&["1"], Assessment::Pending)
+    }
+
+    fn coloured(url: &str, colour: Option<&str>) -> Value {
+        let mut summary = summary(url);
+        summary["colour"] = json!(colour);
+        summary
+    }
+
+    const SETTLED: &str = "colour=green,red,amber";
+
+    #[test]
+    fn a_wait_for_settled_ci_that_has_settled_ends_met_after_the_first_poll() {
+        let sandbox = Sandbox::new("met-at-once");
+        let args = until(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
+
+        let traced = trace(&args, vec![returns(URL, green())]);
+
+        assert_eq!(traced.code, 0);
+        assert_eq!(
+            traced.envelope,
+            json!({
+                "outcome": "met",
+                "events": [],
+                "targets": [coloured(URL, Some("green"))],
+                "error": null,
+            }),
+        );
+        assert_eq!(
+            saved(&sandbox.snapshot())["targets"][URL]["snapshot"]["reported"]["colour"],
+            "green"
+        );
+    }
+
+    #[test]
+    fn a_wait_for_settled_ci_that_is_running_ends_met_on_the_poll_it_settles() {
+        let sandbox = Sandbox::new("met-later");
+        let args = until(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
+
+        let traced = trace(&args, vec![returns(URL, pending()), returns(URL, green())]);
+
+        assert_eq!(traced.code, 0);
+        assert_eq!(seconds(&traced), [0, 30]);
+        assert_eq!(traced.envelope["outcome"], "met");
+        assert_eq!(
+            traced.envelope["targets"],
+            json!([coloured(URL, Some("green"))])
+        );
+    }
+
+    #[test]
+    fn a_round_that_wakes_and_meets_the_conditions_ends_woke() {
+        let sandbox = Sandbox::new("woke-over-met");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let args = Args {
+            on: vec![rule::parse("comment.*").unwrap()],
+            ..until(args(&[URL], &sandbox.snapshot(), None), &[SETTLED])
+        };
+
+        let (code, envelope) = watch(
+            &args,
+            vec![returns(URL, with_ci(&["1", "2"], Assessment::Passed))],
+        );
+
+        assert_eq!(code, 0);
+        assert_eq!(envelope["outcome"], "woke");
+        assert_eq!(envelope["events"][0]["kind"], "comment.created");
+    }
+
+    #[test]
+    fn a_wait_with_conditions_and_no_rule_wakes_on_no_event() {
+        let sandbox = Sandbox::new("until-no-on");
+        seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
+        let args = until(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
+
+        let pushed = Poll {
+            head: Some("def456".to_owned()),
+            ..with_ci(&["1", "2"], Assessment::Pending)
+        };
+        let settled = Poll {
+            head: Some("def456".to_owned()),
+            ..with_ci(&["1", "2"], Assessment::Passed)
+        };
+        let traced = trace(&args, vec![returns(URL, pushed), returns(URL, settled)]);
+
+        assert_eq!(seconds(&traced), [0, 30]);
+        assert_eq!(traced.envelope["outcome"], "met");
+        assert_eq!(traced.envelope["events"], json!([]));
+    }
+
+    #[test]
+    fn several_targets_meet_the_conditions_only_once_every_one_does() {
+        let sandbox = Sandbox::new("met-several");
+        let args = until(args(&[URL, OTHER], &sandbox.snapshot(), None), &[SETTLED]);
+
+        let traced = trace(
+            &args,
+            vec![
+                returns(URL, green()),
+                returns(OTHER, pending()),
+                returns(URL, green()),
+                returns(OTHER, green()),
+            ],
+        );
+
+        assert_eq!(seconds(&traced), [0, 0, 30, 30]);
+        assert_eq!(traced.envelope["outcome"], "met");
+        assert_eq!(
+            traced.envelope["targets"],
+            json!([coloured(URL, Some("green")), coloured(OTHER, Some("green"))]),
+        );
+    }
+
+    #[test]
+    fn a_target_still_resolving_holds_the_conditions_unmet() {
+        let sandbox = Sandbox::new("met-pending");
+        let args = until(args(&[URL, OTHER], &sandbox.snapshot(), None), &[SETTLED]);
+        let startup = Startup {
+            resolves: vec![Ok(Hints::default()), Err(transient("timeout"))],
+            ..Startup::default()
+        };
+
+        let traced = trace_starting(
+            &args,
+            startup,
+            vec![
+                returns(URL, green()),
+                returns(URL, green()),
+                returns(OTHER, green()),
+            ],
+        );
+
+        assert_eq!(seconds(&traced), [0, 30, 30]);
+        assert_eq!(traced.envelope["outcome"], "met");
+    }
+
+    #[test]
+    fn an_issue_cannot_meet_a_condition_on_ci_but_can_on_its_state() {
+        let sandbox = Sandbox::new("unfit");
+        let closed = Poll {
+            head: None,
+            state: TargetState::Closed,
+            ..poll(&[])
+        };
+
+        let (code, unfit) = watch(
+            &until(args(&[ISSUE], &sandbox.snapshot(), None), &["colour=green"]),
+            Vec::new(),
+        );
+        let (_, fits) = watch(
+            &until(
+                args(&[ISSUE], &sandbox.snapshot(), None),
+                &["colour=green", "state=closed,merged"],
+            ),
+            vec![returns(ISSUE, closed)],
+        );
+
+        assert_eq!(code, 1);
+        assert_eq!(unfit["error"]["kind"], "condition_unfit");
+        assert_eq!(unfit["error"]["target"], ISSUE);
+        assert_eq!(fits["outcome"], "met");
+    }
+
+    #[test]
+    fn absent_ci_an_earlier_run_reported_still_meets_a_later_wait() {
+        let sandbox = Sandbox::new("absent-later");
+        let no_ci = Poll {
+            ci: None,
+            ..poll(&["1"])
+        };
+        let mut reported = Snapshot::first(no_ci.clone(), UNIX_EPOCH);
+        reported.reported.absence = Some(Absence::Reported);
+        SnapshotFile::open(&sandbox.snapshot())
+            .unwrap()
+            .save([Entry {
+                forge_id: NODE_ID.to_owned(),
+                url: URL.to_owned(),
+                snapshot: reported,
+            }])
+            .unwrap();
+        let args = until(args(&[URL], &sandbox.snapshot(), None), &["absent_ci=true"]);
+
+        let traced = trace(&args, vec![returns(URL, no_ci)]);
+
+        assert_eq!(traced.code, 0);
+        assert_eq!(traced.envelope["outcome"], "met");
+        assert_eq!(traced.envelope["targets"][0]["absent_ci"], true);
+    }
+
+    #[test]
+    fn timeout_zero_ends_met_on_a_first_poll_meeting_the_conditions_and_timed_out_otherwise() {
+        let met = Sandbox::new("once-met");
+        let unmet = Sandbox::new("once-unmet");
+        let once = |sandbox: &Sandbox| {
+            until(
+                args(&[URL], &sandbox.snapshot(), Some(0)),
+                &["colour=green"],
+            )
+        };
+
+        let (met_code, met_envelope) = watch(&once(&met), vec![returns(URL, green())]);
+        let (unmet_code, unmet_envelope) = watch(&once(&unmet), vec![returns(URL, pending())]);
+
+        assert_eq!((met_code, &met_envelope["outcome"]), (0, &json!("met")));
+        assert_eq!(unmet_code, 3);
+        assert_eq!(unmet_envelope, timed_out(&[coloured(URL, None)]));
     }
 }

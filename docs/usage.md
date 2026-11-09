@@ -1,13 +1,13 @@
 # Using babysit
 
-babysit watches one or more targets, waits for an event its rules care about, prints one JSON
-envelope on stdout, and exits. Run it again with the same `--snapshot` and it picks up where the
+babysit watches one or more targets, waits for an event its rules care about or for their state
+to meet its conditions, prints one JSON envelope on stdout, and exits. Run it again with the same `--snapshot` and it picks up where the
 last run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
 
 ## Invocation
 
 ```sh
-babysit [--on RULE]... [--ignore RULE]... --snapshot PATH [--interval DURATION] [--timeout DURATION] [--brief] TARGET...
+babysit [--on RULE]... [--ignore RULE]... [--until CONDITION]... --snapshot PATH [--interval DURATION] [--timeout DURATION] [--brief] TARGET...
 babysit forget --snapshot PATH
 ```
 
@@ -16,8 +16,9 @@ The first form is a run; `forget` deletes a snapshot file (see
 
 | Flag                   | Default | Meaning                                                                                 |
 | ---------------------- | ------- | --------------------------------------------------------------------------------------- |
-| `--on <RULE>`          | none    | Wake only on events matching at least one such rule; repeatable. Without one, every event wakes. |
+| `--on <RULE>`          | none    | Wake only on events matching at least one such rule; repeatable. Without one, every event wakes, unless there is an `--until`. |
 | `--ignore <RULE>`      | none    | Never wake on an event matching this rule, even one an `--on` rule matches; repeatable  |
+| `--until <CONDITION>`  | none    | End the run once every target meets at least one such condition (see [Conditions](#conditions)); repeatable |
 | `--snapshot <PATH>`    | required | The file that keeps what babysit has seen between runs                                 |
 | `--interval <DURATION>` | `30s`  | Time between polls of each target; must be longer than zero                             |
 | `--timeout <DURATION>` | none    | Wall-clock cap on the run; `0` polls each target once                                   |
@@ -123,6 +124,42 @@ Examples:
 --ignore 'actor=gitar-bot[bot]'                         # never wake on this bot
 ```
 
+## Conditions
+
+A condition tests a target's current state, as its summary in `targets[]` shows it (see
+[Output](#output)), rather than its events. It is one argument, written as a rule with no kind
+pattern: `field=value` terms separated by spaces, all of which must hold, with commas as
+alternatives inside a term and the same quoting. A field appears at most once per condition, and a
+malformed condition or an unknown field is a usage error.
+
+| Field                | Values                                                  |
+| -------------------- | ------------------------------------------------------- |
+| `state`              | `open`, `closed`, `merged`                              |
+| `colour`             | `amber`, `green`, `red`                                 |
+| `absent_ci`          | `true`, `false`                                         |
+| `merge`              | `clean`, `behind`, `conflicted`                         |
+| `unresolved_threads` | a whole number                                          |
+
+- **A target meets** the run's conditions when its summary passes at least one `--until`; repeated
+  `--until` conditions are ORed. A field the summary holds as `null` matches no value.
+- **The run's conditions are met** once every target meets them. babysit checks after every round,
+  the first poll's included, so a condition that already holds ends the run after one round:
+  unlike a rule, a condition sees what was already true.
+- **A met run** prints `outcome: "met"` with empty `events` and exits 0. It saves each target's
+  latest baseline, as a `timed_out` run does, so the events of its last round count as seen.
+- **With rules**, whichever comes first ends the run. When one round both wakes and meets the
+  conditions, it ends `woke`. A run with `--until` and no `--on` wakes on no event at all.
+- **Only a pull or merge request** carries `colour`, `absent_ci`, `merge`, and
+  `unresolved_threads`. An issue or Slack thread none of whose conditions tests `state` alone can
+  never meet them, so the run ends with `condition_unfit` once the target resolves.
+
+Waiting for CI to settle or prove absent, or the target to merge or close, takes one run:
+
+```sh
+babysit --snapshot .babysit.json --until 'colour=green,red,amber' --until 'absent_ci=true' \
+  --on 'state.*' https://github.com/brzzdev/babysit-sandbox/pull/1
+```
+
 ## Events
 
 Every event prints as a JSON object: the fields of its kind, then the common ones.
@@ -196,7 +233,9 @@ green.
 no GitHub check run, status, or held workflow, and no GitLab pipeline. It is reported once per
 head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
 reports the head again. A push starts the clock again for the new head, and so does reopening the
-target. A check reporting after `ci.absent` settles CI as usual, with `ci.settled`.
+target. A check reporting after `ci.absent` settles CI as usual, with `ci.settled`. A target
+summary's `absent_ci` is `true` from `ci.absent` until a check reports or a push or reopening
+restarts the clock, on later runs sharing the `--snapshot` too.
 
 The **deciding checks** are, on GitHub, the base branch's required checks when it has any and every
 check when it has none; on GitLab, every job not allowed to fail, or the pipeline itself when no
@@ -225,7 +264,7 @@ stdout carries exactly one envelope, pretty-printed JSON:
 
 | Field     | Value                                                                                         |
 | --------- | --------------------------------------------------------------------------------------------- |
-| `outcome` | `woke`, `timed_out`, or `error`                                                               |
+| `outcome` | `woke`, `met`, `timed_out`, or `error`                                                        |
 | `events`  | The events that woke the run, across every target; empty unless `woke`                       |
 | `targets` | A summary of each target polled successfully in this run, in the order given                 |
 | `error`   | `null`, or the error that ended the run; a wake in the same round wins over it                |
@@ -234,7 +273,8 @@ A target summary is `target` and `state` (`open`, `closed`, or `merged`). A pull
 adds `head`, its head commit; `colour`, the CI colour reported for that head or `null` while
 unsettled; `merge`, the last known of `clean`, `behind`, or `conflicted`, which stays put while the
 forge recomputes it and is `null` until first known or once the target isn't open; and
-`unresolved_threads`. An issue's or Slack thread's summary has only `target` and `state`, and a
+`unresolved_threads`. Between `colour` and `merge`, it has `absent_ci`: `true` while its head is
+absent CI, else `false`. An issue's or Slack thread's summary has only `target` and `state`, and a
 Slack thread is always `open`.
 
 The examples below come from a live GitHub pull request and issue, recorded in
@@ -276,6 +316,7 @@ didn't match, so it's left out:
       "state": "open",
       "head": "683bf59580d1f4e7a42d6aa1d918477aa94b1730",
       "colour": "green",
+      "absent_ci": false,
       "merge": "clean",
       "unresolved_threads": 1
     }
@@ -316,6 +357,7 @@ A wake on red CI. The event about the target as a whole carries no `at` or `acto
       "state": "open",
       "head": "54dcdb220c6c950e4d0327cd38867b7cee7b3b9e",
       "colour": "red",
+      "absent_ci": false,
       "merge": "clean",
       "unresolved_threads": 0
     }
@@ -343,6 +385,30 @@ only records their baselines. The issue's summary has no pull request fields, an
       "state": "open",
       "head": "54dcdb220c6c950e4d0327cd38867b7cee7b3b9e",
       "colour": null,
+      "absent_ci": false,
+      "merge": "clean",
+      "unresolved_threads": 0
+    }
+  ],
+  "error": null
+}
+```
+
+A first run with `--until 'colour=green,red,amber'` on a pull request whose CI has already
+settled, which ends after one round:
+
+<!-- checked: met -->
+```json
+{
+  "outcome": "met",
+  "events": [],
+  "targets": [
+    {
+      "target": "https://github.com/brzzdev/babysit-sandbox/pull/1",
+      "state": "open",
+      "head": "683bf59580d1f4e7a42d6aa1d918477aa94b1730",
+      "colour": "green",
+      "absent_ci": false,
       "merge": "clean",
       "unresolved_threads": 0
     }
@@ -373,12 +439,14 @@ A target the forge can't find:
 | Exit | Outcome     | Meaning                                                                    |
 | ---- | ----------- | -------------------------------------------------------------------------- |
 | 0    | `woke`      | At least one event matched the rules                                       |
+| 0    | `met`       | Every target met the conditions                                            |
 | 0    | none        | `forget` deleted the snapshot file, or there was nothing to delete         |
 | 1    | `error`     | babysit failed; `error` says why                                           |
 | 2    | none        | A usage error: the message is on stderr and **no envelope** is printed     |
-| 3    | `timed_out` | `--timeout` passed without a wake                                          |
+| 3    | `timed_out` | `--timeout` passed without a wake or the conditions being met              |
 
-Usage errors are found before any forge is polled: a malformed flag, rule, duration, or target; a
+Usage errors are found before any forge is polled: a malformed flag, rule, condition, duration, or
+target; a
 checkout reference babysit can't place; a duration past what the clock can hold; or a `--snapshot`
 file that isn't a babysit snapshot file of this version (for `forget`, one that isn't a babysit
 snapshot file at all).
@@ -393,6 +461,7 @@ humans.
 | ------------------ | -------------------------------------------------------------------------------------------- |
 | `auth`             | The CLI isn't signed in or was refused (401, 403), both `gh` and `glab` hold a token for a checkout remote's host, or `BABYSIT_SLACK_TOKEN` is unset or refused |
 | `cli_missing`      | `gh`, `glab`, `git`, or `curl` isn't installed or not on `PATH`, or `curl` is older than 8.3 |
+| `condition_unfit`  | The target is an issue or Slack thread, and every `--until` tests a field only a pull or merge request carries |
 | `lock_held`        | Another babysit run holds the `--snapshot` file                                              |
 | `poll_failed`      | A call to the forge failed 10 times in a row for one target, once under `--timeout 0`, or once on Slack's `invalid_arguments` |
 | `snapshot_io`      | The `--snapshot` file couldn't be read, locked, or written                                   |
@@ -408,9 +477,10 @@ again. Each call to a CLI gets 60 seconds. A rate limit isn't a failure: babysit
 15 minutes, and notes the wait on stderr. Other hosts keep polling meanwhile.
 
 With `--timeout`, the run ends `timed_out` once the next call would be due past the deadline, or
-when the deadline kills a call in flight. `--timeout 0` makes one round of calls: each target is
+when the deadline kills a call in flight, unless the conditions were met first. `--timeout 0` makes one round of calls: each target is
 resolved and polled once, nothing waits out a rate limit (a run that only hit one ends
-`timed_out`), and a call that would have been retried fails the run as `poll_failed` instead.
+`timed_out`), and a call that would have been retried fails the run as `poll_failed` instead. A
+round meeting the conditions ends it `met`.
 
 ## Slack
 
@@ -448,6 +518,7 @@ forget it to start over.
 - **The first poll only records a baseline.** A target with no entry is polled once and that
   snapshot saved at once, without reporting anything: what is already true, such as red CI or an
   open thread, never wakes. A run without `--timeout 0` then keeps polling and wakes on new events.
+  A condition still tests that first poll, so it can end the run `met`.
 - **Ignored events count as seen.** Each poll moves the run's baseline on, whether or not its
   events woke the run, and the run saves that baseline when it ends, so an event your rules didn't
   match won't come back on a later run with other rules. On a wake, only the targets polled in the
