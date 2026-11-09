@@ -799,8 +799,10 @@ mod tests {
     use crate::reference::{self, Locus, Reference};
 
     const ENTERPRISE: &str = "https://ghe.example.com/o/r/pull/3";
+    const ISSUE: &str = "https://github.com/o/r/issues/7";
     const NODE_ID: &str = "PR_1";
     const OTHER: &str = "https://github.com/o/r/pull/2";
+    const SETTLED: &str = "colour=green,red,amber";
     const STARTED: u64 = 1_792_523_957;
     const URL: &str = "https://github.com/o/r/pull/1";
     const VIEWER_ID: &str = "U_1";
@@ -2578,9 +2580,7 @@ mod tests {
         );
     }
 
-    const ISSUE: &str = "https://github.com/o/r/issues/7";
-
-    fn until(args: Args, conditions: &[&str]) -> Args {
+    fn with_conditions(args: Args, conditions: &[&str]) -> Args {
         Args {
             until: conditions
                 .iter()
@@ -2611,12 +2611,10 @@ mod tests {
         summary
     }
 
-    const SETTLED: &str = "colour=green,red,amber";
-
     #[test]
     fn a_wait_for_settled_ci_that_has_settled_ends_met_after_the_first_poll() {
         let sandbox = Sandbox::new("met-at-once");
-        let args = until(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
+        let args = with_conditions(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
 
         let traced = trace(&args, vec![returns(URL, green())]);
 
@@ -2639,7 +2637,7 @@ mod tests {
     #[test]
     fn a_wait_for_settled_ci_that_is_running_ends_met_on_the_poll_it_settles() {
         let sandbox = Sandbox::new("met-later");
-        let args = until(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
+        let args = with_conditions(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
 
         let traced = trace(&args, vec![returns(URL, pending()), returns(URL, green())]);
 
@@ -2658,7 +2656,7 @@ mod tests {
         seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
         let args = Args {
             on: vec![rule::parse("comment.*").unwrap()],
-            ..until(args(&[URL], &sandbox.snapshot(), None), &[SETTLED])
+            ..with_conditions(args(&[URL], &sandbox.snapshot(), None), &[SETTLED])
         };
 
         let (code, envelope) = watch(
@@ -2675,7 +2673,7 @@ mod tests {
     fn a_wait_with_conditions_and_no_rule_wakes_on_no_event() {
         let sandbox = Sandbox::new("until-no-on");
         seed(&sandbox.snapshot(), URL, NODE_ID, &["1"]);
-        let args = until(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
+        let args = with_conditions(args(&[URL], &sandbox.snapshot(), None), &[SETTLED]);
 
         let pushed = Poll {
             head: Some("def456".to_owned()),
@@ -2695,7 +2693,7 @@ mod tests {
     #[test]
     fn several_targets_meet_the_conditions_only_once_every_one_does() {
         let sandbox = Sandbox::new("met-several");
-        let args = until(args(&[URL, OTHER], &sandbox.snapshot(), None), &[SETTLED]);
+        let args = with_conditions(args(&[URL, OTHER], &sandbox.snapshot(), None), &[SETTLED]);
 
         let traced = trace(
             &args,
@@ -2718,7 +2716,7 @@ mod tests {
     #[test]
     fn a_target_still_resolving_holds_the_conditions_unmet() {
         let sandbox = Sandbox::new("met-pending");
-        let args = until(args(&[URL, OTHER], &sandbox.snapshot(), None), &[SETTLED]);
+        let args = with_conditions(args(&[URL, OTHER], &sandbox.snapshot(), None), &[SETTLED]);
         let startup = Startup {
             resolves: vec![Ok(Hints::default()), Err(transient("timeout"))],
             ..Startup::default()
@@ -2748,11 +2746,11 @@ mod tests {
         };
 
         let (code, unfit) = watch(
-            &until(args(&[ISSUE], &sandbox.snapshot(), None), &["colour=green"]),
+            &with_conditions(args(&[ISSUE], &sandbox.snapshot(), None), &["colour=green"]),
             Vec::new(),
         );
         let (_, fits) = watch(
-            &until(
+            &with_conditions(
                 args(&[ISSUE], &sandbox.snapshot(), None),
                 &["colour=green", "state=closed,merged"],
             ),
@@ -2775,7 +2773,7 @@ mod tests {
         let mut reported = Snapshot::first(no_ci.clone(), UNIX_EPOCH);
         reported.reported.absence = Some(Absence::Reported);
         seed_snapshot(&sandbox.snapshot(), URL, NODE_ID, reported);
-        let args = until(args(&[URL], &sandbox.snapshot(), None), &["absent_ci=true"]);
+        let args = with_conditions(args(&[URL], &sandbox.snapshot(), None), &["absent_ci=true"]);
 
         let traced = trace(&args, vec![returns(URL, no_ci)]);
 
@@ -2789,7 +2787,7 @@ mod tests {
         let met = Sandbox::new("once-met");
         let unmet = Sandbox::new("once-unmet");
         let once = |sandbox: &Sandbox| {
-            until(
+            with_conditions(
                 args(&[URL], &sandbox.snapshot(), Some(0)),
                 &["colour=green"],
             )

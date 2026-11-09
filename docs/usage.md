@@ -1,8 +1,8 @@
 # Using babysit
 
 babysit watches one or more targets, waits for an event its rules care about or for their state
-to meet its conditions, prints one JSON envelope on stdout, and exits. Run it again with the same `--snapshot` and it picks up where the
-last run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
+to meet its conditions, prints one JSON envelope on stdout, and exits. Run it again with the same
+`--snapshot` and it picks up where the last run ended. Terms follow [`GLOSSARY.md`](../GLOSSARY.md).
 
 ## Invocation
 
@@ -134,10 +134,10 @@ malformed condition or an unknown field is a usage error.
 
 | Field                | Values                                                  |
 | -------------------- | ------------------------------------------------------- |
-| `state`              | `open`, `closed`, `merged`                              |
+| `state`              | `closed`, `merged`, `open`                              |
 | `colour`             | `amber`, `green`, `red`                                 |
-| `absent_ci`          | `true`, `false`                                         |
-| `merge`              | `clean`, `behind`, `conflicted`                         |
+| `absent_ci`          | `false`, `true`                                         |
+| `merge`              | `behind`, `clean`, `conflicted`                         |
 | `unresolved_threads` | a whole number                                          |
 
 - **A target meets** the run's conditions when its summary passes at least one `--until`; repeated
@@ -234,8 +234,9 @@ no GitHub check run, status, or held workflow, and no GitLab pipeline. It is rep
 head, and runs that share a `--snapshot` share its clock, so a later run neither restarts it nor
 reports the head again. A push starts the clock again for the new head, and so does reopening the
 target. A check reporting after `ci.absent` settles CI as usual, with `ci.settled`. A target
-summary's `absent_ci` is `true` from `ci.absent` until a check reports or a push or reopening
-restarts the clock, on later runs sharing the `--snapshot` too.
+summary's `absent_ci` is `true` while the target is open and its head, reported by `ci.absent`, has
+had no check report since, on later runs sharing the `--snapshot` too. A push clears it; a
+reopening doesn't, since that head was already reported.
 
 The **deciding checks** are, on GitHub, the base branch's required checks when it has any and every
 check when it has none; on GitLab, every job not allowed to fail, or the pipeline itself when no
@@ -273,9 +274,9 @@ A target summary is `target` and `state` (`open`, `closed`, or `merged`). A pull
 adds `head`, its head commit; `colour`, the CI colour reported for that head or `null` while
 unsettled; `merge`, the last known of `clean`, `behind`, or `conflicted`, which stays put while the
 forge recomputes it and is `null` until first known or once the target isn't open; and
-`unresolved_threads`. Between `colour` and `merge`, it has `absent_ci`: `true` while its head is
-absent CI, else `false`. An issue's or Slack thread's summary has only `target` and `state`, and a
-Slack thread is always `open`.
+`unresolved_threads`. Between `colour` and `merge`, it has `absent_ci`: `true` while it is open and
+its head is absent CI, else `false`. An issue's or Slack thread's summary has only `target` and
+`state`, and a Slack thread is always `open`.
 
 The examples below come from a live GitHub pull request and issue, recorded in
 `src/github/fixtures/`. The test `the_usage_reference_examples_are_what_babysit_prints` in
@@ -446,10 +447,9 @@ A target the forge can't find:
 | 3    | `timed_out` | `--timeout` passed without a wake or the conditions being met              |
 
 Usage errors are found before any forge is polled: a malformed flag, rule, condition, duration, or
-target; a
-checkout reference babysit can't place; a duration past what the clock can hold; or a `--snapshot`
-file that isn't a babysit snapshot file of this version (for `forget`, one that isn't a babysit
-snapshot file at all).
+target; a checkout reference babysit can't place; a duration past what the clock can hold; or a
+`--snapshot` file that isn't a babysit snapshot file of this version (for `forget`, one that isn't a
+babysit snapshot file at all).
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a
 forge's, such as the snapshot file, or `git`, `gh auth token`, or `glab config get token` failing
@@ -477,10 +477,10 @@ again. Each call to a CLI gets 60 seconds. A rate limit isn't a failure: babysit
 15 minutes, and notes the wait on stderr. Other hosts keep polling meanwhile.
 
 With `--timeout`, the run ends `timed_out` once the next call would be due past the deadline, or
-when the deadline kills a call in flight, unless the conditions were met first. `--timeout 0` makes one round of calls: each target is
-resolved and polled once, nothing waits out a rate limit (a run that only hit one ends
-`timed_out`), and a call that would have been retried fails the run as `poll_failed` instead. A
-round meeting the conditions ends it `met`.
+when the deadline kills a call in flight, unless the conditions were met first. `--timeout 0`
+makes one round of calls: each target is resolved and polled once, nothing waits out a rate limit
+(a run that only hit one ends `timed_out`), and a call that would have been retried fails the run
+as `poll_failed` instead. A round meeting the conditions ends it `met`.
 
 ## Slack
 

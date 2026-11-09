@@ -188,8 +188,9 @@ impl Summary {
             change: (target.kind == TargetKind::ChangeRequest).then(|| ChangeSummary {
                 head: poll.head.clone(),
                 colour: snapshot.reported.colour,
-                absent_ci: snapshot.reported.absence == Some(Absence::Reported)
-                    && poll.ci.is_none(),
+                absent_ci: poll.state == TargetState::Open
+                    && poll.ci.is_none()
+                    && snapshot.reported.absence == Some(Absence::Reported),
                 merge: snapshot
                     .reported
                     .merge
@@ -211,7 +212,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::forge::{Poll, poll};
+    use crate::forge::{Poll, Reported, poll};
 
     fn shortened(body: &str) -> (String, bool) {
         let mut body = body.to_owned();
@@ -246,6 +247,41 @@ mod tests {
             (format!("{}…", "é".repeat(BRIEF_BODY_CHARS - 1)), true),
         );
         assert_eq!(shortened(at_limit), (at_limit.to_owned(), false));
+    }
+
+    #[test]
+    fn a_head_reported_absent_is_absent_ci_only_while_open_and_unchecked() {
+        let target = Target {
+            forge: Forge::GitHub,
+            forge_id: "PR_1".to_owned(),
+            host: "github.com".to_owned(),
+            kind: TargetKind::ChangeRequest,
+            url: "https://github.com/o/r/pull/1".to_owned(),
+        };
+        let reported = |poll: Poll| Snapshot {
+            reported: Reported {
+                absence: Some(Absence::Reported),
+                ..Reported::default()
+            },
+            poll,
+        };
+        let unchecked = || Poll {
+            ci: None,
+            ..poll(&[])
+        };
+        let absent_ci = |poll| {
+            Summary::new(&target, &reported(poll))
+                .change
+                .unwrap()
+                .absent_ci
+        };
+
+        assert!(absent_ci(unchecked()));
+        assert!(!absent_ci(poll(&[])));
+        assert!(!absent_ci(Poll {
+            state: TargetState::Merged,
+            ..unchecked()
+        }));
     }
 
     #[test]

@@ -78,7 +78,7 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
 | Exit | `outcome`   | Do                                                                              |
 | ---- | ----------- | ------------------------------------------------------------------------------- |
 | 0    | `woke`      | Act on `events`, then re-run                                                    |
-| 0    | `met`       | Every target meets an `--until`. Read `targets[]` for the state that met it, carry on, and forget the snapshot file |
+| 0    | `met`       | Every target meets an `--until`. Read `targets[]` for the state that met it, and carry on |
 | 1    | `error`     | Read `error.kind` (below). Exit 1 with `outcome: "woke"` means the save failed after printing: act on the events, and expect them again |
 | 2    | none        | A usage error: no envelope on stdout, the reason on stderr. Fix the command     |
 | 3    | `timed_out` | No wake before `--timeout`: step 2's usual exit, or recheck what the timeout was for, then re-run |
@@ -157,14 +157,15 @@ What bites:
 `--until` ends the run once every target's summary in `targets[]` passes one of its conditions,
 the first poll included, so a state that already holds ends the run at once with `met`. A
 condition is a rule with no kind pattern: `field=value` terms that must all hold, commas as
-alternatives, repeated `--until` ORed. Its fields are the summary's: `state` (`open`, `closed`,
-`merged`), and on a PR or MR only, `colour` (`amber`, `green`, `red`), `absent_ci` (`true`,
-`false`), `merge` (`clean`, `behind`, `conflicted`), and `unresolved_threads` (a number).
+alternatives, repeated `--until` ORed. Its fields are the summary's: `state` (`closed`, `merged`,
+`open`), and on a PR or MR only, `colour` (`amber`, `green`, `red`), `absent_ci` (`false`,
+`true`), `merge` (`behind`, `clean`, `conflicted`), and `unresolved_threads` (a number).
 
 - **With `--on`, whichever comes first ends the run**, and a round that does both ends `woke`.
 - **With no `--on`, the run ends only on `met`, `--timeout`, or an error.**
-- **`absent_ci` stays `true`** on later runs sharing the snapshot file, after an earlier run took
-  the `ci.absent` wake, until a check reports or a push restarts the clock.
+- **`absent_ci` stays `true`** while the PR or MR is open, on later runs sharing the snapshot file
+  after an earlier run took the `ci.absent` wake, until a check reports or a push restarts the
+  clock.
 
 ## Acting on a wake
 

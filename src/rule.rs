@@ -1,7 +1,11 @@
 use crate::diff::{Detail, Event};
-use crate::forge::Account;
+use crate::forge::{Account, Colour, ReviewState};
 
-const COLOURS: [(&str, &str); 3] = [("amber", "amber"), ("green", "green"), ("red", "red")];
+pub const COLOURS: [(&str, Colour); 3] = [
+    ("amber", Colour::Amber),
+    ("green", Colour::Green),
+    ("red", Colour::Red),
+];
 
 /// Every event kind in v1 with the fields it carries, including kinds no backend reports yet.
 const KINDS: [Kind; 16] = [
@@ -28,10 +32,10 @@ const KINDS: [Kind; 16] = [
 
 const QUOTE: char = '"';
 
-const STATES: [(&str, &str); 3] = [
-    ("approved", "approved"),
-    ("changes_requested", "changes_requested"),
-    ("commented", "commented"),
+const STATES: [(&str, ReviewState); 3] = [
+    ("approved", ReviewState::Approved),
+    ("changes_requested", ReviewState::ChangesRequested),
+    ("commented", ReviewState::Commented),
 ];
 
 type Kind = (&'static str, &'static [Field]);
@@ -57,7 +61,8 @@ enum Field {
 enum Term {
     Accounts(Field, Vec<Selector>),
     BodyPrefixes(Vec<String>),
-    Words(Field, Vec<&'static str>),
+    Colours(Vec<Colour>),
+    States(Vec<ReviewState>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,8 +191,8 @@ fn term(word: &str) -> Result<Term, String> {
             Term::Accounts(field, values.map(selector).collect::<Result<_, _>>()?)
         }
         Field::Body => Term::BodyPrefixes(values.map(body_prefix).collect::<Result<_, _>>()?),
-        Field::Colour => Term::Words(field, words(values, &COLOURS, field.name())?),
-        Field::State => Term::Words(field, words(values, &STATES, field.name())?),
+        Field::Colour => Term::Colours(words(values, &COLOURS, field.name())?),
+        Field::State => Term::States(words(values, &STATES, field.name())?),
     })
 }
 
@@ -316,8 +321,10 @@ impl Field {
 impl Term {
     fn field(&self) -> Field {
         match self {
-            Self::Accounts(field, _) | Self::Words(field, _) => *field,
+            Self::Accounts(field, _) => *field,
             Self::BodyPrefixes(_) => Field::Body,
+            Self::Colours(_) => Field::Colour,
+            Self::States(_) => Field::State,
         }
     }
 
@@ -332,9 +339,13 @@ impl Term {
                 .detail
                 .body()
                 .is_some_and(|body| prefixes.iter().any(|prefix| body.starts_with(prefix))),
-            Self::Words(field, words) => {
-                word(&event.detail, *field).is_some_and(|word| words.contains(&word.as_str()))
+            Self::Colours(colours) => {
+                matches!(&event.detail, Detail::CiSettled { colour, .. } if colours.contains(colour))
             }
+            Self::States(states) => matches!(
+                &event.detail,
+                Detail::ReviewSubmitted { state, .. } if states.contains(state)
+            ),
         }
     }
 }
@@ -358,20 +369,10 @@ fn account(event: &Event, field: Field) -> Option<&Account> {
     }
 }
 
-/// The field's value in its printed form.
-fn word(detail: &Detail, field: Field) -> Option<String> {
-    let value = match (field, detail) {
-        (Field::Colour, Detail::CiSettled { colour, .. }) => serde_json::to_value(colour),
-        (Field::State, Detail::ReviewSubmitted { state, .. }) => serde_json::to_value(state),
-        _ => return None,
-    };
-    value.ok()?.as_str().map(str::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::{Colour, Position, ReviewState};
+    use crate::forge::Position;
 
     fn event(detail: Detail) -> Event {
         Event {
