@@ -310,7 +310,7 @@ impl<E: Exec> GitLab<'_, E> {
             }
         }
         let pipeline = first.expect("every poll fetches a first page");
-        // With no merge for it to block, a skipped pipeline passes as a skipped job does.
+        // With no merge for it to block, a skipped pipeline passes as a skipped job in it does.
         let skipped_accepted = true;
         let ci = ci(&pipeline, jobs.nodes, &target.url, skipped_accepted);
         Ok(ci_target_poll(
@@ -1001,17 +1001,17 @@ struct Pipeline {
 }
 
 impl Pipeline {
-    fn newest(&self) -> Option<&str> {
-        let newest = self.newest.as_ref()?.nodes.first()?;
-        Some(newest.id.as_str())
-    }
-
     /// Whether GitLab ran the pipeline on a merge commit rather than on the head itself.
     fn merged(&self) -> bool {
         matches!(
             self.merge_request_event_type.as_deref(),
             Some(MERGED_RESULT | MERGE_TRAIN)
         )
+    }
+
+    fn newest(&self) -> Option<&str> {
+        let newest = self.newest.as_ref()?.nodes.first()?;
+        Some(newest.id.as_str())
     }
 }
 
@@ -2415,11 +2415,12 @@ mod tests {
             pipeline["status"] = json!("RUNNING");
         });
 
-        let colour = |stdout: &str| ci_poll(held, stdout).ci.and_then(|ci| ci.colour());
+        let blocked = ci_poll(held, stdout);
+        let running = ci_poll(held, &queued);
 
-        assert_eq!(colour(stdout), Some(Colour::Amber));
-        assert_eq!(colour(&queued), None);
-        assert_eq!(ci_poll(held, stdout).state, TargetState::Open);
+        assert_eq!(blocked.ci.and_then(|ci| ci.colour()), Some(Colour::Amber));
+        assert_eq!(blocked.state, TargetState::Open);
+        assert_eq!(running.ci.and_then(|ci| ci.colour()), None);
     }
 
     #[test]

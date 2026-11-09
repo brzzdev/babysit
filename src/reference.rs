@@ -234,7 +234,8 @@ fn is_ts(ts: &str) -> bool {
 
 /// A decimal number from 1 up, never zero-padded.
 fn parse_number(number: &str, given: &str) -> Result<u64, String> {
-    let invalid = || format!("`{number}` in `{given}` is not a positive number");
+    let invalid =
+        || format!("`{number}` in `{given}` is not a number from 1 up, without leading zeros");
     if number.starts_with('0') || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(invalid());
     }

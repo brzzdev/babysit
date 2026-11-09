@@ -167,7 +167,7 @@ malformed condition or an unknown field is a usage error.
 - **With rules**, whichever comes first ends the run. When one round both wakes and meets the
   conditions, it ends `woke`. A run with `--until` and no `--on` wakes on no event at all.
 - **Only a pull or merge request** carries `absent_ci`, `merge`, and `unresolved_threads`, and
-  only one, a job, or a pipeline carries `colour`. A target none of whose conditions tests only
+  only a pull or merge request, a job, or a pipeline carries `colour`. A target none of whose conditions tests only
   fields it carries can never meet them, so the run ends with `condition_unfit` once it resolves:
   `colour=green` on an issue or Slack thread, or `merge=clean` on a job.
 
@@ -298,7 +298,8 @@ usage error, it deletes any `FILE` an earlier run left, then writes `FILE.tmp` a
 envelope, never part of one, and never an earlier run's. stderr and the exit status are as without
 it. A usage error leaves `FILE` as it was, and a file that can't be written fails the run as a
 failed write to stdout does: exit 1, no file, and nothing saved to the snapshot file. A run killed
-before it ends leaves no file either.
+before it ends leaves no file either. `FILE.tmp` is babysit's: an existing file there is replaced,
+and a write that fails partway can leave it behind.
 
 | Field     | Value                                                                                         |
 | --------- | --------------------------------------------------------------------------------------------- |
@@ -513,7 +514,7 @@ Usage errors are found before any forge is polled: a malformed flag, rule, condi
 target; a checkout reference babysit can't place; a duration past what the clock can hold; or a
 `--snapshot` file that isn't a babysit snapshot file of this version (for `forget`, one that isn't a
 babysit snapshot file at all); or an `--out` whose file or `.tmp` is the snapshot file, its `.lock`,
-or its `.tmp`, by any spelling of the path.
+or its `.tmp`, by any path to the same file, a link or another letter case included.
 
 `error` holds `kind`; `forge` (`github`, `gitlab`, `slack`, or `null` for a failure that isn't a
 forge's, such as the snapshot file or `condition_unfit`, or `git`, `gh auth token`, or

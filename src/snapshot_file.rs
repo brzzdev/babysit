@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File, TryLockError};
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -150,8 +151,12 @@ pub fn collides(snapshot: &Path, out: &Path) -> bool {
         .any(|written| owned.iter().any(|owned| same_file(owned, written)))
 }
 
-/// Whether two paths name the same file, read through `.`, `..`, and symlinked directories.
+/// Whether two paths name the same file: by identity where both exist, which sees through case,
+/// links, and symlinks, and otherwise by path, read through `.`, `..`, and symlinked directories.
 fn same_file(a: &Path, b: &Path) -> bool {
+    if let (Ok(a), Ok(b)) = (fs::metadata(a), fs::metadata(b)) {
+        return (a.dev(), a.ino()) == (b.dev(), b.ino());
+    }
     a == b || resolved(a).is_some_and(|a| resolved(b) == Some(a))
 }
 
@@ -218,5 +223,27 @@ mod tests {
         for out in ["s.json.wait.json", "t.json"] {
             assert!(!collides(&snapshot, &dir.join(out)), "{out}");
         }
+    }
+
+    #[test]
+    fn an_out_file_reaching_the_snapshots_files_through_a_link_or_another_case_collides() {
+        let dir = std::env::temp_dir().join(format!("babysit-{}-collides", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let snapshot = dir.join("s.json");
+        fs::write(&snapshot, "{}").unwrap();
+        fs::write(lock_path(&snapshot), "").unwrap();
+        std::os::unix::fs::symlink(&snapshot, dir.join("linked.json.tmp")).unwrap();
+        fs::hard_link(lock_path(&snapshot), dir.join("lock")).unwrap();
+        let case_insensitive = dir.join("S.JSON").exists();
+
+        let linked = collides(&snapshot, &dir.join("linked.json"));
+        let hard_linked = collides(&snapshot, &dir.join("lock"));
+        let other_case = collides(&snapshot, &dir.join("S.json.lock"));
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(linked);
+        assert!(hard_linked);
+        assert_eq!(other_case, case_insensitive);
     }
 }
