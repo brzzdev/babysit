@@ -43,6 +43,11 @@ A forge account the forge itself flags as automated; an ordinary account driven 
 not one.
 _Avoid_: App, machine user
 
+**Condition**:
+A caller's test on a target's current state, rather than on its events. A run's conditions are
+met once every target passes one of them, which ends the run whether anything changed or not.
+_Avoid_: Predicate, goal, until
+
 **Event**:
 Something babysit saw happen on a target between two snapshots.
 _Avoid_: Change, update, notification
