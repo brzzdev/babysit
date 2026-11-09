@@ -65,9 +65,9 @@ A Slack thread needs `curl` 8.3 or later and a Slack user token (`xoxp-`) with t
    ```sh
    babysit forget --snapshot "$snap"
    ```
-   It exits 0, also when there is nothing to delete. `lock_held` means a run still holds the file:
-   stop it if it's your own background run, wait for it to exit, and forget again; otherwise leave
-   the file.
+   Run it whether or not the file exists: it exits 0 either way. `lock_held` means a run still
+   holds the file: stop it if it's your own background run, wait for it to exit, and forget again;
+   otherwise leave the file.
 
 ## Exit status
 
