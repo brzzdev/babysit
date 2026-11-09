@@ -19,7 +19,7 @@ use std::io;
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, FromArgMatches};
 
 use crate::cli::{Args, Cli, Command};
 use crate::clock::SystemClock;
@@ -30,34 +30,27 @@ use crate::run::{Backends, UsageError};
 use crate::slack::Slack;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let (code, subcommand) = match cli.command {
-        Some(Command::Forget { snapshot }) => (
-            run::forget(&snapshot, &mut io::stdout().lock()),
-            Some("forget"),
-        ),
-        None => (
-            watch(
-                &cli.run
-                    .expect("clap requires the run arguments when no subcommand is given"),
-            ),
-            None,
+    let mut command = Cli::command();
+    let matches = command.get_matches_mut();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    let code = match cli.command {
+        Some(Command::Forget { snapshot }) => run::forget(&snapshot, &mut io::stdout().lock()),
+        None => watch(
+            &cli.run
+                .expect("clap requires the run arguments when no subcommand is given"),
         ),
     };
-    match code {
-        Ok(code) => ExitCode::from(code),
-        Err(UsageError(message)) => {
-            let mut command = Cli::command();
-            command.build();
-            let command = match subcommand {
-                Some(name) => command
-                    .find_subcommand_mut(name)
-                    .expect("the subcommand that ran is one clap parsed"),
-                None => &mut command,
-            };
-            command.error(ErrorKind::ValueValidation, message).exit()
-        }
-    }
+    let message = match code {
+        Ok(code) => return ExitCode::from(code),
+        Err(UsageError(message)) => message,
+    };
+    let command = match matches.subcommand_name() {
+        Some(name) => command
+            .find_subcommand_mut(name)
+            .expect("clap matched this subcommand"),
+        None => &mut command,
+    };
+    command.error(ErrorKind::ValueValidation, message).exit()
 }
 
 fn watch(args: &Args) -> Result<u8, UsageError> {

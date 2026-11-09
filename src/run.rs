@@ -671,7 +671,7 @@ fn entry(target: &Target, snapshot: Snapshot) -> Entry {
     }
 }
 
-/// Deletes the snapshot file at `path`, touching no forge; returns the exit code.
+/// Deletes the snapshot file at `path`, touching no forge.
 pub fn forget(path: &Path, stdout: &mut impl Write) -> Result<u8, UsageError> {
     match snapshot_file::forget(path) {
         Ok(()) => Ok(EXIT_FORGOTTEN),
