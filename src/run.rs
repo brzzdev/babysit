@@ -72,14 +72,20 @@ pub fn run(
     let snapshot_path = args.snapshot.display();
     let mut file = match SnapshotFile::open(&args.snapshot) {
         Ok(file) => file,
-        Err(error) => return fail_on_snapshot_file(stdout, &args.snapshot, error),
+        Err(error) => {
+            let envelope = snapshot_file_failure(&args.snapshot, error)?;
+            return Ok(print(&envelope, stdout, args, stderr));
+        }
     };
     // Taking the lock creates its file, so a link there now shows where it leads.
     check_out(args)?;
     let located = Locator::new(exec, call_deadline).locate_all(&args.targets);
     let references = match located {
         Ok(references) => references,
-        Err((given, error)) => return report_unresolved(stdout, given, error),
+        Err((given, error)) => {
+            let envelope = unresolved(given, error)?;
+            return Ok(print(&envelope, stdout, args, stderr));
+        }
     };
     // A run that ends without an envelope then leaves no earlier run's to mistake for its own.
     if let Some(out) = &args.out
@@ -109,14 +115,7 @@ pub fn run(
             Some(Summary::new(&tracked.target, snapshot))
         })
         .collect();
-    if let Err(error) = envelope.write(stdout) {
-        if let Some(out) = &args.out {
-            let _ = writeln!(
-                stderr,
-                "babysit: could not write {}: {error}",
-                out.display()
-            );
-        }
+    if !wrote(&envelope, stdout, args, stderr) {
         return Ok(EXIT_ERROR);
     }
     // The envelope has already reported the write that failed.
@@ -756,15 +755,11 @@ fn entry(target: &Target, snapshot: Snapshot) -> Entry {
 pub fn forget(path: &Path, stdout: &mut impl Write) -> Result<u8, UsageError> {
     match snapshot_file::forget(path) {
         Ok(()) => Ok(EXIT_FORGOTTEN),
-        Err(error) => fail_on_snapshot_file(stdout, path, error),
+        Err(error) => Ok(report(stdout, &snapshot_file_failure(path, error)?)),
     }
 }
 
-fn fail_on_snapshot_file(
-    stdout: &mut impl Write,
-    path: &Path,
-    error: snapshot_file::Error,
-) -> Result<u8, UsageError> {
+fn snapshot_file_failure(path: &Path, error: snapshot_file::Error) -> Result<Envelope, UsageError> {
     let (kind, message) = match error {
         snapshot_file::Error::Invalid(message) => return Err(UsageError(message)),
         snapshot_file::Error::LockHeld => (
@@ -776,11 +771,7 @@ fn fail_on_snapshot_file(
             format!("{}: {error}", path.display()),
         ),
     };
-    Ok(fail_locally(stdout, kind, message))
-}
-
-fn fail_locally(stdout: &mut impl Write, kind: ErrorKind, message: String) -> u8 {
-    report(stdout, &local_failure(kind, message))
+    Ok(local_failure(kind, message))
 }
 
 fn local_failure(kind: ErrorKind, message: String) -> Envelope {
@@ -792,11 +783,7 @@ fn local_failure(kind: ErrorKind, message: String) -> Envelope {
     })
 }
 
-fn report_unresolved(
-    stdout: &mut impl Write,
-    given: &str,
-    error: target::Error,
-) -> Result<u8, UsageError> {
+fn unresolved(given: &str, error: target::Error) -> Result<Envelope, UsageError> {
     let envelope = match error {
         target::Error::Fatal {
             forge,
@@ -811,7 +798,37 @@ fn report_unresolved(
         target::Error::TimedOut => Envelope::ended(Outcome::TimedOut),
         target::Error::Usage(message) => return Err(UsageError(message)),
     };
-    Ok(report(stdout, &envelope))
+    Ok(envelope)
+}
+
+/// Writes the envelope, returning the run's exit code.
+fn print(envelope: &Envelope, stdout: &mut impl Write, args: &Args, stderr: &mut impl Write) -> u8 {
+    if wrote(envelope, stdout, args, stderr) {
+        envelope.exit_code()
+    } else {
+        EXIT_ERROR
+    }
+}
+
+/// Whether the envelope was written; a failed `--out` notes why on stderr, while a failed stdout
+/// has nowhere better to say so.
+fn wrote(
+    envelope: &Envelope,
+    stdout: &mut impl Write,
+    args: &Args,
+    stderr: &mut impl Write,
+) -> bool {
+    let Err(error) = envelope.write(stdout) else {
+        return true;
+    };
+    if let Some(out) = &args.out {
+        let _ = writeln!(
+            stderr,
+            "babysit: could not write {}: {error}",
+            out.display()
+        );
+    }
+    false
 }
 
 fn report(stdout: &mut impl Write, envelope: &Envelope) -> u8 {
@@ -1874,6 +1891,24 @@ mod tests {
 
         assert!(code.is_err());
         assert!(out.exists());
+    }
+
+    #[test]
+    fn an_early_failure_that_cannot_write_its_out_file_says_so_on_stderr() {
+        let sandbox = Sandbox::new("early-out");
+        let out = sandbox.dir.join("missing/out.json");
+
+        let (code, stderr) = watch_into(
+            &Args {
+                out: Some(out.clone()),
+                ..args(&[URL], &sandbox.dir.join("missing/s.json"), None)
+            },
+            Vec::new(),
+            &mut OutFile::new(&out),
+        );
+
+        assert_eq!(code.unwrap(), 1);
+        assert!(stderr.starts_with(&format!("babysit: could not write {}: ", out.display())));
     }
 
     #[test]

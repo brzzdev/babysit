@@ -1,0 +1,27 @@
+HTTP/2.0 404 Not Found
+Cache-Control: no-store, private, max-age=0
+Cf-Cache-Status: BYPASS
+Cf-Ray: a57cfa5c8c2ebe88-MAN
+Content-Length: 27
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json
+Date: Mon, 09 Nov 2026 12:56:31 GMT
+Gitlab-Lb: haproxy-main-57-lb-gprd
+Gitlab-Sv: api-gke-us-east1-d
+Nel: {"max_age": 0}
+Ratelimit-Limit: 2000
+Ratelimit-Name: throttle_authenticated_api
+Ratelimit-Observed: 17
+Ratelimit-Remaining: 1983
+Ratelimit-Reset: 1794229020
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a57cfa5c8c2ebe88-MAN","version":"1"}
+X-Request-Id: a57cfa5c8c2ebe88-MAN
+X-Runtime: 0.053404
+
+{"message":"404 Not found"}

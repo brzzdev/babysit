@@ -1,0 +1,27 @@
+HTTP/2.0 200 OK
+Cache-Control: max-age=0, private, must-revalidate
+Cf-Cache-Status: BYPASS
+Cf-Ray: a57cfa583ed41335-MAN
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json
+Date: Mon, 09 Nov 2026 12:56:30 GMT
+Etag: W/"dcf0a9311db154e653fb3a0f16627959"
+Gitlab-Lb: haproxy-main-39-lb-gprd
+Gitlab-Sv: api-gke-us-east1-d
+Nel: {"max_age": 0}
+Ratelimit-Limit: 2000
+Ratelimit-Name: throttle_authenticated_api
+Ratelimit-Observed: 15
+Ratelimit-Remaining: 1985
+Ratelimit-Reset: 1794229020
+Referrer-Policy: strict-origin-when-cross-origin
+Server: cloudflare
+Strict-Transport-Security: max-age=31536000
+Vary: Origin
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"a57cfa583ed41335-MAN","version":"1"}
+X-Request-Id: a57cfa583ed41335-MAN
+X-Runtime: 0.092842
+
+{"id":3044853151,"iid":6817010,"project_id":278964,"sha":"4e9958dd6ba051c02d5eb240c65fbc34aab6a675","ref":"refs/merge-requests/269182/merge","status":"success","source":"parent_pipeline","created_at":"2026-11-09T11:56:09.446Z","updated_at":"2026-11-09T12:36:21.232Z","web_url":"https://gitlab.com/gitlab-org/gitlab/-/pipelines/3044853151","before_sha":"4e9958dd6ba051c02d5eb240c65fbc34aab6a675","tag":false,"yaml_errors":null,"user":{"id":1786152,"username":"gitlab-bot","public_email":"","name":"🤖 GitLab Bot 🤖","state":"active","locked":false,"avatar_url":"https://gitlab.com/uploads/-/system/user/avatar/1786152/avatar.png?v=1794228426","web_url":"https://gitlab.com/gitlab-bot"},"started_at":"2026-11-09T11:56:10.888Z","finished_at":"2026-11-09T12:36:21.206Z","committed_at":null,"duration":2396,"queued_duration":1,"coverage":null,"detailed_status":{"icon":"status_success","text":"Passed","label":"passed","group":"success","tooltip":"passed","has_details":true,"details_path":"/gitlab-org/gitlab/-/pipelines/3044853151","illustration":null,"favicon":"/assets/ci_favicons/favicon_status_success-8451333011eee8ce9f2ab25dc487fe24a8758c694827a582f17f42b0a90446a2.png"},"archived":false,"name":"E2E CNG"}

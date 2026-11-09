@@ -311,13 +311,13 @@ existing file there is replaced, and a write that fails partway can leave it beh
 A target summary is `target` and `state` (`open`, `closed`, or `merged`). A pull or merge request
 adds `head`, its head commit; `colour`, the CI colour reported for that head or `null` while
 unsettled; `merge`, the last known of `clean`, `behind`, or `conflicted`, which stays put while the
-forge recomputes it for the same head and is `null` until first known for the current head, so
-after a push, or once the target isn't open; and
-`unresolved_threads`. Between `colour` and `merge`, it has `absent_ci`: `true` while it is open and
-its head is absent CI, else `false`. A job or pipeline adds only `head`, the commit it ran on, and
-`colour`; it is `open` until it finishes, and `closed` once it succeeds, fails, is cancelled, or
-is skipped. An issue's or Slack thread's summary has only `target` and `state`, and a Slack thread
-is always `open`.
+forge recomputes it for the same head and is `null` until first known for the current head, so after
+a push, or once the target isn't open; and `unresolved_threads`. Between `colour` and `merge`, it
+has `absent_ci`: `true` while it is open and its head is absent CI, else `false`. A job or pipeline
+adds only `head`, the commit it ran on, and `colour`; it is `open` until it finishes, and `closed`
+once it succeeds, fails, or is cancelled, or for a pipeline is skipped. A skipped job stays `open`,
+since a retry upstream can still run it. An issue's or Slack thread's summary has only `target` and
+`state`, and a Slack thread is always `open`.
 
 The examples below come from a live GitHub pull request and issue, recorded in
 `src/github/fixtures/`, and a live GitLab job, recorded in `src/gitlab/fixtures/`. The test
