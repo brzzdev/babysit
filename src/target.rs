@@ -239,8 +239,7 @@ impl<'a, E: Exec> Locator<'a, E> {
         };
         let resolved = self
             .call("git", &["config", "--get-regexp", &pattern])?
-            .map(|output| output.stdout)
-            .unwrap_or_default();
+            .map_or_default(|output| output.stdout);
         let recorded = recorded(&resolved);
         let (host, path) = if let Some((name, value)) = recorded {
             let Some(remote) = remotes.iter().find(|remote| remote.name == name) else {
